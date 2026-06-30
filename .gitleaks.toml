@@ -1,0 +1,18 @@
+# gitleaks configuration for InSight.
+#
+# Extends gitleaks' built-in ruleset (AWS keys, private keys, generic
+# high-entropy API tokens, etc.) and adds a small allowlist for values that
+# look secret-ish but are not. Used by the pre-commit secret-scan hook.
+
+title = "InSight secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secrets and documentation placeholders"
+
+regexes = [
+  # Obvious placeholders/fixtures (never real secrets).
+  '''(?i)(change-me|fixture-[a-z-]+|example\.com|your-token-here)''',
+]

@@ -1,0 +1,39 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # License headers — inserts/maintains the SPDX header on source files at
+  # commit time. --use-current-year keeps the copyright year current.
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.6
+    hooks:
+      - id: insert-license
+        name: insert license header (python & shell)
+        files: \.(py|sh)$
+        args:
+          - --license-filepath
+          - .license-header.txt
+          - --use-current-year
+          - --comment-style
+          - "#"
+
+  # Secret scanning — blocks committing credentials/keys/tokens locally.
+  # Honours .gitleaks.toml.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks

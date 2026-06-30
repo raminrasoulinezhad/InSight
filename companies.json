@@ -1,0 +1,117 @@
+{
+  "_comment": "Watchlist of issuers, keyed by full legal company NAME (the stable identifier \u2014 SEDI and our resolver search by name, and tickers collide across exchanges e.g. NFG/AEO). 'exchange' uses MarketBeat codes: TSE = Toronto, TSXV = TSX Venture, NYSE/NASDAQ = US. 'ticker' is retained as a secondary disambiguator and for the MarketBeat source. New entries are added via the app's name search (resolved against the symbol-search backend, with a picker when multiple matches exist).",
+  "companies": [
+    {
+      "name": "Franco-Nevada Corporation",
+      "exchange": "TSE",
+      "ticker": "FNV",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Canadian Natural Resources Limited",
+      "exchange": "TSE",
+      "ticker": "CNQ",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Wheaton Precious Metals Corp.",
+      "exchange": "TSE",
+      "ticker": "WPM",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Suncor Energy Inc.",
+      "exchange": "TSE",
+      "ticker": "SU",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Athabasca Oil Corporation",
+      "exchange": "TSE",
+      "ticker": "ATH",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "American Eagle Outfitters, Inc.",
+      "exchange": "NYSE",
+      "ticker": "AEO",
+      "country": "US",
+      "confirmed": true
+    },
+    {
+      "name": "West Red Lake Gold Mines Ltd.",
+      "exchange": "TSXV",
+      "ticker": "WRLG",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Argenta Silver Corp.",
+      "exchange": "TSXV",
+      "ticker": "AGAG",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "New Found Gold Corp.",
+      "exchange": "TSXV",
+      "ticker": "NFG",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Silverco Mining Ltd.",
+      "exchange": "TSXV",
+      "ticker": "SICO",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Aftermath Silver Ltd.",
+      "exchange": "TSXV",
+      "ticker": "AAG",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Tudor Gold Corp.",
+      "exchange": "TSXV",
+      "ticker": "TUD",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Hycroft Mining Holding Corporation",
+      "exchange": "NASDAQ",
+      "ticker": "HYMC",
+      "country": "US",
+      "confirmed": true
+    },
+    {
+      "name": "Obsidian Energy Ltd.",
+      "exchange": "TSE",
+      "ticker": "OBE",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Cenovus Energy Inc.",
+      "exchange": "TSE",
+      "ticker": "CVE",
+      "country": "CA",
+      "confirmed": true
+    },
+    {
+      "name": "Barrick Mining Corporation",
+      "exchange": "TSE",
+      "ticker": "ABX",
+      "country": "CA",
+      "confirmed": true
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Ruff config for InSight — mirrors the MoneyTor lint standard.
+# (MoneyTor keeps these under [tool.ruff] in pyproject.toml; InSight has no
+# packaging, so the same settings live in this standalone file.)
+line-length = 100
+target-version = "py312"
+src = ["."]
+
+[lint]
+# Sensible, strict-leaning default set. Expand as the codebase grows.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # comprehensions
+    "SIM", # simplify
+    "RUF", # ruff-specific
+]
+
+[lint.isort]
+known-first-party = ["insight"]

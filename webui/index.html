@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>InSight — Insider Transactions</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232d; --line:#2a323d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff;
+    --buy:#3fb950; --buy-dim:#1f3d27; --sell:#f85149; --sell-dim:#3d1f1f;
+    --inst:#d29922; --buyback:#a371f7;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body {
+    background:var(--bg); color:var(--text);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; height:100vh;
+  }
+  header {
+    padding:14px 20px; border-bottom:1px solid var(--line);
+    background:var(--panel); flex:0 0 auto;
+  }
+  .titlerow { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  h1 .dot { color:var(--accent); }
+  .meta { color:var(--muted); font-size:12px; }
+  .refresh-btn { background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:5px 12px; font-size:12px; cursor:pointer; }
+  .refresh-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  .refresh-btn:disabled { opacity:.6; cursor:progress; }
+  .refresh-btn.spin { animation:none; }
+  .stats { display:flex; gap:18px; margin-top:8px; flex-wrap:wrap; }
+  .stat b { color:var(--text); font-size:16px; }
+  .stat span { color:var(--muted); font-size:12px; margin-left:4px; }
+  .controls { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+  input[type=search] {
+    flex:1 1 240px; min-width:180px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:8px 12px; font-size:13px;
+  }
+  input[type=search]:focus { outline:none; border-color:var(--accent); }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button {
+    background:var(--bg); color:var(--muted); border:0; padding:8px 14px;
+    cursor:pointer; font-size:13px; border-right:1px solid var(--line);
+  }
+  .seg button:last-child { border-right:0; }
+  .seg button.active { background:var(--panel2); color:var(--text); }
+  main { flex:1 1 auto; overflow-y:auto; padding:18px 20px 60px; }
+  .company { margin-bottom:26px; }
+  .company-head {
+    display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+    padding:6px 0 10px; border-bottom:1px solid var(--line); margin-bottom:14px;
+    position:sticky; top:-18px; background:var(--bg); z-index:2;
+  }
+  .company-head .name { font-size:16px; font-weight:600; }
+  .ticker { font-size:12px; color:var(--accent); background:var(--panel2);
+    border:1px solid var(--line); border-radius:6px; padding:1px 7px; }
+  .company-head .sub { color:var(--muted); font-size:12px; }
+  .pill-warn { color:var(--inst); border:1px solid var(--inst); border-radius:6px;
+    font-size:11px; padding:1px 6px; }
+  .grid {
+    display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+  }
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:13px 14px; display:flex; flex-direction:column; gap:10px;
+  }
+  .card.buyback { border-color:var(--buyback); }
+  .who { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+  .who .nm { font-weight:600; }
+  .who .role { color:var(--muted); font-size:12px; }
+  .badge { font-size:10px; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 6px; border-radius:5px; white-space:nowrap; }
+  .badge.individual { background:#1b2733; color:var(--accent); }
+  .badge.institution { background:#33290e; color:var(--inst); }
+  .badge.buyback { background:#2a1e3d; color:var(--buyback); }
+  .bar { display:flex; height:8px; border-radius:5px; overflow:hidden; background:var(--panel2); }
+  .bar .b { background:var(--buy); }
+  .bar .s { background:var(--sell); }
+  .counts { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { font-size:12px; padding:3px 8px; border-radius:6px; background:var(--panel2);
+    border:1px solid var(--line); }
+  .chip.buy { color:var(--buy); } .chip.sell { color:var(--sell); }
+  .chip .n { font-weight:700; }
+  .amounts { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .amt { background:var(--panel2); border-radius:7px; padding:7px 9px; }
+  .amt .lbl { font-size:11px; color:var(--muted); }
+  .amt .val { font-size:14px; font-weight:600; }
+  .amt.buy .val { color:var(--buy); } .amt.sell .val { color:var(--sell); }
+  .amt .sh { font-size:11px; color:var(--muted); }
+  .foot { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+  .empty { color:var(--muted); font-style:italic; padding:6px 0; }
+  .nodata { text-align:center; color:var(--muted); padding:60px 20px; }
+  /* add-company picker */
+  .adder { position:relative; }
+  .add-row { display:flex; gap:8px; }
+  .add-row input { flex:1 1 280px; }
+  .add-row button { background:var(--accent); color:#06121f; border:0; border-radius:8px;
+    padding:0 16px; font-weight:600; cursor:pointer; }
+  .picker { position:absolute; z-index:10; top:calc(100% + 6px); left:0; right:0;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    max-height:340px; overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.5); }
+  .picker.hidden { display:none; }
+  .cand { display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer;
+    border-bottom:1px solid var(--line); }
+  .cand:last-child { border-bottom:0; }
+  .cand:hover { background:#243041; }
+  .cand .nm { flex:1; }
+  .cand .nm .sub { color:var(--muted); font-size:12px; }
+  .cand .flag { font-size:11px; color:var(--muted); }
+  .cand .tk { font-size:12px; color:var(--accent); background:var(--bg);
+    border:1px solid var(--line); border-radius:6px; padding:2px 7px; white-space:nowrap; }
+  .picker .msg { padding:10px 12px; color:var(--muted); font-size:13px; }
+  .toast { position:fixed; bottom:54px; left:50%; transform:translateX(-50%);
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    padding:10px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .2s;
+    pointer-events:none; z-index:50; }
+  .toast.show { opacity:1; }
+  footer { flex:0 0 auto; padding:8px 20px; border-top:1px solid var(--line);
+    background:var(--panel); color:var(--muted); font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="titlerow">
+    <h1>In<span class="dot">●</span>Sight</h1>
+    <span class="meta" id="datameta">loading…</span>
+    <button id="refresh" class="refresh-btn">↻ Refresh data</button>
+    <span class="meta" id="refreshmsg"></span>
+  </div>
+  <div class="stats">
+    <div class="stat"><b id="s-cov">–</b><span>companies with activity</span></div>
+    <div class="stat"><b id="s-txn">–</b><span>transactions</span></div>
+    <div class="stat"><b id="s-co">–</b><span>on watchlist</span></div>
+  </div>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Filter by company, ticker, or insider name…" />
+    <div class="seg" id="filter">
+      <button data-f="all" class="active">All</button>
+      <button data-f="buy">Net buyers</button>
+      <button data-f="sell">Net sellers</button>
+      <button data-f="inst">Institutions</button>
+    </div>
+  </div>
+  <div class="controls adder">
+    <div class="add-row" style="flex:1">
+      <input type="search" id="addq" placeholder="Add a company to the watchlist by name (e.g. New Found Gold)…"
+             autocomplete="off" />
+      <button id="addbtn">Search</button>
+    </div>
+    <div class="picker hidden" id="picker"></div>
+  </div>
+</header>
+
+<main id="feed"><div class="nodata">Loading insider data…</div></main>
+
+<footer id="foot"></footer>
+
+<script>
+const fmtMoney = (v, cur) => {
+  if (!v) return (cur||"") + "0";
+  const abs = Math.abs(v); let s;
+  if (abs >= 1e9) s = (v/1e9).toFixed(2)+"B";
+  else if (abs >= 1e6) s = (v/1e6).toFixed(2)+"M";
+  else if (abs >= 1e3) s = (v/1e3).toFixed(1)+"K";
+  else s = v.toFixed(0);
+  return (cur ? cur+" " : "$") + s;
+};
+const fmtShares = n => !n ? "0" : n.toLocaleString();
+
+let STATE = { data:null, q:"", filter:"all" };
+
+function entityKind(box){
+  if (box.is_issuer_buyback) return "buyback";
+  return box.entity_type === "institution" ? "institution" : "individual";
+}
+
+function boxMatchesFilter(box){
+  const f = STATE.filter;
+  if (f === "all") return true;
+  if (f === "inst") return box.entity_type === "institution" || box.is_issuer_buyback;
+  if (f === "buy") return box.net_value > 0;
+  if (f === "sell") return box.net_value < 0;
+  return true;
+}
+
+function matchesQuery(company, box){
+  const q = STATE.q.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [company.issuer_name, company.ticker, company.exchange,
+               box ? box.insider_name : "", box ? box.insider_role : ""]
+              .join(" ").toLowerCase();
+  return hay.includes(q);
+}
+
+function renderCard(box){
+  const kind = entityKind(box);
+  const total = (box.buy_value||0) + (box.sell_value||0);
+  const buyPct = total ? (box.buy_value/total*100) : (box.buy_count? 100:0);
+  const sellPct = total ? (box.sell_value/total*100) : (box.sell_count?100:0);
+  const cur = box.currency || "";
+  const badgeLabel = kind === "buyback" ? "Buyback" : kind;
+  return `
+  <div class="card ${kind==='buyback'?'buyback':''}">
+    <div class="who">
+      <div>
+        <div class="nm">${esc(box.insider_name)}</div>
+        <div class="role">${esc(box.insider_role||"—")}</div>
+      </div>
+      <span class="badge ${kind}">${badgeLabel}</span>
+    </div>
+    <div class="bar">
+      <div class="b" style="width:${buyPct}%"></div>
+      <div class="s" style="width:${sellPct}%"></div>
+    </div>
+    <div class="counts">
+      <span class="chip buy"><span class="n">${box.buy_count}</span> buys</span>
+      <span class="chip sell"><span class="n">${box.sell_count}</span> sells</span>
+      <span class="chip"><span class="n">${box.txn_count}</span> txns</span>
+    </div>
+    <div class="amounts">
+      <div class="amt buy">
+        <div class="lbl">Bought</div>
+        <div class="val">${fmtMoney(box.buy_value, cur)}</div>
+        <div class="sh">${fmtShares(box.buy_shares)} sh</div>
+      </div>
+      <div class="amt sell">
+        <div class="lbl">Sold</div>
+        <div class="val">${fmtMoney(box.sell_value, cur)}</div>
+        <div class="sh">${fmtShares(box.sell_shares)} sh</div>
+      </div>
+    </div>
+    <div class="foot">
+      <span>net ${box.net_value>=0?'+':''}${fmtMoney(box.net_value, cur)}</span>
+      <span>latest ${box.latest_date||"—"}</span>
+    </div>
+  </div>`;
+}
+
+function renderCompany(c){
+  const boxes = c.boxes.filter(b => boxMatchesFilter(b) && matchesQuery(c, b));
+  // if a text query is set and nothing in this company matches name/insider, skip
+  if (STATE.q.trim() && boxes.length === 0 && !matchesQuery(c, null)) return "";
+  const warn = c.confirmed === false
+    ? `<span class="pill-warn">unverified ticker</span>` : "";
+  let body;
+  if (c.boxes.length === 0){
+    body = `<div class="empty">No insider transactions found yet (source may not cover this issuer — see README).</div>`;
+  } else if (boxes.length === 0){
+    body = `<div class="empty">No insiders match the current filter.</div>`;
+  } else {
+    body = `<div class="grid">${boxes.map(renderCard).join("")}</div>`;
+  }
+  return `
+  <section class="company">
+    <div class="company-head">
+      <span class="name">${esc(c.issuer_name)}</span>
+      <span class="ticker">${esc(c.exchange)}:${esc(c.ticker)}</span>
+      <span class="sub">${c.insider_count} insiders · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
+      ${warn}
+    </div>
+    ${body}
+  </section>`;
+}
+
+function render(){
+  const d = STATE.data;
+  if (!d){ return; }
+  document.getElementById("s-cov").textContent = d.covered_companies;
+  document.getElementById("s-txn").textContent = d.total_transactions;
+  document.getElementById("s-co").textContent = d.total_companies;
+  document.getElementById("datameta").textContent =
+    d.data_date ? `data as of ${d.data_date}` : "no data file yet — run scrape_insider.py";
+
+  const html = d.companies.map(renderCompany).join("");
+  document.getElementById("feed").innerHTML =
+    html.trim() ? html : `<div class="nodata">Nothing matches your filter.</div>`;
+  document.getElementById("foot").textContent =
+    `Source: ${d.data_file||"none"} · normalized insider transactions · reload after re-scraping to refresh.`;
+}
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function load(){
+  try {
+    const r = await fetch("/api/data");
+    STATE.data = await r.json();
+    render();
+  } catch(e){
+    document.getElementById("feed").innerHTML =
+      `<div class="nodata">Failed to load data: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ---- add-company-by-name flow with disambiguation picker ---- */
+const flag = cc => ({CA:"🇨🇦",US:"🇺🇸",GB:"🇬🇧",DE:"🇩🇪",HK:"🇭🇰",AU:"🇦🇺"}[cc]||cc||"");
+const picker = document.getElementById("picker");
+const addq = document.getElementById("addq");
+let searchTimer = null, lastQuery = "";
+
+function hidePicker(){ picker.classList.add("hidden"); picker.innerHTML = ""; }
+function showPicker(html){ picker.innerHTML = html; picker.classList.remove("hidden"); }
+
+function toast(msg){
+  let t = document.getElementById("toast");
+  if (!t){ t = document.createElement("div"); t.id="toast"; t.className="toast"; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove("show"), 2600);
+}
+
+async function runSearch(){
+  const q = addq.value.trim();
+  lastQuery = q;
+  if (q.length < 2){ hidePicker(); return; }
+  showPicker(`<div class="msg">Searching “${esc(q)}”…</div>`);
+  try {
+    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const d = await r.json();
+    if (q !== lastQuery) return;           // a newer query superseded this one
+    const cands = d.candidates || [];
+    if (!cands.length){ showPicker(`<div class="msg">No matching issuers found.</div>`); return; }
+    showPicker(cands.map((c,i) => `
+      <div class="cand" data-i="${i}">
+        <span class="flag">${flag(c.country)}</span>
+        <div class="nm">
+          <div>${esc(c.legal_name)}</div>
+          <div class="sub">${esc(c.exchange_raw||c.exchange)} · ${esc(c.country)}</div>
+        </div>
+        <span class="tk">${esc(c.exchange)}:${esc(c.ticker)}</span>
+      </div>`).join(""));
+    picker._cands = cands;
+  } catch(e){
+    showPicker(`<div class="msg">Search failed: ${esc(e.message)}</div>`);
+  }
+}
+
+async function addCandidate(c){
+  hidePicker(); addq.value = "";
+  try {
+    const r = await fetch("/api/watchlist", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(c),
+    });
+    const d = await r.json();
+    toast(d.msg || (d.added ? "Added." : "Not added."));
+    if (d.added) await load();
+  } catch(e){ toast("Add failed: " + e.message); }
+}
+
+addq.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 280);
+});
+addq.addEventListener("keydown", e => { if (e.key === "Enter"){ clearTimeout(searchTimer); runSearch(); } });
+document.getElementById("addbtn").addEventListener("click", () => { clearTimeout(searchTimer); runSearch(); });
+picker.addEventListener("click", e => {
+  const row = e.target.closest(".cand");
+  if (row && picker._cands) addCandidate(picker._cands[+row.dataset.i]);
+});
+document.addEventListener("click", e => {
+  if (!e.target.closest(".adder")) hidePicker();
+});
+
+/* ---- refresh (re-scrape) with status polling ---- */
+const refreshBtn = document.getElementById("refresh");
+const refreshMsg = document.getElementById("refreshmsg");
+let pollTimer = null;
+
+function setRefreshing(on, msg){
+  refreshBtn.disabled = on;
+  refreshBtn.textContent = on ? "↻ Refreshing…" : "↻ Refresh data";
+  refreshMsg.textContent = msg || "";
+}
+
+async function pollRefresh(){
+  try {
+    const d = await (await fetch("/api/refresh/status")).json();
+    refreshMsg.textContent = d.message || "";
+    if (d.running){ return; }                 // keep polling
+    clearInterval(pollTimer); pollTimer = null;
+    setRefreshing(false, d.message);
+    if (d.ok) await load();                    // show freshly scraped data
+    setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
+  } catch(e){
+    clearInterval(pollTimer); pollTimer = null;
+    setRefreshing(false, "status check failed: " + e.message);
+  }
+}
+
+refreshBtn.addEventListener("click", async () => {
+  if (refreshBtn.disabled) return;
+  setRefreshing(true, "Starting…");
+  try {
+    const r = await fetch("/api/refresh", { method:"POST" });
+    if (r.status === 409){ setRefreshing(true, "A refresh is already running…"); }
+    if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
+  } catch(e){ setRefreshing(false, "Could not start: " + e.message); }
+});
+
+document.getElementById("q").addEventListener("input", e => {
+  STATE.q = e.target.value; render();
+});
+document.querySelectorAll("#filter button").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#filter button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    STATE.filter = b.dataset.f; render();
+  });
+});
+
+load();
+</script>
+</body>
+</html>
