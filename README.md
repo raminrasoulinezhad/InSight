@@ -16,43 +16,71 @@ CSV/JSON for downstream processing.
 
 ## Quick start
 
-The scripts carry their Python deps inline ([PEP 723](https://peps.python.org/pep-0723/)),
-so [`uv`](https://docs.astral.sh/uv/) provisions and caches an environment on
-first run — no manual virtualenv to create or activate.
+InSight installs as a normal application with a single command via
+[`uv`](https://docs.astral.sh/uv/) (one cross-platform tool — the same steps
+work on **Linux, macOS, and Windows**). It ships two commands: `insight` (the
+app window) and `insight-scrape` (the collector). After install the source repo
+is no longer needed and can be deleted.
 
 ```bash
-# one-time: download the Chromium browser binary Playwright drives
-# (uv manages Python packages; the browser is a separate ~150 MB cache)
-uv run --with playwright playwright install chromium
+# 1. install uv (once) — see https://docs.astral.sh/uv/getting-started/install/
+#    Linux/macOS:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#    Windows:      powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# scrape the watchlist in companies.json
-uv run --script scrape_insider.py
+# 2. install InSight from a clone (or `git+<url>` to skip cloning)
+uv tool install .
+# uv tool install git+https://github.com/<you>/InSight
+
+# 3. one-time: download the Chromium browser the scraper drives (~150 MB cache)
+uv tool run --from playwright playwright install chromium
+```
+
+Then, from anywhere:
+
+```bash
+# scrape the watchlist
+insight-scrape
 
 # or ad-hoc tickers (EXCHANGE:TICKER)
-uv run --script scrape_insider.py --tickers TSE:FNV TSE:CNQ NYSE:AEO
+insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
 
 # show the browser (useful if your IP gets a bot challenge)
-uv run --script scrape_insider.py --headful
+insight-scrape --headful
 ```
+
+The watchlist and all output live in a per-user app folder (created on first
+run), so nothing depends on the repo location:
+
+| OS | app folder |
+|---|---|
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/InSight` |
+| macOS | `~/Library/Application Support/InSight` |
+| Windows | `%LOCALAPPDATA%\InSight` |
 
 <details>
-<summary>Prefer pip + a virtualenv?</summary>
+<summary>Run from a checkout without installing (dev)</summary>
+
+`uv run` reads <code>pyproject.toml</code> and provisions the environment on the
+fly — no manual virtualenv:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m playwright install chromium
-python scrape_insider.py
+uv run insight-scrape --tickers TSE:FNV
+uv run insight --no-browser
 ```
+
+Prefer pip? `pip install .` (or `pip install -e .`) exposes the same
+`insight` / `insight-scrape` commands.
 </details>
 
-### Output (per run, stamped with the date)
+### Output (per run, stamped with the date, under the app folder)
 
 ```
 data/insider_YYYY-MM-DD.json          all records (source-agnostic schema)
 data/insider_YYYY-MM-DD.csv           same, flat CSV
 data/by_ticker/TSE_FNV_YYYY-MM-DD.csv one CSV per company
 ```
+
+(Use `insight-scrape --outdir ./data` to write to an explicit folder instead.)
 
 ### Example summary
 
@@ -64,7 +92,7 @@ TSE:ATH   27 txns  (buys=27 sells=0 institutional=27) latest=2026-05-29   <- iss
 
 ## The application window
 
-A self-contained local web app (Python stdlib only — no extra deps, no X11
+A self-contained local web app (the server is Python stdlib only — no X11
 display required) renders the data as a scrollable feed of **boxes**, one per
 insider/entity, grouped under each watchlist company. Each box shows the
 buy / sell / total transaction counts, the shares and dollar amounts bought
@@ -72,10 +100,10 @@ and sold, a buy↔sell ratio bar, and who was trading (name, role, and an
 individual / institution / buyback badge).
 
 ```bash
-uv run --script app.py            # serve on http://127.0.0.1:8765 + open a browser
-uv run --script app.py --window   # open as a standalone desktop window (chromeless)
-uv run --script app.py --port 9000
-uv run --script app.py --no-browser   # headless box: open the URL yourself
+insight              # serve on http://127.0.0.1:8765 + open a browser
+insight --window     # open as a standalone desktop window (chromeless)
+insight --port 9000
+insight --no-browser # headless box: open the URL yourself
 ```
 
 ### Desktop launcher
@@ -83,19 +111,26 @@ uv run --script app.py --no-browser   # headless box: open the URL yourself
 `--window` opens the UI as a chromeless desktop window (via Chrome's `--app=`
 mode) whose lifetime owns the server — close the window and the server stops.
 The window runs in its own dedicated Chrome profile so it never disturbs your
-main browser.
+main browser. It finds Chrome, Edge, Chromium, or Brave automatically (and
+falls back to Playwright's bundled Chromium) on Linux, macOS, and Windows.
 
-Install it as a normal app (icon in the app grid) that runs
-`uv run --script app.py --window`:
+**Linux** — install it as a real app (icon in the app grid) that launches the
+installed `insight` command:
 
 ```bash
 ./install-desktop.sh              # add InSight to your application menu
 ./install-desktop.sh --uninstall  # remove it
 ```
 
-It reads the newest `data/insider_YYYY-MM-DD.json`. Re-run `scrape_insider.py`
-to refresh the data, then reload the page. Watchlist companies with no data
-(e.g. uncovered TSX-V names) appear as empty cards so coverage gaps are visible.
+**macOS / Windows** — run `insight --window` directly, or pin it: on macOS wrap
+it in a one-line `.command` file or an Automator app; on Windows create a
+Start-Menu shortcut whose target is `insight --window` (the `insight.exe`
+shim lives in the uv tools bin, shown by `uv tool dir`).
+
+It reads the newest `data/insider_YYYY-MM-DD.json` from the app folder. Re-run
+`insight-scrape` to refresh the data, then reload the page. Watchlist companies
+with no data (e.g. uncovered TSX-V names) appear as empty cards so coverage gaps
+are visible.
 
 Search filters by company/ticker/insider; the segmented control filters to net
 buyers, net sellers, or institutions.
@@ -143,11 +178,17 @@ When a name is ambiguous you choose — the app never silently guesses.
 
 ## Run it daily
 
-The transactions need only a 1–2 day freshness, so a daily cron is plenty:
+The transactions need only a 1–2 day freshness, so a daily schedule is plenty.
+
+**Linux/macOS (cron)** — use the absolute path to the installed command
+(`which insight-scrape`):
 
 ```cron
-30 6 * * *  cd /home/ramin/workspaces/InSight && ~/.local/bin/uv run --script scrape_insider.py >> data/cron.log 2>&1
+30 6 * * *  ~/.local/bin/insight-scrape >> ~/.local/share/InSight/cron.log 2>&1
 ```
+
+**Windows (Task Scheduler)** — create a daily task running `insight-scrape`
+(find its path with `where insight-scrape`).
 
 Each run writes a new date-stamped file, so you accumulate a history you can
 load into a database or diff day-over-day to detect *new* filings.
@@ -198,17 +239,22 @@ works). To productionize the SEDI path, pick one:
 ## Layout
 
 ```
-app.py                the application window (local web server + UI)
-scrape_insider.py     CLI entry point (config, output, summary)
-companies.json        the watchlist
-webui/index.html      the single-page UI (scrollable insider boxes)
+pyproject.toml          packaging + the `insight` / `insight-scrape` commands
+install-desktop.sh       Linux app-menu launcher installer
 insight/
-  models.py           InsiderTransaction schema + parsing helpers
-  marketbeat.py       MarketBeat scraper (Playwright + stealth)
-  aggregate.py        flat records -> per-company / per-insider boxes
-  issuers.py          name -> issuer-candidate resolver (+ watchlist add)
-data/                 dated outputs
+  app.py                the application window (local web server + UI)
+  scrape.py             scraper CLI entry point (config, output, summary)
+  paths.py              per-user data/config/profile dirs (cross-platform)
+  models.py             InsiderTransaction schema + parsing helpers
+  marketbeat.py         MarketBeat scraper (Playwright + stealth)
+  aggregate.py          flat records -> per-company / per-insider boxes
+  issuers.py            name -> issuer-candidate resolver (+ watchlist add)
+  companies.default.json  seed watchlist (copied to the app folder on first run)
+  webui/index.html      the single-page UI (scrollable insider boxes)
 ```
+
+The editable watchlist and dated outputs live in the per-user app folder (see
+[Quick start](#quick-start)), not in the repo.
 
 Adding a new source = a new module that yields `InsiderTransaction` objects;
 nothing downstream changes.

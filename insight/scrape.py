@@ -3,32 +3,23 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Noncommercial use permitted. Commercial use requires a separate license;
 # contact the author. Provided "as is", without warranty of any kind.
-#
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "playwright==1.60.0",
-#   "playwright-stealth==2.0.3",
-# ]
-# ///
-# Run with `uv run --script scrape_insider.py` — uv provisions the deps from
-# cache. The Chromium browser binary is a separate one-time download:
-#   uv run --with playwright playwright install chromium
 
 """InSight — collect insider transactions for a watchlist of stocks.
 
-Usage:
-    python scrape_insider.py                      # use companies.json
-    python scrape_insider.py --tickers TSE:FNV TSE:CNQ
-    python scrape_insider.py --headful            # show the browser
-    python scrape_insider.py --outdir data        # where to write output
+Usage (installed via `uv tool install`, or `uv run insight-scrape` from a
+checkout):
+    insight-scrape                      # use the watchlist (companies.json)
+    insight-scrape --tickers TSE:FNV TSE:CNQ
+    insight-scrape --headful            # show the browser
+    insight-scrape --outdir ./data      # override where output is written
 
-Outputs, per run (stamped with today's date):
+By default the watchlist and output live in the per-user app folder (see
+insight.paths). Outputs, per run (stamped with today's date):
     data/insider_YYYY-MM-DD.json   all records, one source-agnostic schema
     data/insider_YYYY-MM-DD.csv    same, flat CSV for spreadsheets/DBs
     data/by_ticker/<EXCH>_<TKR>_YYYY-MM-DD.csv   one file per company
 
-Run it daily (cron / the harness scheduler) to build a history.
+Run it daily (cron / Task Scheduler) to build a history.
 """
 
 from __future__ import annotations
@@ -40,8 +31,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from insight.marketbeat import scrape_many
-from insight.models import InsiderTransaction
+from . import paths
+from .marketbeat import scrape_many
+from .models import InsiderTransaction
 
 CSV_FIELDS = [
     "issuer_name",
@@ -126,23 +118,26 @@ def summarize(results: dict[str, list[InsiderTransaction]]) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
-    ap.add_argument("--config", default="companies.json")
+    ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
     ap.add_argument("--tickers", nargs="*", default=[], help="EXCH:TICKER specs, overrides config")
-    ap.add_argument("--outdir", default="data")
+    ap.add_argument("--outdir", default=None, help="output dir (default: per-user app folder)")
     ap.add_argument(
         "--headful", action="store_true", help="run a visible browser (helps on flagged IPs)"
     )
     args = ap.parse_args(argv)
 
-    targets = load_targets(Path(args.config), args.tickers)
+    config = Path(args.config) if args.config else paths.config_file()
+    outdir = Path(args.outdir) if args.outdir else paths.data_dir()
+
+    targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()
     print(f"InSight insider scrape — {run_date}")
     print(f"Targets: {', '.join(t['exchange'] + ':' + t['ticker'] for t in targets)}\n")
 
     results = scrape_many(targets, headless=not args.headful)
-    write_outputs(results, Path(args.outdir), run_date)
+    write_outputs(results, outdir, run_date)
     summarize(results)
-    print(f"\nWrote: {args.outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")
+    print(f"\nWrote: {outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")
     return 0
 
 

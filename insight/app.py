@@ -3,34 +3,23 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Noncommercial use permitted. Commercial use requires a separate license;
 # contact the author. Provided "as is", without warranty of any kind.
-#
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "playwright==1.60.0",
-#   "playwright-stealth==2.0.3",
-# ]
-# ///
-# The app UI is stdlib-only; the deps above are for the in-app "Refresh"
-# button, which re-scrapes via insight.marketbeat (Playwright). `uv run`
-# provisions them from cache. The Chromium *browser binary* is separate:
-#   uv run --with playwright playwright install chromium   # one-time
 
 """InSight desktop/web app — view insider transactions in a window.
 
-Runs a tiny local web server (Python stdlib only, no extra deps) and serves
-a single-page UI: a scrollable feed of "boxes", one per insider/entity, grouped
-under each watchlist company. Each box shows buy/sell/total counts, the shares
-and dollar amounts bought and sold, and who was trading.
+Runs a tiny local web server and serves a single-page UI: a scrollable feed of
+"boxes", one per insider/entity, grouped under each watchlist company. Each box
+shows buy/sell/total counts, the shares and dollar amounts bought and sold, and
+who was trading.
 
-Usage:
-    python app.py                 # serve on http://127.0.0.1:8765 + open browser
-    python app.py --window        # open as a standalone desktop window (chromeless)
-    python app.py --port 9000
-    python app.py --no-browser    # don't auto-open a browser
+Usage (installed via `uv tool install`, or `uv run insight` from a checkout):
+    insight                 # serve on http://127.0.0.1:8765 + open browser
+    insight --window        # open as a standalone desktop window (chromeless)
+    insight --port 9000
+    insight --no-browser    # don't auto-open a browser
 
-Data comes from the newest data/insider_YYYY-MM-DD.json produced by
-scrape_insider.py. Run the scraper to refresh; reload the page to see updates.
+Data comes from the newest data/insider_YYYY-MM-DD.json in the per-user app
+folder (see insight.paths), produced by `insight-scrape`. Run the scraper to
+refresh; reload the page to see updates.
 """
 
 from __future__ import annotations
@@ -49,15 +38,20 @@ import urllib.request
 import webbrowser
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 from pathlib import Path
 
-from insight.aggregate import load_view
-from insight.issuers import add_to_watchlist, search_issuers
+from . import paths
+from .aggregate import load_view
+from .issuers import add_to_watchlist, search_issuers
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-CONFIG = ROOT / "companies.json"
-UI_FILE = ROOT / "webui" / "index.html"
+# The UI lives inside the package (importlib.resources) so it is available when
+# installed globally with the source repo deleted.
+_WEBUI = resources.files("insight").joinpath("webui")
+
+# Editable watchlist + scrape output live in the per-user app folder.
+DATA_DIR = paths.data_dir()
+CONFIG = paths.config_file()
 
 # ---- background refresh (re-scrape) job state ----
 _refresh_lock = threading.Lock()
@@ -72,8 +66,8 @@ def _do_refresh():
     (e.g. Playwright not installed) surfaces as a job error, not an app crash.
     """
     try:
-        from insight.marketbeat import scrape_many
-        from scrape_insider import write_outputs
+        from .marketbeat import scrape_many
+        from .scrape import write_outputs
 
         targets = [
             c
@@ -126,11 +120,18 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path in ("/", "/index.html"):
             try:
-                html = UI_FILE.read_bytes()
-            except FileNotFoundError:
+                html = _WEBUI.joinpath("index.html").read_bytes()
+            except (FileNotFoundError, OSError):
                 self._send(500, b"UI file webui/index.html not found", "text/plain; charset=utf-8")
                 return
             self._send(200, html, "text/html; charset=utf-8")
+        elif path in ("/icon.svg", "/favicon.svg"):
+            try:
+                svg = _WEBUI.joinpath("icon.svg").read_bytes()
+            except (FileNotFoundError, OSError):
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, svg, "image/svg+xml")
         elif path == "/api/data":
             self._send_json(200, load_view(DATA_DIR, CONFIG))
         elif path == "/api/search":
@@ -170,21 +171,27 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ---- desktop "app window" support -------------------------------------------
-# A dedicated Chromium profile so the window runs as its own browser process
-# (its lifetime controls the server) and never disturbs the user's main Chrome.
-APP_PROFILE = (
-    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    / "InSight"
-    / "chrome-profile"
-)
+# A dedicated Chrome profile (its lifetime controls the server) so the window
+# runs as its own browser process and never disturbs the user's main browser.
+
+
+def _playwright_cache() -> Path:
+    """Where Playwright downloads its browsers, per OS."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        return Path(base) / "ms-playwright"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
 
 
 def _find_chrome() -> str | None:
-    """Locate a Chromium-family binary for chromeless --app windows.
+    """Locate a Chromium-family binary for chromeless --app windows, on any OS.
 
-    Prefers a system Chrome/Chromium; falls back to the Chromium that
+    Prefers a system Chrome/Chromium/Edge; falls back to the Chromium that
     Playwright downloaded for the scraper so no extra install is needed.
     """
+    # 1) anything on PATH (covers Linux, and Windows/macOS when installers add it)
     for name in (
         "google-chrome",
         "google-chrome-stable",
@@ -192,15 +199,49 @@ def _find_chrome() -> str | None:
         "chromium-browser",
         "brave-browser",
         "microsoft-edge",
+        "chrome",
+        "msedge",
     ):
         found = shutil.which(name)
         if found:
             return found
-    cache = Path.home() / ".cache" / "ms-playwright"
+
+    # 2) well-known install locations per OS
+    candidates: list[Path] = []
+    if sys.platform == "win32":
+        prog = [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")),
+        ]
+        for p in prog:
+            candidates += [
+                Path(p) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(p) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(p) / "Chromium" / "Application" / "chrome.exe",
+            ]
+    elif sys.platform == "darwin":
+        candidates += [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+        ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+
+    # 3) fall back to Playwright's bundled Chromium (per-OS binary layout)
+    cache = _playwright_cache()
     if cache.is_dir():
-        hits = sorted(cache.glob("chromium-*/chrome-linux*/chrome"))
-        if hits:
-            return str(hits[-1])
+        for pattern in (
+            "chromium-*/chrome-linux*/chrome",
+            "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+            "chromium-*/chrome-win*/chrome.exe",
+        ):
+            hits = sorted(cache.glob(pattern))
+            if hits:
+                return str(hits[-1])
     return None
 
 
@@ -225,11 +266,11 @@ def _wait_until_up(url: str, timeout: float = 10.0) -> bool:
 
 def _open_app_window(chrome: str, url: str):
     """Open `url` as a chromeless desktop window and return the process."""
-    APP_PROFILE.mkdir(parents=True, exist_ok=True)
+    profile = paths.chrome_profile_dir()
     cmd = [
         chrome,
         f"--app={url}",
-        f"--user-data-dir={APP_PROFILE}",
+        f"--user-data-dir={profile}",
         "--class=InSight",
         "--no-first-run",
         "--no-default-browser-check",

@@ -1,13 +1,12 @@
 [Desktop Entry]
 # Template — install with ./install-desktop.sh, which substitutes the absolute
-# uv and repo paths for your machine into the placeholders below.
+# path to the installed `insight` command and icon into the placeholders below.
 Type=Application
 Name=InSight
 GenericName=Insider Transactions
 Comment=View insider stock transactions in a desktop window
-Exec=__UV__ run --script __REPO__/app.py --window
-Path=__REPO__
-Icon=__REPO__/webui/icon.svg
+Exec=__INSIGHT__ --window
+Icon=__ICON__
 Terminal=false
 Categories=Office;Finance;
 Keywords=insider;stocks;trading;finance;
