@@ -43,7 +43,7 @@ from pathlib import Path
 
 from . import paths
 from .aggregate import load_view
-from .issuers import add_to_watchlist, search_issuers
+from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
 # The UI lives inside the package (importlib.resources) so it is available when
 # installed globally with the source repo deleted.
@@ -166,6 +166,20 @@ class Handler(BaseHTTPRequestHandler):
                 )
             threading.Thread(target=_do_refresh, daemon=True).start()
             self._send_json(202, {"started": True})
+        else:
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def do_DELETE(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/watchlist":
+            qs = urllib.parse.parse_qs(parsed.query)
+            exchange = qs.get("exchange", [""])[0]
+            ticker = qs.get("ticker", [""])[0]
+            try:
+                removed, msg = remove_from_watchlist(CONFIG, exchange, ticker)
+                self._send_json(200 if removed else 404, {"removed": removed, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"removed": False, "msg": f"bad request: {e}"})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 

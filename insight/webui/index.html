@@ -61,6 +61,10 @@
   .company-head .sub { color:var(--muted); font-size:12px; }
   .pill-warn { color:var(--inst); border:1px solid var(--inst); border-radius:6px;
     font-size:11px; padding:1px 6px; }
+  .del-co { margin-left:auto; background:transparent; color:var(--muted);
+    border:1px solid var(--line); border-radius:6px; padding:2px 9px;
+    font-size:12px; line-height:1.4; cursor:pointer; }
+  .del-co:hover { border-color:var(--sell); color:var(--sell); }
   .grid {
     display:grid; gap:12px;
     grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
@@ -262,6 +266,8 @@ function renderCompany(c){
       <span class="ticker">${esc(c.exchange)}:${esc(c.ticker)}</span>
       <span class="sub">${c.insider_count} insiders · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
       ${warn}
+      <button class="del-co" title="Remove from watchlist"
+        data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}" data-name="${esc(c.issuer_name)}">✕ Remove</button>
     </div>
     ${body}
   </section>`;
@@ -351,6 +357,24 @@ async function addCandidate(c){
     if (d.added) await load();
   } catch(e){ toast("Add failed: " + e.message); }
 }
+
+async function removeCompany(exchange, ticker, name){
+  const label = `${name} (${exchange}:${ticker})`;
+  if (!confirm(`Remove ${label} from the watchlist?`)) return;
+  try {
+    const r = await fetch(
+      "/api/watchlist?exchange=" + encodeURIComponent(exchange) + "&ticker=" + encodeURIComponent(ticker),
+      { method:"DELETE" });
+    const d = await r.json();
+    toast(d.msg || (d.removed ? "Removed." : "Not removed."));
+    if (d.removed) await load();
+  } catch(e){ toast("Remove failed: " + e.message); }
+}
+
+document.getElementById("feed").addEventListener("click", e => {
+  const btn = e.target.closest(".del-co");
+  if (btn) removeCompany(btn.dataset.exch, btn.dataset.ticker, btn.dataset.name);
+});
 
 addq.addEventListener("input", () => {
   clearTimeout(searchTimer);

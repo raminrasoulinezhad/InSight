@@ -88,9 +88,10 @@ def _add_txn(box: dict, rec: dict) -> None:
 def build_view(records: list[dict], watchlist: list[dict]) -> dict:
     """Group records into companies -> insider boxes.
 
-    `watchlist` (companies.json entries) seeds the company list so issuers
-    with zero scraped transactions still appear (as empty cards), making
-    coverage gaps visible instead of silently absent.
+    `watchlist` (companies.json entries) defines which companies appear: issuers
+    with zero scraped transactions still show (as empty cards) to make coverage
+    gaps visible, and records for issuers not on the watchlist are ignored so a
+    removed company disappears instead of lingering from stale scraped data.
     """
     companies: dict[str, dict] = {}
 
@@ -113,14 +114,10 @@ def build_view(records: list[dict], watchlist: list[dict]) -> dict:
         key = company_key(rec.get("exchange", ""), rec.get("ticker", ""))
         comp = companies.get(key)
         if comp is None:
-            comp = companies[key] = {
-                "key": key,
-                "issuer_name": rec.get("issuer_name", key),
-                "exchange": (rec.get("exchange") or "").upper(),
-                "ticker": (rec.get("ticker") or "").upper(),
-                "confirmed": True,
-                "boxes_by_insider": {},
-            }
+            # The watchlist is the source of truth for what the app shows, so
+            # skip records for issuers not on it (e.g. one just removed, or an
+            # ad-hoc `--tickers` scrape). Their rows still live in the CSV/JSON.
+            continue
         # prefer a real scraped issuer name over the watchlist label
         if rec.get("issuer_name"):
             comp["issuer_name"] = rec["issuer_name"]

@@ -184,3 +184,25 @@ def add_to_watchlist(config_path, candidate: dict) -> tuple[bool, str]:
     )
     config_path.write_text(json.dumps(cfg, indent=2) + "\n")
     return True, f"Added {name} ({exchange}:{ticker})"
+
+
+def remove_from_watchlist(config_path, exchange: str, ticker: str) -> tuple[bool, str]:
+    """Remove a company from companies.json by EXCHANGE:TICKER. Returns (removed, msg)."""
+    exchange = (exchange or "").upper()
+    ticker = (ticker or "").upper()
+    if not (exchange and ticker):
+        return False, "missing exchange/ticker"
+
+    cfg = load_watchlist(config_path)
+    key = candidate_key(exchange, ticker)
+    companies = cfg.get("companies", [])
+    removed = next(
+        (c for c in companies if candidate_key(c.get("exchange", ""), c.get("ticker", "")) == key),
+        None,
+    )
+    if removed is None:
+        return False, f"{exchange}:{ticker} is not on the watchlist"
+
+    cfg["companies"] = [c for c in companies if c is not removed]
+    config_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    return True, f"Removed {removed.get('name') or key}"
