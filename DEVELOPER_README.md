@@ -72,6 +72,50 @@ fetching. The app's **Refresh** button always forces a fresh fetch. The app UI
 also filters transactions by a selectable window (1M/3M/6M/1Y/2Y) via
 `GET /api/data?months=N`.
 
+### Run it daily in the background (Linux / systemd)
+
+Because history accumulates across snapshots (above), running the scrape on a
+schedule is what deepens the window over time. On Linux a **systemd user timer**
+is the cleanest option — it runs once a day and, with `Persistent=true`, catches
+up on the next login if the machine was off at the trigger (so effectively:
+"when the machine is on, run once if it hasn't run today, else skip"). It runs
+while you are logged in; for a headless box, also `sudo loginctl enable-linger
+$USER`.
+
+`~/.config/systemd/user/insight-scrape.service`:
+
+```ini
+[Unit]
+Description=InSight daily insider-transaction scrape (broad TSE universe)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/insight-scrape --discover
+TimeoutStartSec=1800
+```
+
+`~/.config/systemd/user/insight-scrape.timer`:
+
+```ini
+[Unit]
+Description=Run the InSight scrape once per day (catches up if the machine was off)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now insight-scrape.timer   # install + start
+systemctl --user list-timers insight-scrape.timer    # when it next runs
+journalctl --user -u insight-scrape.service -n 30    # last run's log
+systemctl --user disable --now insight-scrape.timer  # remove/stop
+```
+
 The watchlist and all output live in a per-user app folder (created on first
 run), so nothing depends on the repo location:
 
