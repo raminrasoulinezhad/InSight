@@ -125,13 +125,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, b"UI file webui/index.html not found", "text/plain; charset=utf-8")
                 return
             self._send(200, html, "text/html; charset=utf-8")
-        elif path in ("/icon.svg", "/favicon.svg"):
+        elif path in ("/icon.png", "/favicon.ico", "/favicon.png"):
             try:
-                svg = _WEBUI.joinpath("icon.svg").read_bytes()
+                png = _WEBUI.joinpath("icon.png").read_bytes()
             except (FileNotFoundError, OSError):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
-            self._send(200, svg, "image/svg+xml")
+            self._send(200, png, "image/png")
         elif path == "/api/data":
             self._send_json(200, load_view(DATA_DIR, CONFIG))
         elif path == "/api/search":

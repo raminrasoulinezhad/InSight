@@ -42,6 +42,11 @@ playwright-report/
 *.swo
 *~
 
+# ---- Icon source ----
+# High-res source art; the committed icons (insight/webui/icon*.png) and the
+# README banner (assets/logo.png) are derived from it.
+/icon.png
+
 # ---- OS cruft ----
 .DS_Store
 Thumbs.db

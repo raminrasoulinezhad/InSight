@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="InSight — Uncovering Insider Intelligence" width="360" />
+</p>
+
 # InSight — Insider Transaction Collector
 
 Proof of concept that collects **insider transactions** (individuals, officers,

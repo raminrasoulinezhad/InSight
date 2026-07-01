@@ -19,7 +19,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons"
 DEST="$APPS/insight.desktop"
-ICON="$ICONS/InSight.svg"
+ICON="$ICONS/InSight.png"
 
 refresh_db() {
   command -v update-desktop-database >/dev/null 2>&1 &&
@@ -42,7 +42,7 @@ fi
 
 # Copy the icon somewhere stable so the launcher survives repo deletion.
 mkdir -p "$ICONS"
-cp "$REPO/insight/webui/icon.svg" "$ICON"
+cp "$REPO/insight/webui/icon-512.png" "$ICON"
 
 mkdir -p "$APPS"
 sed -e "s|__INSIGHT__|$INSIGHT|g" -e "s|__ICON__|$ICON|g" "$REPO/insight.desktop" >"$DEST"
