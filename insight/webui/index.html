@@ -313,8 +313,10 @@ function setStats(a, la, b, lb, c, lc){
 function setMeta(d){
   document.getElementById("datameta").textContent =
     d.data_date ? `data as of ${d.data_date}` : "no data file yet — run a refresh";
+  const hist = d.history_files > 1
+    ? ` · merged ${d.history_files} daily snapshots (history accumulates as you refresh)` : "";
   document.getElementById("foot").textContent =
-    `Source: ${d.data_file||"none"} · normalized insider transactions · reload after re-scraping to refresh.`;
+    `Source: ${d.data_file||"none"}${hist} · normalized insider transactions · reload after re-scraping to refresh.`;
 }
 
 function render(){

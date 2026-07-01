@@ -106,6 +106,14 @@ data/by_ticker/TSE_FNV_YYYY-MM-DD.csv one CSV per company
 
 (Use `insight-scrape --outdir ./data` to write to an explicit folder instead.)
 
+**History accumulates.** Each scrape captures only MarketBeat's most-recent page
+(no deep backfill), so a single file spans limited history. The app therefore
+merges **all** `insider_*.json` snapshots into one deduplicated view (newest
+scrape wins on an identical-transaction collision), and the "Last N months"
+filter runs over that union. Running the scraper regularly (e.g. via cron) is
+what deepens the window over time — so **don't delete old dated files** if you
+want the history; they are the history.
+
 ### Example summary
 
 ```
@@ -151,7 +159,8 @@ it in a one-line `.command` file or an Automator app; on Windows create a
 Start-Menu shortcut whose target is `insight --window` (the `insight.exe`
 shim lives in the uv tools bin, shown by `uv tool dir`).
 
-It reads the newest `data/insider_YYYY-MM-DD.json` from the app folder. Re-run
+It reads and merges all `data/insider_YYYY-MM-DD.json` snapshots from the app
+folder (deduplicated; see "History accumulates" above). Re-run
 `insight-scrape` to refresh the data, then reload the page. Watchlist companies
 with no data (e.g. uncovered TSX-V names) appear as empty cards so coverage gaps
 are visible.

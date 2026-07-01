@@ -332,12 +332,53 @@ def build_people_view(records: list[dict]) -> dict:
     }
 
 
+def _txn_key(r: dict) -> tuple:
+    """Stable identity of a single transaction, for cross-file dedup.
+
+    Two scrapes of the same underlying filing normalize to identical fields, so
+    keying on all of (issuer, insider, date, type, shares, value) collapses the
+    re-fetched rows while preserving genuinely distinct trades. A rare MarketBeat
+    revision to an existing row would key differently and appear as an extra row.
+    """
+    return (
+        (r.get("exchange") or "").upper(),
+        (r.get("ticker") or "").upper(),
+        (r.get("insider_name") or "").strip().lower(),
+        (r.get("insider_role") or "").strip().lower(),
+        r.get("transaction_date"),
+        (r.get("transaction_type") or "").strip().lower(),
+        r.get("shares"),
+        r.get("total_value"),
+    )
+
+
+def load_all_records(data_dir: Path) -> list[dict]:
+    """Merge every dated data file into one deduplicated record set.
+
+    Each scrape writes only a snapshot of MarketBeat's most-recent page, so no
+    single file spans much history. Merging all of them — iterating oldest →
+    newest so a newer scrape wins on an identical-transaction collision — lets
+    the app's window deepen over time as the scraper runs. This is the only free
+    way to accumulate a multi-year history (MarketBeat serves no deep backfill).
+    """
+    merged: dict[tuple, dict] = {}
+    for path in sorted(glob(str(data_dir / "insider_*.json"))):
+        try:
+            recs = json.loads(Path(path).read_text())
+        except (ValueError, OSError):
+            continue  # skip a corrupt/unreadable snapshot rather than fail
+        for r in recs:
+            merged[_txn_key(r)] = r
+    return list(merged.values())
+
+
 def _load_records(
     data_dir: Path, config_path: Path, months: int | None
-) -> tuple[list[dict], list[dict], Path | None]:
+) -> tuple[list[dict], list[dict]]:
     """Shared loader for the company and people views.
 
-    Returns (records, watchlist, data_file). `months`, when given, keeps only
+    Returns (records, watchlist). Records are the deduplicated union of ALL
+    dated snapshots (see load_all_records). `months`, when given, keeps only
     transactions dated within the last N calendar months so downstream
     aggregates reflect the selected window.
     """
@@ -348,34 +389,34 @@ def _load_records(
             c for c in cfg.get("companies", []) if not str(c.get("name", "")).startswith("_")
         ]
 
-    records: list[dict] = []
-    data_file = latest_data_file(data_dir)
-    if data_file:
-        records = json.loads(data_file.read_text())
+    records = load_all_records(data_dir)
 
     if months:
         cutoff = months_ago(date.today(), int(months)).isoformat()
         records = [r for r in records if (r.get("transaction_date") or "") >= cutoff]
 
-    return records, watchlist, data_file
+    return records, watchlist
 
 
-def _stamp(view: dict, data_file: Path | None, months: int | None) -> dict:
-    """Attach the shared data-file / date / range metadata to a view."""
+def _stamp(view: dict, data_dir: Path, months: int | None) -> dict:
+    """Attach shared metadata: newest snapshot date + how many were merged."""
+    files = sorted(glob(str(data_dir / "insider_*.json")))
+    data_file = Path(files[-1]) if files else None
     view["data_file"] = data_file.name if data_file else None
     view["data_date"] = data_file.stem.replace("insider_", "") if data_file else None
     view["range_months"] = int(months) if months else None
+    view["history_files"] = len(files)
     return view
 
 
 def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
-    """Load the newest data file + watchlist and build the company view."""
-    records, watchlist, data_file = _load_records(data_dir, config_path, months)
-    return _stamp(build_view(records, watchlist), data_file, months)
+    """Build the company view from the merged history + watchlist."""
+    records, watchlist = _load_records(data_dir, config_path, months)
+    return _stamp(build_view(records, watchlist), data_dir, months)
 
 
 def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
-    """Load the newest data file and build the people view (spans all scraped
+    """Build the people view from the merged history (spans all scraped
     companies, not just the watchlist)."""
-    records, _watchlist, data_file = _load_records(data_dir, config_path, months)
-    return _stamp(build_people_view(records), data_file, months)
+    records, _watchlist = _load_records(data_dir, config_path, months)
+    return _stamp(build_people_view(records), data_dir, months)
