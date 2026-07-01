@@ -3,6 +3,17 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Noncommercial use permitted. Commercial use requires a separate license;
 # contact the author. Provided "as is", without warranty of any kind.
+#
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "playwright==1.60.0",
+#   "playwright-stealth==2.0.3",
+# ]
+# ///
+# Run with `uv run --script scrape_insider.py` — uv provisions the deps from
+# cache. The Chromium browser binary is a separate one-time download:
+#   uv run --with playwright playwright install chromium
 
 """InSight — collect insider transactions for a watchlist of stocks.
 

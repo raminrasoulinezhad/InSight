@@ -16,20 +16,35 @@ CSV/JSON for downstream processing.
 
 ## Quick start
 
+The scripts carry their Python deps inline ([PEP 723](https://peps.python.org/pep-0723/)),
+so [`uv`](https://docs.astral.sh/uv/) provisions and caches an environment on
+first run — no manual virtualenv to create or activate.
+
+```bash
+# one-time: download the Chromium browser binary Playwright drives
+# (uv manages Python packages; the browser is a separate ~150 MB cache)
+uv run --with playwright playwright install chromium
+
+# scrape the watchlist in companies.json
+uv run --script scrape_insider.py
+
+# or ad-hoc tickers (EXCHANGE:TICKER)
+uv run --script scrape_insider.py --tickers TSE:FNV TSE:CNQ NYSE:AEO
+
+# show the browser (useful if your IP gets a bot challenge)
+uv run --script scrape_insider.py --headful
+```
+
+<details>
+<summary>Prefer pip + a virtualenv?</summary>
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
-
-# scrape the watchlist in companies.json
 python scrape_insider.py
-
-# or ad-hoc tickers (EXCHANGE:TICKER)
-python scrape_insider.py --tickers TSE:FNV TSE:CNQ NYSE:AEO
-
-# show the browser (useful if your IP gets a bot challenge)
-python scrape_insider.py --headful
 ```
+</details>
 
 ### Output (per run, stamped with the date)
 
@@ -57,9 +72,25 @@ and sold, a buy↔sell ratio bar, and who was trading (name, role, and an
 individual / institution / buyback badge).
 
 ```bash
-python app.py                 # serve on http://127.0.0.1:8765 and open a browser
-python app.py --port 9000
-python app.py --no-browser    # headless box: open the URL yourself
+uv run --script app.py            # serve on http://127.0.0.1:8765 + open a browser
+uv run --script app.py --window   # open as a standalone desktop window (chromeless)
+uv run --script app.py --port 9000
+uv run --script app.py --no-browser   # headless box: open the URL yourself
+```
+
+### Desktop launcher
+
+`--window` opens the UI as a chromeless desktop window (via Chrome's `--app=`
+mode) whose lifetime owns the server — close the window and the server stops.
+The window runs in its own dedicated Chrome profile so it never disturbs your
+main browser.
+
+Install it as a normal app (icon in the app grid) that runs
+`uv run --script app.py --window`:
+
+```bash
+./install-desktop.sh              # add InSight to your application menu
+./install-desktop.sh --uninstall  # remove it
 ```
 
 It reads the newest `data/insider_YYYY-MM-DD.json`. Re-run `scrape_insider.py`
@@ -115,7 +146,7 @@ When a name is ambiguous you choose — the app never silently guesses.
 The transactions need only a 1–2 day freshness, so a daily cron is plenty:
 
 ```cron
-30 6 * * *  cd /home/ramin/InSight && ./.venv/bin/python scrape_insider.py >> data/cron.log 2>&1
+30 6 * * *  cd /home/ramin/workspaces/InSight && ~/.local/bin/uv run --script scrape_insider.py >> data/cron.log 2>&1
 ```
 
 Each run writes a new date-stamped file, so you accumulate a history you can

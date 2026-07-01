@@ -3,6 +3,18 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Noncommercial use permitted. Commercial use requires a separate license;
 # contact the author. Provided "as is", without warranty of any kind.
+#
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "playwright==1.60.0",
+#   "playwright-stealth==2.0.3",
+# ]
+# ///
+# The app UI is stdlib-only; the deps above are for the in-app "Refresh"
+# button, which re-scrapes via insight.marketbeat (Playwright). `uv run`
+# provisions them from cache. The Chromium *browser binary* is separate:
+#   uv run --with playwright playwright install chromium   # one-time
 
 """InSight desktop/web app — view insider transactions in a window.
 

@@ -1,4 +1,8 @@
 # Development tooling (not needed to run the app/scraper).
-#   python -m pip install -r requirements-dev.txt
-#   pre-commit install
+#
+# Recommended (matches this repo's setup):
+#   uv tool install pre-commit && pre-commit install
+#
+# Or with pip into a venv:
+#   python -m pip install -r requirements-dev.txt && pre-commit install
 pre-commit>=3.7
