@@ -32,7 +32,9 @@ artifacts = [
 include = [
     "insight",
     "README.md",
+    "DEVELOPER_README.md",
     "REPORT.md",
+    "assets",
     "install-desktop.sh",
     "insight.desktop",
 ]

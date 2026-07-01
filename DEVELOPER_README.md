@@ -1,0 +1,264 @@
+<p align="center">
+  <img src="assets/logo.png" alt="InSight — Uncovering Insider Intelligence" width="360" />
+</p>
+
+# InSight — Insider Transaction Collector
+
+Proof of concept that collects **insider transactions** (individuals, officers,
+directors, and the **issuer itself** / institutions) for a watchlist of
+Canadian (and US) stocks, normalizes them into one schema, and writes daily
+CSV/JSON for downstream processing.
+
+## TL;DR — current status
+
+- ✅ **Working today** against **MarketBeat** per-stock insider-trades pages.
+- ✅ Verified live for: Franco-Nevada (FNV), Canadian Natural Resources (CNQ),
+  Wheaton Precious Metals (WPM), Suncor (SU), Athabasca Oil (ATH),
+  American Eagle Outfitters (AEO).
+- ⚠️ **SEDI (the authoritative Canadian source) could not be used from this
+  machine** — see [Why not SEDI directly?](#why-not-sedi-directly) below.
+
+## Quick start
+
+InSight installs as a normal application with a single command via
+[`uv`](https://docs.astral.sh/uv/) (one cross-platform tool — the same steps
+work on **Linux, macOS, and Windows**). It ships two commands: `insight` (the
+app window) and `insight-scrape` (the collector). After install the source repo
+is no longer needed and can be deleted.
+
+```bash
+# 1. install uv (once) — see https://docs.astral.sh/uv/getting-started/install/
+#    Linux/macOS:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#    Windows:      powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. install InSight from a clone (or `git+<url>` to skip cloning)
+uv tool install .
+# uv tool install git+https://github.com/<you>/InSight
+
+# 3. one-time: download the Chromium browser the scraper drives (~150 MB cache)
+uv tool run --from playwright playwright install chromium
+```
+
+Then, from anywhere:
+
+```bash
+# scrape the watchlist
+insight-scrape
+
+# or ad-hoc tickers (EXCHANGE:TICKER)
+insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
+
+# show the browser (useful if your IP gets a bot challenge)
+insight-scrape --headful
+```
+
+The watchlist and all output live in a per-user app folder (created on first
+run), so nothing depends on the repo location:
+
+| OS | app folder |
+|---|---|
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/InSight` |
+| macOS | `~/Library/Application Support/InSight` |
+| Windows | `%LOCALAPPDATA%\InSight` |
+
+<details>
+<summary>Run from a checkout without installing (dev)</summary>
+
+`uv run` reads <code>pyproject.toml</code> and provisions the environment on the
+fly — no manual virtualenv:
+
+```bash
+uv run insight-scrape --tickers TSE:FNV
+uv run insight --no-browser
+```
+
+Prefer pip? `pip install .` (or `pip install -e .`) exposes the same
+`insight` / `insight-scrape` commands.
+</details>
+
+### Output (per run, stamped with the date, under the app folder)
+
+```
+data/insider_YYYY-MM-DD.json          all records (source-agnostic schema)
+data/insider_YYYY-MM-DD.csv           same, flat CSV
+data/by_ticker/TSE_FNV_YYYY-MM-DD.csv one CSV per company
+```
+
+(Use `insight-scrape --outdir ./data` to write to an explicit folder instead.)
+
+### Example summary
+
+```
+TSE:FNV    8 txns  (buys=0 sells=8 institutional=0)  latest=2025-11-26
+TSE:CNQ   15 txns  (buys=2 sells=13 institutional=0) latest=2026-03-24
+TSE:ATH   27 txns  (buys=27 sells=0 institutional=27) latest=2026-05-29   <- issuer buyback
+```
+
+## The application window
+
+A self-contained local web app (the server is Python stdlib only — no X11
+display required) renders the data as a scrollable feed of **boxes**, one per
+insider/entity, grouped under each watchlist company. Each box shows the
+buy / sell / total transaction counts, the shares and dollar amounts bought
+and sold, a buy↔sell ratio bar, and who was trading (name, role, and an
+individual / institution / buyback badge).
+
+```bash
+insight              # serve on http://127.0.0.1:8765 + open a browser
+insight --window     # open as a standalone desktop window (chromeless)
+insight --port 9000
+insight --no-browser # headless box: open the URL yourself
+```
+
+### Desktop launcher
+
+`--window` opens the UI as a chromeless desktop window (via Chrome's `--app=`
+mode) whose lifetime owns the server — close the window and the server stops.
+The window runs in its own dedicated Chrome profile so it never disturbs your
+main browser. It finds Chrome, Edge, Chromium, or Brave automatically (and
+falls back to Playwright's bundled Chromium) on Linux, macOS, and Windows.
+
+**Linux** — install it as a real app (icon in the app grid) that launches the
+installed `insight` command:
+
+```bash
+./install-desktop.sh              # add InSight to your application menu
+./install-desktop.sh --uninstall  # remove it
+```
+
+**macOS / Windows** — run `insight --window` directly, or pin it: on macOS wrap
+it in a one-line `.command` file or an Automator app; on Windows create a
+Start-Menu shortcut whose target is `insight --window` (the `insight.exe`
+shim lives in the uv tools bin, shown by `uv tool dir`).
+
+It reads the newest `data/insider_YYYY-MM-DD.json` from the app folder. Re-run
+`insight-scrape` to refresh the data, then reload the page. Watchlist companies
+with no data (e.g. uncovered TSX-V names) appear as empty cards so coverage gaps
+are visible.
+
+Search filters by company/ticker/insider; the segmented control filters to net
+buyers, net sellers, or institutions.
+
+## The normalized record
+
+Every source is mapped to one schema (`insight/models.py`):
+
+| field | meaning |
+|---|---|
+| `issuer_name`, `exchange`, `ticker` | the company the trade is in |
+| `insider_name`, `insider_role` | who traded (e.g. "Director", "Officer", "Insider") |
+| `entity_type` | `individual` or `institution` (companies, funds, the issuer) |
+| `is_issuer_buyback` | the company trading its own shares |
+| `transaction_date`, `transaction_type` | ISO date, Buy/Sell/… |
+| `shares`, `avg_price`, `total_value`, `currency` | the numbers (CAD/USD) |
+| `source`, `source_url`, `scraped_at` | provenance |
+
+## Watchlist & adding companies by name
+
+The watchlist (`companies.json`) is keyed by **full legal company name** — the
+stable identifier. Tickers are kept as a secondary field (MarketBeat needs
+them) but are *not* the key, because they collide across exchanges and listings
+(e.g. `NFG` is New Found Gold in Canada but National Fuel Gas in the US;
+`AEO`/`AE` is American Eagle the apparel retailer vs. the gold explorer).
+
+```json
+{ "name": "New Found Gold Corp.", "exchange": "TSXV", "ticker": "NFG", "country": "CA", "confirmed": true }
+```
+
+Exchange codes are MarketBeat's: `TSE` (Toronto), `TSXV` (TSX Venture),
+`NYSE`/`NASDAQ` (US).
+
+**Add by name in the app.** The header has an "Add a company by name" box. As
+you type, `insight/issuers.py` resolves the name to issuer candidates and shows
+a picker; you select the right listing and it's appended to `companies.json`.
+When a name is ambiguous you choose — the app never silently guesses.
+
+- Resolver backend: TradingView's public symbol-search endpoint (reachable from
+  this host; covers TSX / TSX-V / CSE / US). It is isolated behind
+  `search_issuers()` so the authoritative **SEDI issuer search** can replace it
+  later without touching the app or watchlist code.
+- API: `GET /api/search?q=<name>` → candidates; `POST /api/watchlist` → add a
+  picked candidate.
+
+## Run it daily
+
+The transactions need only a 1–2 day freshness, so a daily schedule is plenty.
+
+**Linux/macOS (cron)** — use the absolute path to the installed command
+(`which insight-scrape`):
+
+```cron
+30 6 * * *  ~/.local/bin/insight-scrape >> ~/.local/share/InSight/cron.log 2>&1
+```
+
+**Windows (Task Scheduler)** — create a daily task running `insight-scrape`
+(find its path with `where insight-scrape`).
+
+Each run writes a new date-stamped file, so you accumulate a history you can
+load into a database or diff day-over-day to detect *new* filings.
+
+## Why not SEDI directly?
+
+SEDI (`sedi.ca`) is the official Canadian System for Electronic Disclosure by
+Insiders — the authoritative, near-real-time source (filings public within
+~5 min). It's where MarketBeat and others ultimately get their data. We tried
+to drive it with a headless browser and hit hard walls, **verified live from
+this host**:
+
+- **SEDI** sits behind **ShieldSquare / PerfDrive** bot protection and serves
+  an **hCaptcha** challenge to automated traffic. After a couple of requests
+  the IP was flagged and *every* page (even the welcome page) returned the
+  captcha. This machine's egress IP is a **hosting/VPS IP**, which anti-bot
+  systems score as high-risk — so headless *and* headful automation get
+  challenged regardless.
+- **canadianinsider.com** and **insidertracking.com** (SEDI aggregators) are
+  behind **Cloudflare** bot protection (HTTP 403 "Just a moment…").
+- **MarketBeat** per-stock pages are reachable → used here.
+
+### Getting the authoritative SEDI data later
+
+SEDI scraping *does* work from a normal browser on a residential connection
+(that's how the community [SEDI bookmarklet](https://tomcardoso.github.io/sedi-bookmarklet/)
+works). To productionize the SEDI path, pick one:
+
+1. **Residential / Canadian proxy** in front of the Playwright scraper (most
+   robust; the navigation + table-parsing code is straightforward to add as a
+   second source behind the same `InsiderTransaction` schema).
+2. **Run the scraper on a residential machine** in headful mode and solve the
+   one-time captcha manually; reuse the browser profile so the session sticks.
+3. **A captcha-solving service** (e.g. 2Captcha) — costs money, gray area.
+
+## Known limitations of the MarketBeat source
+
+- **Coverage gap:** small **TSX-Venture** issuers are *not* covered (e.g.
+  *American Eagle Gold Corp*, TSXV:AE returned no page — only the US apparel
+  retailer *American Eagle Outfitters*, NYSE:AEO, exists on MarketBeat). For
+  micro/small-cap TSX-V names you will need SEDI.
+- **Freshness/detail:** MarketBeat aggregates and may lag SEDI by days, and it
+  drops SEDI's richer fields (ownership type, nature-of-transaction codes,
+  post-transaction balance).
+- **Terms of use:** scraping MarketBeat may conflict with their ToS. For
+  production, prefer a licensed feed or the authoritative SEDI route.
+
+## Layout
+
+```
+pyproject.toml          packaging + the `insight` / `insight-scrape` commands
+install-desktop.sh       Linux app-menu launcher installer
+insight/
+  app.py                the application window (local web server + UI)
+  scrape.py             scraper CLI entry point (config, output, summary)
+  paths.py              per-user data/config/profile dirs (cross-platform)
+  models.py             InsiderTransaction schema + parsing helpers
+  marketbeat.py         MarketBeat scraper (Playwright + stealth)
+  aggregate.py          flat records -> per-company / per-insider boxes
+  issuers.py            name -> issuer-candidate resolver (+ watchlist add)
+  companies.default.json  seed watchlist (copied to the app folder on first run)
+  webui/index.html      the single-page UI (scrollable insider boxes)
+```
+
+The editable watchlist and dated outputs live in the per-user app folder (see
+[Quick start](#quick-start)), not in the repo.
+
+Adding a new source = a new module that yields `InsiderTransaction` objects;
+nothing downstream changes.
