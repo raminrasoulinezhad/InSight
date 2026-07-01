@@ -42,7 +42,7 @@ from importlib import resources
 from pathlib import Path
 
 from . import paths
-from .aggregate import load_view
+from .aggregate import load_people_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
 # The UI lives inside the package (importlib.resources) so it is available when
@@ -134,11 +134,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
             self._send(200, png, "image/png")
-        elif path == "/api/data":
+        elif path in ("/api/data", "/api/people"):
             qs = urllib.parse.parse_qs(parsed.query)
             m = qs.get("months", [""])[0]
             months = int(m) if m.isdigit() and int(m) > 0 else None
-            self._send_json(200, load_view(DATA_DIR, CONFIG, months=months))
+            view = (load_people_view if path == "/api/people" else load_view)(
+                DATA_DIR, CONFIG, months=months
+            )
+            self._send_json(200, view)
         elif path == "/api/search":
             q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
             try:

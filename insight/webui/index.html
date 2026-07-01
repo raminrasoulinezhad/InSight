@@ -32,7 +32,14 @@
   .refresh-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
   .refresh-btn:disabled { opacity:.6; cursor:progress; }
   .refresh-btn.spin { animation:none; }
-  .stats { display:flex; gap:18px; margin-top:8px; flex-wrap:wrap; }
+  .tabs { display:flex; gap:4px; margin-top:12px; border-bottom:1px solid var(--line); }
+  .tabs button {
+    background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent;
+    padding:8px 16px; font-size:14px; cursor:pointer; margin-bottom:-1px;
+  }
+  .tabs button:hover { color:var(--text); }
+  .tabs button.active { color:var(--text); border-bottom-color:var(--accent); }
+  .stats { display:flex; gap:18px; margin-top:12px; flex-wrap:wrap; }
   .stat b { color:var(--text); font-size:16px; }
   .stat span { color:var(--muted); font-size:12px; margin-left:4px; }
   .controls { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
@@ -139,10 +146,14 @@
     <button id="refresh" class="refresh-btn">↻ Refresh data</button>
     <span class="meta" id="refreshmsg"></span>
   </div>
+  <div class="tabs" id="tabs">
+    <button data-view="companies" class="active">Companies</button>
+    <button data-view="people">People</button>
+  </div>
   <div class="stats">
-    <div class="stat"><b id="s-cov">–</b><span>companies with activity</span></div>
-    <div class="stat"><b id="s-txn">–</b><span>transactions</span></div>
-    <div class="stat"><b id="s-co">–</b><span>on watchlist</span></div>
+    <div class="stat"><b id="s-cov">–</b><span id="l-cov">companies with activity</span></div>
+    <div class="stat"><b id="s-txn">–</b><span id="l-txn">transactions</span></div>
+    <div class="stat"><b id="s-co">–</b><span id="l-co">on watchlist</span></div>
   </div>
   <div class="controls">
     <input type="search" id="q" placeholder="Filter by company, ticker, or insider name…" />
@@ -186,7 +197,7 @@ const fmtMoney = (v, cur) => {
 };
 const fmtShares = n => !n ? "0" : n.toLocaleString();
 
-let STATE = { data:null, q:"", filter:"all", months:24 };
+let STATE = { view:"companies", data:null, people:null, q:"", filter:"all", months:24 };
 
 function entityKind(box){
   if (box.is_issuer_buyback) return "buyback";
@@ -283,20 +294,115 @@ function renderCompany(c){
   </section>`;
 }
 
+function setStats(a, la, b, lb, c, lc){
+  document.getElementById("s-cov").textContent = a; document.getElementById("l-cov").textContent = la;
+  document.getElementById("s-txn").textContent = b; document.getElementById("l-txn").textContent = lb;
+  document.getElementById("s-co").textContent = c;  document.getElementById("l-co").textContent = lc;
+}
+
+function setMeta(d){
+  document.getElementById("datameta").textContent =
+    d.data_date ? `data as of ${d.data_date}` : "no data file yet — run a refresh";
+  document.getElementById("foot").textContent =
+    `Source: ${d.data_file||"none"} · normalized insider transactions · reload after re-scraping to refresh.`;
+}
+
 function render(){
+  if (STATE.view === "people") return renderPeople();
+  return renderCompanies();
+}
+
+function renderCompanies(){
   const d = STATE.data;
   if (!d){ return; }
-  document.getElementById("s-cov").textContent = d.covered_companies;
-  document.getElementById("s-txn").textContent = d.total_transactions;
-  document.getElementById("s-co").textContent = d.total_companies;
-  document.getElementById("datameta").textContent =
-    d.data_date ? `data as of ${d.data_date}` : "no data file yet — run scrape_insider.py";
-
+  setStats(d.covered_companies, "companies with activity",
+           d.total_transactions, "transactions",
+           d.total_companies, "on watchlist");
+  setMeta(d);
   const html = d.companies.map(renderCompany).join("");
   document.getElementById("feed").innerHTML =
     html.trim() ? html : `<div class="nodata">Nothing matches your filter.</div>`;
-  document.getElementById("foot").textContent =
-    `Source: ${d.data_file||"none"} · normalized insider transactions · reload after re-scraping to refresh.`;
+}
+
+/* ---- People tab: same records, grouped by insider across companies ---- */
+function personMatchesQuery(p){
+  const q = STATE.q.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [p.insider_name, (p.roles||[]).join(" "),
+               ...(p.companies||[]).flatMap(c => [c.issuer_name, c.ticker, c.exchange])]
+              .join(" ").toLowerCase();
+  return hay.includes(q);
+}
+
+function renderPersonCompany(c){
+  const total = (c.buy_value||0) + (c.sell_value||0);
+  const buyPct = total ? (c.buy_value/total*100) : (c.buy_count? 100:0);
+  const sellPct = total ? (c.sell_value/total*100) : (c.sell_count?100:0);
+  const cur = c.currency || "";
+  return `
+  <div class="card">
+    <div class="who">
+      <div>
+        <div class="nm">${esc(c.issuer_name)}</div>
+        <div class="role">${esc(c.exchange)}:${esc(c.ticker)}</div>
+      </div>
+    </div>
+    <div class="bar">
+      <div class="b" style="width:${buyPct}%"></div>
+      <div class="s" style="width:${sellPct}%"></div>
+    </div>
+    <div class="counts">
+      <span class="chip buy"><span class="n">${c.buy_count}</span> buys</span>
+      <span class="chip sell"><span class="n">${c.sell_count}</span> sells</span>
+      <span class="chip"><span class="n">${c.txn_count}</span> txns</span>
+    </div>
+    <div class="amounts">
+      <div class="amt buy">
+        <div class="lbl">Bought</div>
+        <div class="val">${fmtMoney(c.buy_value, cur)}</div>
+        <div class="sh">${fmtShares(c.buy_shares)} sh</div>
+      </div>
+      <div class="amt sell">
+        <div class="lbl">Sold</div>
+        <div class="val">${fmtMoney(c.sell_value, cur)}</div>
+        <div class="sh">${fmtShares(c.sell_shares)} sh</div>
+      </div>
+    </div>
+    <div class="foot">
+      <span>net ${c.net_value>=0?'+':''}${fmtMoney(c.net_value, cur)}</span>
+      <span>latest ${c.latest_date||"—"}</span>
+    </div>
+  </div>`;
+}
+
+function renderPerson(p){
+  if (!boxMatchesFilter(p) || !personMatchesQuery(p)) return "";
+  const kind = p.entity_type === "institution" ? "institution" : "individual";
+  const roles = (p.roles||[]).join(", ") || "—";
+  const cur = p.currency || "";
+  const nCo = p.company_count === 1 ? "1 company" : `${p.company_count} companies`;
+  return `
+  <section class="company">
+    <div class="company-head">
+      <span class="name">${esc(p.insider_name)}</span>
+      <span class="badge ${kind}">${kind}</span>
+      <span class="sub">${esc(roles)} · ${nCo} · ${p.txn_count} txns${p.latest_date? " · latest "+p.latest_date : ""}
+        · net ${p.net_value>=0?'+':''}${fmtMoney(p.net_value, cur)}</span>
+    </div>
+    <div class="grid">${p.companies.map(renderPersonCompany).join("")}</div>
+  </section>`;
+}
+
+function renderPeople(){
+  const d = STATE.people;
+  if (!d){ return; }
+  setStats(d.total_people, "insiders",
+           d.total_transactions, "transactions",
+           d.total_companies, "companies traded");
+  setMeta(d);
+  const html = d.people.map(renderPerson).join("");
+  document.getElementById("feed").innerHTML =
+    html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`;
 }
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
@@ -304,8 +410,10 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
 
 async function load(){
   try {
-    const r = await fetch("/api/data?months=" + STATE.months);
-    STATE.data = await r.json();
+    const url = STATE.view === "people" ? "/api/people" : "/api/data";
+    const r = await fetch(url + "?months=" + STATE.months);
+    const d = await r.json();
+    if (STATE.view === "people") STATE.people = d; else STATE.data = d;
     render();
   } catch(e){
     document.getElementById("feed").innerHTML =
@@ -447,6 +555,19 @@ document.querySelectorAll("#filter button").forEach(b => {
     document.querySelectorAll("#filter button").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     STATE.filter = b.dataset.f; render();
+  });
+});
+document.querySelectorAll("#tabs button").forEach(b => {
+  b.addEventListener("click", () => {
+    if (b.classList.contains("active")) return;
+    document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    STATE.view = b.dataset.view;
+    document.getElementById("q").placeholder = STATE.view === "people"
+      ? "Filter by insider name, company, or ticker…"
+      : "Filter by company, ticker, or insider name…";
+    document.getElementById("feed").innerHTML = `<div class="nodata">Loading…</div>`;
+    load();
   });
 });
 

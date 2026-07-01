@@ -174,12 +174,167 @@ def build_view(records: list[dict], watchlist: list[dict]) -> dict:
     }
 
 
-def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
-    """Load the newest data file + watchlist and build the UI view.
+# ---- people view: same records, grouped by insider across companies ----------
+# The company view answers "who traded THIS company?"; the people view answers
+# "what did THIS person trade, across every watchlist company?". It is a pure
+# re-slice of the same records — no extra scraping — so its coverage is exactly
+# the companies on the watchlist.
 
-    `months`, when given, keeps only transactions dated within the last N
-    calendar months, so the aggregated buy/sell counts and totals reflect the
-    selected window.
+
+def _person_key(name: str) -> str:
+    """Collapse case/whitespace so the same insider merges across companies."""
+    return " ".join((name or "").split()).lower()
+
+
+def _empty_person(name: str, entity_type: str) -> dict:
+    return {
+        "insider_name": name,
+        "entity_type": entity_type,
+        "roles": [],
+        "txn_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "other_count": 0,
+        "buy_shares": 0,
+        "sell_shares": 0,
+        "buy_value": 0.0,
+        "sell_value": 0.0,
+        "net_value": 0.0,
+        "currency": "",
+        "latest_date": None,
+        "company_count": 0,
+        "companies_by_key": {},
+    }
+
+
+def _empty_person_company(key: str, issuer_name: str, exchange: str, ticker: str) -> dict:
+    return {
+        "key": key,
+        "issuer_name": issuer_name,
+        "exchange": exchange,
+        "ticker": ticker,
+        "txn_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "buy_shares": 0,
+        "sell_shares": 0,
+        "buy_value": 0.0,
+        "sell_value": 0.0,
+        "net_value": 0.0,
+        "currency": "",
+        "latest_date": None,
+    }
+
+
+def _accumulate(agg: dict, rec: dict) -> None:
+    """Fold one record's buy/sell numbers into a person or per-company aggregate."""
+    ttype = (rec.get("transaction_type") or "").lower()
+    shares = rec.get("shares") or 0
+    value = rec.get("total_value") or 0.0
+    agg["txn_count"] += 1
+    if "buy" in ttype:
+        agg["buy_count"] += 1
+        agg["buy_shares"] += shares
+        agg["buy_value"] += value
+        agg["net_value"] += value
+    elif "sell" in ttype:
+        agg["sell_count"] += 1
+        agg["sell_shares"] += shares
+        agg["sell_value"] += value
+        agg["net_value"] -= value
+    else:
+        agg.setdefault("other_count", 0)
+        agg["other_count"] += 1
+    if rec.get("currency") and not agg["currency"]:
+        agg["currency"] = rec["currency"]
+    d = rec.get("transaction_date")
+    if d and (agg["latest_date"] is None or d > agg["latest_date"]):
+        agg["latest_date"] = d
+
+
+def build_people_view(records: list[dict], watchlist: list[dict]) -> dict:
+    """Group records into insiders -> the companies they traded.
+
+    Only records for companies on the `watchlist` are counted (the watchlist is
+    the source of truth for what the app shows). Issuer buybacks are excluded —
+    they are the company trading its own stock, not a person/insider.
+    """
+
+    def company_key(exchange: str, ticker: str) -> str:
+        return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
+
+    watchlist_keys = {company_key(c.get("exchange", ""), c.get("ticker", "")) for c in watchlist}
+    watchlist_names = {
+        company_key(c.get("exchange", ""), c.get("ticker", "")): c.get("name", "")
+        for c in watchlist
+    }
+
+    people: dict[str, dict] = {}
+    for rec in records:
+        if rec.get("is_issuer_buyback"):
+            continue
+        ckey = company_key(rec.get("exchange", ""), rec.get("ticker", ""))
+        if ckey not in watchlist_keys:
+            continue
+
+        name = (rec.get("insider_name") or "Unknown").strip()
+        pkey = _person_key(name)
+        person = people.get(pkey)
+        if person is None:
+            person = people[pkey] = _empty_person(name, rec.get("entity_type", "unknown"))
+
+        role = (rec.get("insider_role") or "").strip()
+        if role and role not in person["roles"]:
+            person["roles"].append(role)
+
+        comp = person["companies_by_key"].get(ckey)
+        if comp is None:
+            comp = person["companies_by_key"][ckey] = _empty_person_company(
+                ckey,
+                rec.get("issuer_name") or watchlist_names.get(ckey, ckey),
+                (rec.get("exchange") or "").upper(),
+                (rec.get("ticker") or "").upper(),
+            )
+        elif rec.get("issuer_name"):
+            comp["issuer_name"] = rec["issuer_name"]
+
+        _accumulate(person, rec)
+        _accumulate(comp, rec)
+
+    out_people = []
+    for person in people.values():
+        companies = list(person.pop("companies_by_key").values())
+        for c in companies:
+            c["buy_value"] = round(c["buy_value"], 2)
+            c["sell_value"] = round(c["sell_value"], 2)
+            c["net_value"] = round(c["net_value"], 2)
+        # biggest positions first, by gross dollar activity in that company
+        companies.sort(key=lambda c: c["buy_value"] + c["sell_value"], reverse=True)
+        person["companies"] = companies
+        person["company_count"] = len(companies)
+        person["buy_value"] = round(person["buy_value"], 2)
+        person["sell_value"] = round(person["sell_value"], 2)
+        person["net_value"] = round(person["net_value"], 2)
+        out_people.append(person)
+
+    # most active insiders first (gross dollars), then alphabetical
+    out_people.sort(key=lambda p: (-(p["buy_value"] + p["sell_value"]), p["insider_name"].lower()))
+    return {
+        "people": out_people,
+        "total_people": len(out_people),
+        "total_transactions": sum(p["txn_count"] for p in out_people),
+        "total_companies": len({c["key"] for p in out_people for c in p["companies"]}),
+    }
+
+
+def _load_records(
+    data_dir: Path, config_path: Path, months: int | None
+) -> tuple[list[dict], list[dict], Path | None]:
+    """Shared loader for the company and people views.
+
+    Returns (records, watchlist, data_file). `months`, when given, keeps only
+    transactions dated within the last N calendar months so downstream
+    aggregates reflect the selected window.
     """
     watchlist = []
     if config_path.exists():
@@ -197,8 +352,24 @@ def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> d
         cutoff = months_ago(date.today(), int(months)).isoformat()
         records = [r for r in records if (r.get("transaction_date") or "") >= cutoff]
 
-    view = build_view(records, watchlist)
+    return records, watchlist, data_file
+
+
+def _stamp(view: dict, data_file: Path | None, months: int | None) -> dict:
+    """Attach the shared data-file / date / range metadata to a view."""
     view["data_file"] = data_file.name if data_file else None
     view["data_date"] = data_file.stem.replace("insider_", "") if data_file else None
     view["range_months"] = int(months) if months else None
     return view
+
+
+def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
+    """Load the newest data file + watchlist and build the company view."""
+    records, watchlist, data_file = _load_records(data_dir, config_path, months)
+    return _stamp(build_view(records, watchlist), data_file, months)
+
+
+def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
+    """Load the newest data file + watchlist and build the people view."""
+    records, watchlist, data_file = _load_records(data_dir, config_path, months)
+    return _stamp(build_people_view(records, watchlist), data_file, months)
