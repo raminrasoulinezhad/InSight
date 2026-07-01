@@ -32,6 +32,9 @@
   .refresh-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
   .refresh-btn:disabled { opacity:.6; cursor:progress; }
   .refresh-btn.spin { animation:none; }
+  .disc { color:var(--muted); font-size:12px; display:inline-flex; align-items:center;
+    gap:5px; cursor:pointer; user-select:none; }
+  .disc input { cursor:pointer; }
   .tabs { display:flex; gap:4px; margin-top:12px; border-bottom:1px solid var(--line); }
   .tabs button {
     background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent;
@@ -144,6 +147,9 @@
     <h1>In<span class="dot">●</span>Sight</h1>
     <span class="meta" id="datameta">loading…</span>
     <button id="refresh" class="refresh-btn">↻ Refresh data</button>
+    <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the People tab.">
+      <input type="checkbox" id="discover" /> Scan all TSE (~215)
+    </label>
     <span class="meta" id="refreshmsg"></span>
   </div>
   <div class="tabs" id="tabs">
@@ -536,9 +542,10 @@ async function pollRefresh(){
 
 refreshBtn.addEventListener("click", async () => {
   if (refreshBtn.disabled) return;
-  setRefreshing(true, "Starting…");
+  const discover = document.getElementById("discover").checked;
+  setRefreshing(true, discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
   try {
-    const r = await fetch("/api/refresh", { method:"POST" });
+    const r = await fetch("/api/refresh" + (discover ? "?discover=1" : ""), { method:"POST" });
     if (r.status === 409){ setRefreshing(true, "A refresh is already running…"); }
     if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
   } catch(e){ setRefreshing(false, "Could not start: " + e.message); }

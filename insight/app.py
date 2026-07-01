@@ -58,15 +58,19 @@ _refresh_lock = threading.Lock()
 _refresh = {"running": False, "message": "", "finished": False, "ok": False, "date": None}
 
 
-def _do_refresh():
-    """Re-scrape the watchlist via MarketBeat and write a new dated file.
+def _do_refresh(discover: bool = False):
+    """Re-scrape via MarketBeat and write a new dated file.
 
     Runs in a background thread so the HTTP request returns immediately; the
     UI polls /api/refresh/status. Imports are local so a missing scraper dep
     (e.g. Playwright not installed) surfaces as a job error, not an app crash.
+
+    When `discover` is set, MarketBeat's ~215-company TSE universe is merged
+    into the watchlist so GUI-only users get the same broad coverage as
+    `insight-scrape --discover`.
     """
     try:
-        from .marketbeat import scrape_many
+        from .marketbeat import discover_tickers, scrape_many
         from .scrape import write_outputs
 
         targets = [
@@ -74,11 +78,25 @@ def _do_refresh():
             for c in json.loads(CONFIG.read_text())["companies"]
             if not str(c.get("name", "")).startswith("_")
         ]
+        if discover:
+            with _refresh_lock:
+                _refresh["message"] = "Discovering ticker universe…"
+            seen = {
+                f"{t.get('exchange', '').upper()}:{t.get('ticker', '').upper()}" for t in targets
+            }
+            for d in discover_tickers(["TSE"]):
+                key = f"{d['exchange']}:{d['ticker']}"
+                if key not in seen:
+                    targets.append(d)
+                    seen.add(key)
         with _refresh_lock:
             _refresh["message"] = f"Scraping {len(targets)} companies…"
-        # Refresh is an explicit "get fresh data" action, so bypass the cache
-        # (force=True) while still updating it for later cache-aware CLI runs.
-        results = scrape_many(targets, headless=True, cache_dir=paths.cache_dir(), force=True)
+        # A watchlist-only refresh is an explicit "get fresh data" action, so it
+        # bypasses the cache (force=True). A discover run scrapes ~215 companies,
+        # so it relies on the cache (force=False) to stay tractable on repeats.
+        results = scrape_many(
+            targets, headless=True, cache_dir=paths.cache_dir(), force=not discover
+        )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
         covered = sum(1 for v in results.values() if v)
@@ -165,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(400, {"added": False, "msg": f"bad request: {e}"})
         elif parsed.path == "/api/refresh":
+            qs = urllib.parse.parse_qs(parsed.query)
+            discover = qs.get("discover", ["0"])[0].lower() in ("1", "true", "yes")
             with _refresh_lock:
                 if _refresh["running"]:
                     self._send_json(409, {"started": False, **_refresh})
@@ -172,7 +192,7 @@ class Handler(BaseHTTPRequestHandler):
                 _refresh.update(
                     running=True, finished=False, ok=False, message="Starting…", date=None
                 )
-            threading.Thread(target=_do_refresh, daemon=True).start()
+            threading.Thread(target=_do_refresh, args=(discover,), daemon=True).start()
             self._send_json(202, {"started": True})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
