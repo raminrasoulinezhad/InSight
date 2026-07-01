@@ -20,7 +20,9 @@ lag SEDI by days, and does NOT cover small TSX-Venture issuers.
 from __future__ import annotations
 
 import json
+import re
 import time
+import urllib.request
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,6 +198,44 @@ class MarketBeatScraper:
 
 class BotBlocked(RuntimeError):
     """Raised when a page is intercepted by anti-bot protection."""
+
+
+# ---- ticker-universe discovery ------------------------------------------------
+# MarketBeat serves a per-exchange stock-list page (e.g. /stocks/TSE/) whose HTML
+# links to every covered ticker as /stocks/<EXCH>/<TICKER>/. We enumerate those
+# links to build a scrape universe far larger than a hand-kept watchlist, for
+# free and with a plain HTTP GET (no browser). Coverage is only as broad as
+# MarketBeat itself — it lists mainly large/mid-cap names and does not enumerate
+# small-cap TSX-V/CSE issuers — so this is a best-effort free expansion, not the
+# full Canadian universe.
+
+_LIST_URL = "https://www.marketbeat.com/stocks/{exch}/"
+_TICKER_LINK_RE = re.compile(r"/stocks/([A-Z]+)/([A-Z0-9.]+)/")
+
+
+def discover_tickers(exchanges: Iterable[str]) -> list[dict]:
+    """Return [{name, exchange, ticker}] for every ticker MarketBeat lists on the
+    given exchange index pages. Failures on one exchange never abort the rest."""
+    out: dict[str, dict] = {}
+    for raw in exchanges:
+        exch = raw.strip().upper()
+        if not exch:
+            continue
+        url = _LIST_URL.format(exch=exch)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                html = resp.read().decode("utf-8", "replace")
+        except Exception as e:  # unreachable / blocked / bad exchange code
+            print(f"  discover {exch}: failed ({type(e).__name__}: {e})")
+            continue
+        found = {
+            m.group(2).upper() for m in _TICKER_LINK_RE.finditer(html) if m.group(1).upper() == exch
+        }
+        for tk in sorted(found):
+            out[f"{exch}:{tk}"] = {"name": tk, "exchange": exch, "ticker": tk}
+        print(f"  discover {exch}: {len(found)} tickers")
+    return list(out.values())
 
 
 # ---- per-company cache --------------------------------------------------------

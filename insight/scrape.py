@@ -32,7 +32,7 @@ from datetime import date
 from pathlib import Path
 
 from . import paths
-from .marketbeat import scrape_many
+from .marketbeat import discover_tickers, scrape_many
 from .models import InsiderTransaction
 
 CSV_FIELDS = [
@@ -120,6 +120,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
     ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
     ap.add_argument("--tickers", nargs="*", default=[], help="EXCH:TICKER specs, overrides config")
+    ap.add_argument(
+        "--discover",
+        nargs="*",
+        default=None,
+        metavar="EXCH",
+        help="auto-discover MarketBeat's ticker universe for these exchanges "
+        "(default TSE if none given) and scrape them in addition to the watchlist; "
+        "e.g. --discover TSE",
+    )
     ap.add_argument("--outdir", default=None, help="output dir (default: per-user app folder)")
     ap.add_argument(
         "--headful", action="store_true", help="run a visible browser (helps on flagged IPs)"
@@ -141,7 +150,22 @@ def main(argv=None) -> int:
     targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()
     print(f"InSight insider scrape — {run_date}")
-    print(f"Targets: {', '.join(t['exchange'] + ':' + t['ticker'] for t in targets)}\n")
+
+    # Optionally widen the universe with MarketBeat's per-exchange ticker lists,
+    # merged with (and de-duplicated against) the watchlist/CLI targets.
+    if args.discover is not None:
+        print("Discovering ticker universe from MarketBeat…")
+        seen = {f"{t['exchange'].upper()}:{t['ticker'].upper()}" for t in targets}
+        for d in discover_tickers(args.discover or ["TSE"]):
+            key = f"{d['exchange']}:{d['ticker']}"
+            if key not in seen:
+                targets.append(d)
+                seen.add(key)
+
+    if len(targets) <= 25:
+        print(f"Targets: {', '.join(t['exchange'] + ':' + t['ticker'] for t in targets)}\n")
+    else:
+        print(f"Targets: {len(targets)} companies\n")
 
     results = scrape_many(
         targets,

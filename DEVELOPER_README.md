@@ -48,6 +48,14 @@ insight-scrape
 # or ad-hoc tickers (EXCHANGE:TICKER)
 insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
 
+# widen coverage: auto-discover MarketBeat's ticker universe and scrape it
+# alongside the watchlist (default exchange TSE, ~215 large/mid-cap names).
+# The People tab then spans every scraped company; the Companies tab stays
+# limited to your watchlist. Small-cap TSX-V/CSE names are not enumerated —
+# MarketBeat does not list them — so this is a best-effort free expansion.
+insight-scrape --discover          # TSE universe + watchlist
+insight-scrape --discover TSE      # same, explicit
+
 # show the browser (useful if your IP gets a bot challenge)
 insight-scrape --headful
 

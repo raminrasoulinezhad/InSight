@@ -252,30 +252,25 @@ def _accumulate(agg: dict, rec: dict) -> None:
         agg["latest_date"] = d
 
 
-def build_people_view(records: list[dict], watchlist: list[dict]) -> dict:
+def build_people_view(records: list[dict]) -> dict:
     """Group records into insiders -> the companies they traded.
 
-    Only records for companies on the `watchlist` are counted (the watchlist is
-    the source of truth for what the app shows). Issuer buybacks are excluded —
-    they are the company trading its own stock, not a person/insider.
+    Unlike the company view, this is NOT gated to the watchlist: it spans EVERY
+    company present in the scraped data (e.g. the broader universe pulled in by
+    `insight-scrape --discover`), because the whole point of the people view is
+    to follow a person's trades across all companies, watchlist or not. Issuer
+    buybacks are excluded — they are the company trading its own stock, not a
+    person/insider.
     """
 
     def company_key(exchange: str, ticker: str) -> str:
         return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
-
-    watchlist_keys = {company_key(c.get("exchange", ""), c.get("ticker", "")) for c in watchlist}
-    watchlist_names = {
-        company_key(c.get("exchange", ""), c.get("ticker", "")): c.get("name", "")
-        for c in watchlist
-    }
 
     people: dict[str, dict] = {}
     for rec in records:
         if rec.get("is_issuer_buyback"):
             continue
         ckey = company_key(rec.get("exchange", ""), rec.get("ticker", ""))
-        if ckey not in watchlist_keys:
-            continue
 
         name = (rec.get("insider_name") or "Unknown").strip()
         pkey = _person_key(name)
@@ -291,7 +286,7 @@ def build_people_view(records: list[dict], watchlist: list[dict]) -> dict:
         if comp is None:
             comp = person["companies_by_key"][ckey] = _empty_person_company(
                 ckey,
-                rec.get("issuer_name") or watchlist_names.get(ckey, ckey),
+                rec.get("issuer_name") or ckey,
                 (rec.get("exchange") or "").upper(),
                 (rec.get("ticker") or "").upper(),
             )
@@ -370,6 +365,7 @@ def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> d
 
 
 def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
-    """Load the newest data file + watchlist and build the people view."""
-    records, watchlist, data_file = _load_records(data_dir, config_path, months)
-    return _stamp(build_people_view(records, watchlist), data_file, months)
+    """Load the newest data file and build the people view (spans all scraped
+    companies, not just the watchlist)."""
+    records, _watchlist, data_file = _load_records(data_dir, config_path, months)
+    return _stamp(build_people_view(records), data_file, months)
