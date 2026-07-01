@@ -179,6 +179,18 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(results, outdir, run_date)
     summarize(results)
     print(f"\nWrote: {outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")
+
+    # Fire any alarms whose watched company/person has new transactions.
+    try:
+        from .notify import evaluate_and_notify
+
+        res = evaluate_and_notify(paths.notify_file(), outdir)
+        if res.get("sent"):
+            print(f"Notifications: sent {res['sent']} alarm(s).")
+        for err in res.get("errors", []):
+            print(f"Notification error: {err}")
+    except Exception as e:  # notifications must never break a scrape
+        print(f"Notification step failed: {type(e).__name__}: {e}")
     return 0
 
 

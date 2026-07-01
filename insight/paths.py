@@ -67,6 +67,15 @@ def delisted_file() -> Path:
     return app_dir() / "delisted.json"
 
 
+def notify_file() -> Path:
+    """Notification settings + alarms (email/ntfy config, watched companies/people).
+
+    Holds an SMTP app password in plaintext, so it stays in the per-user app
+    folder — never the repo. A JSON object: {email, ntfy, alarms}.
+    """
+    return app_dir() / "notify.json"
+
+
 def cache_dir() -> Path:
     """Per-company scrape cache (one JSON per issuer) used to avoid re-fetching
     data that is still fresh."""

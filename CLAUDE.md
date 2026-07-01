@@ -18,6 +18,8 @@ cloud, no paid data services.
   all snapshots (deduped) so the window deepens over time.
 - **Delisting hygiene** — acquired/delisted tickers are detected during scrape,
   dropped from cache, and hidden from views (self-healing).
+- **Alarms** — per-company / per-person alarms that notify (email via SMTP, or
+  ntfy push) when a new transaction appears; evaluated after each scrape.
 
 ## Technical stack
 - **Env / deps:** `uv` (dependency-groups; `uv sync --group dev`).
@@ -84,6 +86,7 @@ insight/
   marketbeat.py   Playwright scraper + discovery + cache/delisted helpers
   aggregate.py    snapshots -> company/people views (+ in-memory access cache)
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
+  notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers
   paths.py        per-user data/config/cache dirs (cross-platform)
   webui/index.html  the single-page UI

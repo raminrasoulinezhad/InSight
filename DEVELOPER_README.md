@@ -337,6 +337,28 @@ works). To productionize the SEDI path, pick one:
 - **Terms of use:** scraping MarketBeat may conflict with their ToS. For
   production, prefer a licensed feed or the authoritative SEDI route.
 
+## Alarms & notifications
+
+Set an alarm on a **company** ("any insider trade in ATH") or a **person**
+("whenever Eric Sprott trades, in any company") via the 🔔 button on its card, or
+manage everything in the **Alarms tab** (settings + list). After every scrape
+(`evaluate_and_notify`, called from the daily timer and the Refresh button), any
+alarm whose target has a transaction *newer than when the alarm was set* fires
+over the enabled free channels:
+
+- **Email** — SMTP (e.g. a Gmail/Workspace **app password**), an HTML message
+  with the InSight logo (CID-embedded) and a sentence per transaction.
+- **ntfy** — a free push topic (`https://ntfy.sh/<topic>`), no credentials.
+
+State (channel settings + alarms) lives in `notify.json` in the app folder —
+**never the repo**, since it holds the SMTP password (the API masks it in
+responses). Each alarm keeps a `seen` set of transaction keys baselined at
+creation, so pre-existing history never alerts and nothing double-fires; the
+baseline only advances once a channel actually delivered, so a transient outage
+retries next scrape. Sends are best-effort and wrapped — a notification failure
+never breaks a scrape. Truly free SMS isn't offered (carrier email-gateways are
+deprecated/unreliable); email + ntfy are the free, reliable channels.
+
 ## Layout
 
 ```

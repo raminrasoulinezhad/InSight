@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from . import paths
+from . import notify, paths
 from .aggregate import load_people_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -103,6 +103,13 @@ def _do_refresh(discover: bool = False):
         )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
+        # Fire alarms for newly-seen transactions (never let this break refresh).
+        try:
+            from .notify import evaluate_and_notify
+
+            evaluate_and_notify(paths.notify_file(), DATA_DIR)
+        except Exception:
+            traceback.print_exc()
         covered = sum(1 for v in results.values() if v)
         total = sum(len(v) for v in results.values())
         with _refresh_lock:
@@ -173,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/refresh/status":
             with _refresh_lock:
                 self._send_json(200, dict(_refresh))
+        elif path == "/api/notify/config":
+            self._send_json(200, notify.public_config(paths.notify_file()))
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -198,8 +207,30 @@ class Handler(BaseHTTPRequestHandler):
                 )
             threading.Thread(target=_do_refresh, args=(discover,), daemon=True).start()
             self._send_json(202, {"started": True})
+        elif parsed.path == "/api/notify/settings":
+            try:
+                notify.save_settings(paths.notify_file(), self._read_json())
+                self._send_json(200, {"ok": True, "msg": "Settings saved."})
+            except Exception as e:
+                self._send_json(400, {"ok": False, "msg": f"bad request: {e}"})
+        elif parsed.path == "/api/notify/test":
+            try:
+                ok, msg = notify.send_test(paths.notify_file())
+                self._send_json(200 if ok else 502, {"ok": ok, "msg": msg})
+            except Exception as e:
+                self._send_json(502, {"ok": False, "msg": f"{type(e).__name__}: {e}"})
+        elif parsed.path == "/api/alarms":
+            try:
+                added, msg = notify.add_alarm(paths.notify_file(), self._read_json(), DATA_DIR)
+                self._send_json(200 if added else 409, {"added": added, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"added": False, "msg": f"bad request: {e}"})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        return json.loads(self.rfile.read(length) or b"{}")
 
     def do_DELETE(self):
         parsed = urllib.parse.urlsplit(self.path)
@@ -209,6 +240,13 @@ class Handler(BaseHTTPRequestHandler):
             ticker = qs.get("ticker", [""])[0]
             try:
                 removed, msg = remove_from_watchlist(CONFIG, exchange, ticker)
+                self._send_json(200 if removed else 404, {"removed": removed, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"removed": False, "msg": f"bad request: {e}"})
+        elif parsed.path == "/api/alarms":
+            alarm_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+            try:
+                removed, msg = notify.remove_alarm(paths.notify_file(), alarm_id)
                 self._send_json(200 if removed else 404, {"removed": removed, "msg": msg})
             except Exception as e:
                 self._send_json(400, {"removed": False, "msg": f"bad request: {e}"})

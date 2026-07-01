@@ -78,6 +78,31 @@
     border:1px solid var(--line); border-radius:6px; padding:2px 9px;
     font-size:12px; line-height:1.4; cursor:pointer; }
   .del-co:hover { border-color:var(--sell); color:var(--sell); }
+  .bell { background:transparent; border:1px solid var(--line); border-radius:6px;
+    padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer; filter:grayscale(1) opacity(.6); }
+  .bell:hover { border-color:var(--accent); filter:none; }
+  .bell.on { border-color:var(--inst); filter:none; background:#33290e; }
+  .company-head .bell { margin-left:6px; }
+  .company-head .del-co { margin-left:8px; }
+  /* alarms / settings */
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin-bottom:20px; max-width:620px; }
+  .panel h3 { margin:0 0 12px; font-size:15px; }
+  .frow { display:flex; align-items:center; gap:10px; margin:8px 0; flex-wrap:wrap; }
+  .frow label { color:var(--muted); font-size:13px; min-width:120px; }
+  .frow input[type=text], .frow input[type=email], .frow input[type=password], .frow input[type=number] {
+    flex:1 1 200px; background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; padding:7px 10px; font-size:13px; }
+  .frow input:focus { outline:none; border-color:var(--accent); }
+  .btn { background:var(--accent); color:#06121f; border:0; border-radius:8px;
+    padding:8px 16px; font-weight:600; cursor:pointer; font-size:13px; }
+  .btn.ghost { background:var(--panel2); color:var(--text); border:1px solid var(--line); }
+  .alarm-row { display:flex; align-items:center; gap:10px; padding:10px 12px;
+    border:1px solid var(--line); border-radius:8px; margin-bottom:8px; background:var(--panel); }
+  .alarm-row .kind { font-size:10px; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 6px; border-radius:5px; background:var(--panel2); color:var(--muted); }
+  .alarm-row .lbl { flex:1; font-weight:600; }
+  .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
   .grid {
     display:grid; gap:12px;
     grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
@@ -155,6 +180,7 @@
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
     <button data-view="people">People</button>
+    <button data-view="alarms">Alarms</button>
   </div>
   <div class="stats">
     <div class="stat"><b id="s-cov">–</b><span id="l-cov">companies with activity</span></div>
@@ -205,7 +231,21 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", months:24 };
+let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", months:24,
+              notify:null, alarmKeys:new Set(), alarmById:{} };
+
+// Alarm identity — must match notify.alarm_key on the backend.
+const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
+const companyKey = (ex,tk) => "company:" + (ex||"").toUpperCase() + ":" + (tk||"").toUpperCase();
+function bellBtn(type, d){
+  const key = type === "person" ? personKey(d.name) : companyKey(d.exch, d.ticker);
+  const on = STATE.alarmKeys.has(key);
+  const attrs = type === "person"
+    ? `data-atype="person" data-name="${esc(d.name)}"`
+    : `data-atype="company" data-exch="${esc(d.exch)}" data-ticker="${esc(d.ticker)}"`;
+  return `<button class="bell${on?' on':''}" ${attrs} data-label="${esc(d.label)}"
+    title="${on?'Remove alarm — you are notified of new transactions':'Set an alarm for new transactions'}">🔔</button>`;
+}
 
 // Precompute a lowercased search string per company/box/person once when data
 // loads, so filtering on each keystroke is a plain substring test (no per-item
@@ -311,6 +351,7 @@ function renderCompany(c){
       <span class="ticker">${esc(c.exchange)}:${esc(c.ticker)}</span>
       <span class="sub">${c.insider_count} insiders · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
       ${warn}
+      ${bellBtn("company", {exch:c.exchange, ticker:c.ticker, label:c.issuer_name})}
       <button class="del-co" title="Remove from watchlist"
         data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}" data-name="${esc(c.issuer_name)}">✕ Remove</button>
     </div>
@@ -334,6 +375,7 @@ function setMeta(d){
 }
 
 function render(){
+  if (STATE.view === "alarms") return renderAlarms();
   if (STATE.view === "people") return renderPeople();
   return renderCompanies();
 }
@@ -413,6 +455,7 @@ function renderPerson(p){
       <span class="badge ${kind}">${kind}</span>
       <span class="sub">${esc(roles)} · ${nCo} · ${p.txn_count} txns${p.latest_date? " · latest "+p.latest_date : ""}
         · net ${p.net_value>=0?'+':''}${fmtMoney(p.net_value, cur)}</span>
+      ${bellBtn("person", {name:p.insider_name, label:p.insider_name})}
     </div>
     <div class="grid">${p.companies.map(renderPersonCompany).join("")}</div>
   </section>`;
@@ -430,10 +473,130 @@ function renderPeople(){
     html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`;
 }
 
+/* ---- Alarms tab: notification settings + alarm list ---- */
+async function loadAlarms(){
+  try {
+    STATE.notify = await (await fetch("/api/notify/config")).json();
+  } catch(e){ STATE.notify = STATE.notify || {email:{},ntfy:{},alarms:[]}; }
+  STATE.alarmKeys = new Set();
+  STATE.alarmById = {};
+  for (const a of (STATE.notify.alarms||[])){
+    const k = a.type === "person" ? personKey(a.name) : companyKey(a.exchange, a.ticker);
+    STATE.alarmKeys.add(k); STATE.alarmById[k] = a.id;
+  }
+}
+
+async function toggleAlarm(ds){
+  const key = ds.atype === "person" ? personKey(ds.name) : companyKey(ds.exch, ds.ticker);
+  try {
+    if (STATE.alarmKeys.has(key)){
+      const id = STATE.alarmById[key];
+      const d = await (await fetch("/api/alarms?id=" + encodeURIComponent(id), {method:"DELETE"})).json();
+      toast(d.msg || "Alarm removed.");
+    } else {
+      const body = ds.atype === "person"
+        ? {type:"person", name:ds.name, label:ds.label}
+        : {type:"company", exchange:ds.exch, ticker:ds.ticker, label:ds.label};
+      const d = await (await fetch("/api/alarms", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})).json();
+      toast(d.msg || (d.added ? "Alarm set." : "Not set."));
+    }
+    await loadAlarms(); render();
+  } catch(e){ toast("Alarm failed: " + e.message); }
+}
+
+function renderAlarms(){
+  const n = STATE.notify || {email:{},ntfy:{},alarms:[]};
+  const e = n.email || {}, y = n.ntfy || {};
+  const alarms = n.alarms || [];
+  setStats(alarms.length, "alarms",
+           e.enabled ? "on" : "off", "email",
+           y.enabled ? "on" : "off", "push");
+  document.getElementById("datameta").textContent = "notification settings & alarms";
+  document.getElementById("foot").textContent =
+    "Alarms fire after each scrape (daily timer or Refresh) when a watched company/person has a new transaction.";
+
+  const list = alarms.length
+    ? alarms.map(a => `
+        <div class="alarm-row">
+          <span class="kind">${a.type}</span>
+          <span class="lbl">${esc(a.label)}</span>
+          <button class="del-co del-alarm" data-id="${esc(a.id)}" title="Delete alarm">✕ Delete</button>
+        </div>`).join("")
+    : `<div class="hint">No alarms yet. Use the 🔔 button on a company or an insider to add one.</div>`;
+
+  document.getElementById("feed").innerHTML = `
+    <div class="panel">
+      <h3>📧 Email (SMTP)</h3>
+      <div class="frow"><label>Enabled</label><input type="checkbox" id="e-en" ${e.enabled?"checked":""}></div>
+      <div class="frow"><label>SMTP host</label><input type="text" id="e-host" value="${esc(e.smtp_host||"smtp.gmail.com")}"></div>
+      <div class="frow"><label>SMTP port</label><input type="number" id="e-port" value="${esc(e.smtp_port||587)}"></div>
+      <div class="frow"><label>Username</label><input type="email" id="e-user" value="${esc(e.username||"")}" placeholder="you@gmail.com"></div>
+      <div class="frow"><label>App password</label><input type="password" id="e-pass" value="${esc(e.password||"")}" placeholder="Gmail app password"></div>
+      <div class="frow"><label>From</label><input type="email" id="e-from" value="${esc(e.from||"")}" placeholder="(defaults to username)"></div>
+      <div class="frow"><label>Send to</label><input type="email" id="e-to" value="${esc(e.to||"")}" placeholder="alerts@you.com"></div>
+      <p class="hint">Gmail/Workspace: create an “App password” and use it here (normal password won’t work).</p>
+    </div>
+    <div class="panel">
+      <h3>🔔 Push (ntfy.sh)</h3>
+      <div class="frow"><label>Enabled</label><input type="checkbox" id="y-en" ${y.enabled?"checked":""}></div>
+      <div class="frow"><label>Server</label><input type="text" id="y-server" value="${esc(y.server||"https://ntfy.sh")}"></div>
+      <div class="frow"><label>Topic</label><input type="text" id="y-topic" value="${esc(y.topic||"")}" placeholder="e.g. insight-ramin-7f3a"></div>
+      <p class="hint">Install the ntfy app, “subscribe” to this topic, and you’ll get push alerts. Pick a long, private topic name.</p>
+    </div>
+    <div class="frow">
+      <button class="btn" id="notify-save">Save settings</button>
+      <button class="btn ghost" id="notify-test">Send test</button>
+      <span class="meta" id="notify-msg"></span>
+    </div>
+    <div class="panel">
+      <h3>Alarms (${alarms.length})</h3>
+      ${list}
+    </div>`;
+
+  document.getElementById("notify-save").addEventListener("click", saveNotifySettings);
+  document.getElementById("notify-test").addEventListener("click", sendNotifyTest);
+  document.querySelectorAll(".del-alarm").forEach(b => b.addEventListener("click", async () => {
+    const d = await (await fetch("/api/alarms?id=" + encodeURIComponent(b.dataset.id), {method:"DELETE"})).json();
+    toast(d.msg || "Removed."); await loadAlarms(); render();
+  }));
+}
+
+function collectNotifySettings(){
+  const v = id => document.getElementById(id).value.trim();
+  return {
+    email: { enabled: document.getElementById("e-en").checked,
+      smtp_host:v("e-host"), smtp_port:+v("e-port")||587, username:v("e-user"),
+      password:document.getElementById("e-pass").value, from:v("e-from"), to:v("e-to") },
+    ntfy: { enabled: document.getElementById("y-en").checked,
+      server:v("y-server"), topic:v("y-topic") },
+  };
+}
+async function saveNotifySettings(){
+  const msg = document.getElementById("notify-msg");
+  try {
+    const d = await (await fetch("/api/notify/settings", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(collectNotifySettings())})).json();
+    msg.textContent = d.msg || "Saved."; await loadAlarms();
+  } catch(e){ msg.textContent = "Save failed: " + e.message; }
+}
+async function sendNotifyTest(){
+  const msg = document.getElementById("notify-msg");
+  msg.textContent = "Saving + sending test…";
+  try {
+    await fetch("/api/notify/settings", { method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(collectNotifySettings()) });
+    const d = await (await fetch("/api/notify/test", {method:"POST"})).json();
+    msg.textContent = d.msg || (d.ok ? "Sent." : "Failed.");
+  } catch(e){ msg.textContent = "Test failed: " + e.message; }
+}
+
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 async function load(){
+  if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
   try {
     const url = STATE.view === "people" ? "/api/people" : "/api/data";
     const r = await fetch(url + "?months=" + STATE.months);
@@ -516,8 +679,11 @@ async function removeCompany(exchange, ticker, name){
 }
 
 document.getElementById("feed").addEventListener("click", e => {
+  const bell = e.target.closest(".bell");
+  if (bell){ toggleAlarm(bell.dataset); return; }
   const btn = e.target.closest(".del-co");
-  if (btn) removeCompany(btn.dataset.exch, btn.dataset.ticker, btn.dataset.name);
+  if (btn && btn.dataset.ticker && !btn.classList.contains("del-alarm"))
+    removeCompany(btn.dataset.exch, btn.dataset.ticker, btn.dataset.name);
 });
 
 addq.addEventListener("input", () => {
@@ -594,15 +760,23 @@ document.querySelectorAll("#tabs button").forEach(b => {
     document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     STATE.view = b.dataset.view;
-    document.getElementById("q").placeholder = STATE.view === "people"
-      ? "Filter by insider name, company, or ticker…"
-      : "Filter by company, ticker, or insider name…";
+    applyViewChrome();
     document.getElementById("feed").innerHTML = `<div class="nodata">Loading…</div>`;
     load();
   });
 });
 
-load();
+// The search/filter/add-company controls only apply to the data tabs; hide them
+// on the Alarms tab, which has its own settings form.
+function applyViewChrome(){
+  const isAlarms = STATE.view === "alarms";
+  document.querySelectorAll("header .controls").forEach(el => { el.style.display = isAlarms ? "none" : ""; });
+  document.getElementById("q").placeholder = STATE.view === "people"
+    ? "Filter by insider name, company, or ticker…"
+    : "Filter by company, ticker, or insider name…";
+}
+
+loadAlarms().then(load);   // load alarms first so 🔔 buttons render their state
 </script>
 </body>
 </html>
