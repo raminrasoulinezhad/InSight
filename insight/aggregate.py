@@ -19,9 +19,45 @@ from __future__ import annotations
 
 import calendar
 import json
+import os
+import threading
 from datetime import date
 from glob import glob
 from pathlib import Path
+
+# ---- access cache -------------------------------------------------------------
+# Search over names/companies is the app's main job, and every /api/data and
+# /api/people request would otherwise re-read + re-parse + re-merge every dated
+# snapshot from disk and rebuild the whole view. Instead we memoize by a cheap
+# signature of the inputs (each snapshot's mtime+size, plus the watchlist and
+# delisted files) so a rebuild happens ONLY when the underlying data actually
+# changes — turning repeated access into an in-memory dict lookup. This beats an
+# embedded DB for a single-user, few-MB dataset (no query/serialization layer);
+# SQLite/FTS5 is the escalation path if the data ever outgrows memory.
+_CACHE_LOCK = threading.Lock()
+_records_cache: dict[str, tuple] = {}  # data_dir -> (sig, records)
+_view_cache: dict[tuple, dict] = {}  # (kind, data_dir, sig, cfg_sig, del_sig, months) -> view
+_VIEW_CACHE_MAX = 64
+
+
+def _dir_signature(data_dir: Path) -> tuple:
+    """Cheap fingerprint of the snapshot set: (name, mtime_ns, size) per file."""
+    sig = []
+    for p in sorted(glob(str(data_dir / "insider_*.json"))):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        sig.append((os.path.basename(p), st.st_mtime_ns, st.st_size))
+    return tuple(sig)
+
+
+def _file_signature(path: Path) -> tuple | None:
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
 
 
 def months_ago(d: date, n: int) -> date:
@@ -360,7 +396,17 @@ def load_all_records(data_dir: Path) -> list[dict]:
     newest so a newer scrape wins on an identical-transaction collision — lets
     the app's window deepen over time as the scraper runs. This is the only free
     way to accumulate a multi-year history (MarketBeat serves no deep backfill).
+
+    The merged result is memoized by directory signature, so repeated access
+    (search/tab-switch) is an in-memory lookup until a scrape changes the files.
     """
+    key = str(data_dir)
+    sig = _dir_signature(data_dir)
+    with _CACHE_LOCK:
+        hit = _records_cache.get(key)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+
     merged: dict[tuple, dict] = {}
     for path in sorted(glob(str(data_dir / "insider_*.json"))):
         try:
@@ -369,7 +415,11 @@ def load_all_records(data_dir: Path) -> list[dict]:
             continue  # skip a corrupt/unreadable snapshot rather than fail
         for r in recs:
             merged[_txn_key(r)] = r
-    return list(merged.values())
+    records = list(merged.values())
+
+    with _CACHE_LOCK:
+        _records_cache[key] = (sig, records)
+    return records
 
 
 def _company_key(exchange, ticker: str) -> str:
@@ -437,14 +487,50 @@ def _stamp(view: dict, data_dir: Path, months: int | None) -> dict:
     return view
 
 
+def _cached_view(kind: str, data_dir: Path, config_path: Path, months: int | None, builder):
+    """Return a memoized built view, rebuilding only when an input file changes.
+
+    Keyed by the snapshot-set signature plus the watchlist and delisted file
+    signatures, so any scrape / add / remove / delist naturally invalidates it.
+    """
+    key = (
+        kind,
+        str(data_dir),
+        _dir_signature(data_dir),
+        _file_signature(config_path),
+        _file_signature(config_path.parent / "delisted.json"),
+        months,
+    )
+    with _CACHE_LOCK:
+        cached = _view_cache.get(key)
+        if cached is not None:
+            return cached
+
+    view = builder()
+
+    with _CACHE_LOCK:
+        if len(_view_cache) >= _VIEW_CACHE_MAX:
+            _view_cache.clear()  # bound memory; signatures churn as data updates
+        _view_cache[key] = view
+    return view
+
+
 def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
-    """Build the company view from the merged history + watchlist."""
-    records, watchlist = _load_records(data_dir, config_path, months)
-    return _stamp(build_view(records, watchlist), data_dir, months)
+    """Build the company view from the merged history + watchlist (cached)."""
+
+    def build():
+        records, watchlist = _load_records(data_dir, config_path, months)
+        return _stamp(build_view(records, watchlist), data_dir, months)
+
+    return _cached_view("company", data_dir, config_path, months, build)
 
 
 def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
     """Build the people view from the merged history (spans all scraped
-    companies, not just the watchlist)."""
-    records, _watchlist = _load_records(data_dir, config_path, months)
-    return _stamp(build_people_view(records), data_dir, months)
+    companies, not just the watchlist). Cached like the company view."""
+
+    def build():
+        records, _watchlist = _load_records(data_dir, config_path, months)
+        return _stamp(build_people_view(records), data_dir, months)
+
+    return _cached_view("people", data_dir, config_path, months, build)

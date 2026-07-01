@@ -169,6 +169,19 @@ company's data ever returns, the next scrape un-flags it. A ticker that instead
 redirects to the bare `…/stocks/<EXCH>/` list (unknown / not covered) is treated
 as "no data", not delisted.
 
+**Search is the hot path, so access is cached.** Filtering by name/company is the
+app's main job, and rebuilding a view means reading + parsing + merging every
+snapshot. `aggregate` memoizes the merged records and the built views, keyed by a
+cheap signature (each snapshot's mtime+size, plus the watchlist and delisted
+files). A rebuild happens only when the underlying data actually changes (a
+scrape, add/remove, or delist); otherwise repeated access is an in-memory dict
+lookup — ~1000× faster on a large accumulated history (≈2 s → a few ms in a
+300-snapshot benchmark). The frontend likewise precomputes a lowercased search
+string per company/insider once per load and debounces the box, so typing filters
+in constant work per item. This in-memory approach beats an embedded DB for a
+single-user, few-MB dataset; SQLite/FTS5 is the escalation path only if the data
+ever outgrows memory or needs concurrent writers.
+
 ### Example summary
 
 ```

@@ -257,3 +257,43 @@ class TestDelistedAndLoadRecords:
         pv = load_people_view(tmp_path, cfg, months=None)
         assert "TSE:IPL" not in {c["key"] for c in cv["companies"]}
         assert "IPL" not in {c["ticker"] for p in pv["people"] for c in p["companies"]}
+
+
+class TestViewCache:
+    def _setup(self, tmp_path, records):
+        cfg = tmp_path / "companies.json"
+        cfg.write_text(
+            json.dumps({"companies": [{"name": "ABC", "exchange": "TSE", "ticker": "ABC"}]})
+        )
+        (tmp_path / "insider_2026-06-30.json").write_text(json.dumps(records))
+        return cfg
+
+    def test_repeat_access_is_memoized(self, tmp_path):
+        cfg = self._setup(tmp_path, [rec("ABC", "Jane", "Buy", 1, 10.0, "2026-06-01")])
+        v1 = load_view(tmp_path, cfg, months=None)
+        v2 = load_view(tmp_path, cfg, months=None)
+        assert v1 is v2  # served from cache, not rebuilt
+
+    def test_cache_invalidated_when_snapshot_changes(self, tmp_path):
+        cfg = self._setup(tmp_path, [rec("ABC", "Jane", "Buy", 1, 10.0, "2026-06-01")])
+        v1 = load_view(tmp_path, cfg, months=None)
+        assert v1["total_transactions"] == 1
+        # add a second transaction -> file size changes -> signature changes
+        (tmp_path / "insider_2026-06-30.json").write_text(
+            json.dumps(
+                [
+                    rec("ABC", "Jane", "Buy", 1, 10.0, "2026-06-01"),
+                    rec("ABC", "Bob", "Sell", 2, 20.0, "2026-06-02"),
+                ]
+            )
+        )
+        v2 = load_view(tmp_path, cfg, months=None)
+        assert v2 is not v1
+        assert v2["total_transactions"] == 2
+
+    def test_cache_invalidated_when_delisted_changes(self, tmp_path):
+        cfg = self._setup(tmp_path, [rec("ABC", "Jane", "Buy", 1, 10.0, "2026-06-01")])
+        assert load_view(tmp_path, cfg, months=None)["total_transactions"] == 1
+        (tmp_path / "delisted.json").write_text(json.dumps(["TSE:ABC"]))
+        v = load_view(tmp_path, cfg, months=None)
+        assert v["total_transactions"] == 0  # ABC now filtered out

@@ -205,7 +205,24 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", filter:"all", months:24 };
+let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", months:24 };
+
+// Precompute a lowercased search string per company/box/person once when data
+// loads, so filtering on each keystroke is a plain substring test (no per-item
+// array-build/join/lowercase). This is the app's main hot path.
+function indexCompanies(d){
+  for (const c of d.companies || []){
+    c._hay = (c.issuer_name + " " + c.exchange + ":" + c.ticker).toLowerCase();
+    for (const b of c.boxes || [])
+      b._hay = ((b.insider_name||"") + " " + (b.insider_role||"")).toLowerCase();
+  }
+}
+function indexPeople(d){
+  for (const p of d.people || []){
+    const cos = (p.companies||[]).map(c => c.issuer_name+" "+c.ticker+" "+c.exchange).join(" ");
+    p._hay = ((p.insider_name||"") + " " + (p.roles||[]).join(" ") + " " + cos).toLowerCase();
+  }
+}
 
 function entityKind(box){
   if (box.is_issuer_buyback) return "buyback";
@@ -222,12 +239,9 @@ function boxMatchesFilter(box){
 }
 
 function matchesQuery(company, box){
-  const q = STATE.q.trim().toLowerCase();
+  const q = STATE.qnorm;
   if (!q) return true;
-  const hay = [company.issuer_name, company.ticker, company.exchange,
-               box ? box.insider_name : "", box ? box.insider_role : ""]
-              .join(" ").toLowerCase();
-  return hay.includes(q);
+  return company._hay.includes(q) || (box ? box._hay.includes(q) : false);
 }
 
 function renderCard(box){
@@ -279,7 +293,7 @@ function renderCard(box){
 function renderCompany(c){
   const boxes = c.boxes.filter(b => boxMatchesFilter(b) && matchesQuery(c, b));
   // if a text query is set and nothing in this company matches name/insider, skip
-  if (STATE.q.trim() && boxes.length === 0 && !matchesQuery(c, null)) return "";
+  if (STATE.qnorm && boxes.length === 0 && !matchesQuery(c, null)) return "";
   const warn = c.confirmed === false
     ? `<span class="pill-warn">unverified ticker</span>` : "";
   let body;
@@ -338,12 +352,9 @@ function renderCompanies(){
 
 /* ---- People tab: same records, grouped by insider across companies ---- */
 function personMatchesQuery(p){
-  const q = STATE.q.trim().toLowerCase();
+  const q = STATE.qnorm;
   if (!q) return true;
-  const hay = [p.insider_name, (p.roles||[]).join(" "),
-               ...(p.companies||[]).flatMap(c => [c.issuer_name, c.ticker, c.exchange])]
-              .join(" ").toLowerCase();
-  return hay.includes(q);
+  return p._hay.includes(q);
 }
 
 function renderPersonCompany(c){
@@ -427,7 +438,8 @@ async function load(){
     const url = STATE.view === "people" ? "/api/people" : "/api/data";
     const r = await fetch(url + "?months=" + STATE.months);
     const d = await r.json();
-    if (STATE.view === "people") STATE.people = d; else STATE.data = d;
+    if (STATE.view === "people"){ indexPeople(d); STATE.people = d; }
+    else { indexCompanies(d); STATE.data = d; }
     render();
   } catch(e){
     document.getElementById("feed").innerHTML =
@@ -559,8 +571,12 @@ refreshBtn.addEventListener("click", async () => {
   } catch(e){ setRefreshing(false, "Could not start: " + e.message); }
 });
 
+let qTimer = null;
 document.getElementById("q").addEventListener("input", e => {
-  STATE.q = e.target.value; render();
+  STATE.q = e.target.value;
+  STATE.qnorm = STATE.q.trim().toLowerCase();
+  clearTimeout(qTimer);            // debounce so huge lists don't re-render per keystroke
+  qTimer = setTimeout(render, 90);
 });
 document.getElementById("range").addEventListener("change", e => {
   STATE.months = +e.target.value; load();
