@@ -531,7 +531,7 @@ function renderAlarms(){
       <div class="frow"><label>Enabled</label><input type="checkbox" id="e-en" ${e.enabled?"checked":""}></div>
       <div class="frow"><label>SMTP host</label><input type="text" id="e-host" value="${esc(e.smtp_host||"smtp.gmail.com")}"></div>
       <div class="frow"><label>SMTP port</label><input type="number" id="e-port" value="${esc(e.smtp_port||587)}"></div>
-      <div class="frow"><label>Username</label><input type="email" id="e-user" value="${esc(e.username||"")}" placeholder="you@gmail.com"></div>
+      <div class="frow"><label>Username</label><input type="email" id="e-user" value="${esc(e.username||"")}" placeholder="you@example.com"></div>
       <div class="frow"><label>App password</label><input type="password" id="e-pass" value="${esc(e.password||"")}" placeholder="Gmail app password"></div>
       <div class="frow"><label>From</label><input type="email" id="e-from" value="${esc(e.from||"")}" placeholder="(defaults to username)"></div>
       <div class="frow"><label>Send to</label><input type="email" id="e-to" value="${esc(e.to||"")}" placeholder="alerts@you.com"></div>
