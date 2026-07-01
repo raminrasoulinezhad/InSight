@@ -76,7 +76,9 @@ def _do_refresh():
         ]
         with _refresh_lock:
             _refresh["message"] = f"Scraping {len(targets)} companies…"
-        results = scrape_many(targets, headless=True)
+        # Refresh is an explicit "get fresh data" action, so bypass the cache
+        # (force=True) while still updating it for later cache-aware CLI runs.
+        results = scrape_many(targets, headless=True, cache_dir=paths.cache_dir(), force=True)
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
         covered = sum(1 for v in results.values() if v)
@@ -133,7 +135,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, png, "image/png")
         elif path == "/api/data":
-            self._send_json(200, load_view(DATA_DIR, CONFIG))
+            qs = urllib.parse.parse_qs(parsed.query)
+            m = qs.get("months", [""])[0]
+            months = int(m) if m.isdigit() and int(m) > 0 else None
+            self._send_json(200, load_view(DATA_DIR, CONFIG, months=months))
         elif path == "/api/search":
             q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
             try:

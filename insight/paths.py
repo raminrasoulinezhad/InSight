@@ -57,6 +57,14 @@ def config_file() -> Path:
     return cfg
 
 
+def cache_dir() -> Path:
+    """Per-company scrape cache (one JSON per issuer) used to avoid re-fetching
+    data that is still fresh."""
+    c = app_dir() / "cache"
+    c.mkdir(parents=True, exist_ok=True)
+    return c
+
+
 def chrome_profile_dir() -> Path:
     """Dedicated Chrome profile for the --window app so it never disturbs the
     user's main browser."""

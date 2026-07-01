@@ -73,6 +73,8 @@ Then reload the app to see the update.
 
 - **Search** — filter by company, ticker, or insider name.
 - **Filter** — show only net buyers, net sellers, or institutions.
+- **Time range** — show trades from the last month, 3 months, 6 months, year,
+  or 2 years (the totals update to match).
 - **Add a company** — type a name in the *“Add a company…”* box, pick the right
   match, and it joins your watchlist.
 - **Remove a company** — click **✕ Remove** on any company.

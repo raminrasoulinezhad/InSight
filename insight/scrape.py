@@ -124,17 +124,32 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--headful", action="store_true", help="run a visible browser (helps on flagged IPs)"
     )
+    ap.add_argument(
+        "--max-age",
+        type=float,
+        default=12.0,
+        help="reuse cached company data younger than this many hours (default: 12)",
+    )
+    ap.add_argument("--force", action="store_true", help="ignore the cache and re-fetch everything")
+    ap.add_argument("--no-cache", action="store_true", help="do not use the company cache")
     args = ap.parse_args(argv)
 
     config = Path(args.config) if args.config else paths.config_file()
     outdir = Path(args.outdir) if args.outdir else paths.data_dir()
+    cache_dir = None if args.no_cache else paths.cache_dir()
 
     targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()
     print(f"InSight insider scrape — {run_date}")
     print(f"Targets: {', '.join(t['exchange'] + ':' + t['ticker'] for t in targets)}\n")
 
-    results = scrape_many(targets, headless=not args.headful)
+    results = scrape_many(
+        targets,
+        headless=not args.headful,
+        cache_dir=cache_dir,
+        max_age_hours=args.max_age,
+        force=args.force,
+    )
     write_outputs(results, outdir, run_date)
     summarize(results)
     print(f"\nWrote: {outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")

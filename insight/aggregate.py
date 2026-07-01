@@ -17,9 +17,19 @@ The app layer never touches raw rows — it asks for this structure.
 
 from __future__ import annotations
 
+import calendar
 import json
+from datetime import date
 from glob import glob
 from pathlib import Path
+
+
+def months_ago(d: date, n: int) -> date:
+    """The calendar date `n` months before `d` (clamped to a valid day)."""
+    m = d.month - 1 - n
+    y = d.year + m // 12
+    m = m % 12 + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
 
 
 def latest_data_file(data_dir: Path) -> Path | None:
@@ -164,8 +174,13 @@ def build_view(records: list[dict], watchlist: list[dict]) -> dict:
     }
 
 
-def load_view(data_dir: Path, config_path: Path) -> dict:
-    """Load the newest data file + watchlist and build the UI view."""
+def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
+    """Load the newest data file + watchlist and build the UI view.
+
+    `months`, when given, keeps only transactions dated within the last N
+    calendar months, so the aggregated buy/sell counts and totals reflect the
+    selected window.
+    """
     watchlist = []
     if config_path.exists():
         cfg = json.loads(config_path.read_text())
@@ -178,7 +193,12 @@ def load_view(data_dir: Path, config_path: Path) -> dict:
     if data_file:
         records = json.loads(data_file.read_text())
 
+    if months:
+        cutoff = months_ago(date.today(), int(months)).isoformat()
+        records = [r for r in records if (r.get("transaction_date") or "") >= cutoff]
+
     view = build_view(records, watchlist)
     view["data_file"] = data_file.name if data_file else None
     view["data_date"] = data_file.stem.replace("insider_", "") if data_file else None
+    view["range_months"] = int(months) if months else None
     return view

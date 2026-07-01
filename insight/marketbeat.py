@@ -19,9 +19,11 @@ lag SEDI by days, and does NOT cover small TSX-Venture issuers.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 from playwright_stealth import Stealth
@@ -196,27 +198,98 @@ class BotBlocked(RuntimeError):
     """Raised when a page is intercepted by anti-bot protection."""
 
 
-def scrape_many(
-    targets: Iterable[dict], headless: bool = True
-) -> dict[str, list[InsiderTransaction]]:
-    """targets: iterable of {name, exchange, ticker}. Returns {ticker: [...]}.
+# ---- per-company cache --------------------------------------------------------
+# One JSON file per issuer so a re-run (cron double-fire, retry after a partial
+# failure, or the app's day-to-day use) reuses still-fresh data instead of
+# hammering MarketBeat again.
 
-    One target failing (block / not covered) never aborts the rest.
+
+def _cache_path(cache_dir: Path, key: str) -> Path:
+    return cache_dir / (key.replace(":", "_") + ".json")
+
+
+def _read_cache(cache_dir: Path, key: str) -> dict | None:
+    p = _cache_path(cache_dir, key)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (ValueError, OSError):
+        return None
+
+
+def _cache_age_hours(entry: dict) -> float:
+    try:
+        ts = datetime.fromisoformat(entry["scraped_at"])
+    except (KeyError, ValueError):
+        return float("inf")
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ts).total_seconds() / 3600.0
+
+
+def _write_cache(cache_dir: Path, key: str, recs: list[InsiderTransaction]) -> None:
+    entry = {
+        "key": key,
+        "scraped_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "records": [r.to_dict() for r in recs],
+    }
+    _cache_path(cache_dir, key).write_text(json.dumps(entry, indent=2))
+
+
+def _records_from_cache(entry: dict) -> list[InsiderTransaction]:
+    return [InsiderTransaction(**r) for r in entry.get("records", [])]
+
+
+def scrape_many(
+    targets: Iterable[dict],
+    headless: bool = True,
+    cache_dir: Path | None = None,
+    max_age_hours: float = 12.0,
+    force: bool = False,
+) -> dict[str, list[InsiderTransaction]]:
+    """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
+
+    When `cache_dir` is given, a company whose cached data is younger than
+    `max_age_hours` is served from cache instead of being re-fetched (unless
+    `force`). The browser is only launched if at least one company needs
+    fetching. One target failing (block / not covered) never aborts the rest,
+    and a failed fetch falls back to any stale cache so data is not lost.
     """
+    targets = list(targets)
     results: dict[str, list[InsiderTransaction]] = {}
+    to_fetch: list[tuple[str, dict, dict | None]] = []
+
+    for t in targets:
+        key = f"{t['exchange'].upper()}:{t['ticker'].upper()}"
+        entry = _read_cache(cache_dir, key) if cache_dir else None
+        if entry is not None and not force and _cache_age_hours(entry) < max_age_hours:
+            recs = _records_from_cache(entry)
+            results[key] = recs
+            age = _cache_age_hours(entry)
+            print(f"  [{key}] {t.get('name', '')}: cached ({len(recs)} txns, {age:.1f}h old)")
+        else:
+            to_fetch.append((key, t, entry))
+
+    if not to_fetch:
+        return results
+
     with MarketBeatScraper(headless=headless) as mb:
-        for t in targets:
-            key = f"{t['exchange'].upper()}:{t['ticker'].upper()}"
+        for key, t, entry in to_fetch:
             try:
                 recs = mb.fetch(t["exchange"], t["ticker"], t.get("name", ""))
                 results[key] = recs
+                if cache_dir:
+                    _write_cache(cache_dir, key, recs)
                 status = f"{len(recs)} transactions" if recs else "NOT COVERED"
                 print(f"  [{key}] {t.get('name', '')}: {status}")
             except BotBlocked as e:
-                results[key] = []
-                print(f"  [{key}] BLOCKED: {e}")
+                results[key] = _records_from_cache(entry) if entry else []
+                note = " (using stale cache)" if entry else ""
+                print(f"  [{key}] BLOCKED: {e}{note}")
             except Exception as e:  # keep the batch alive
-                results[key] = []
-                print(f"  [{key}] ERROR: {type(e).__name__}: {str(e)[:120]}")
+                results[key] = _records_from_cache(entry) if entry else []
+                note = " (using stale cache)" if entry else ""
+                print(f"  [{key}] ERROR: {type(e).__name__}: {str(e)[:120]}{note}")
             time.sleep(1.0)  # be polite between requests
     return results

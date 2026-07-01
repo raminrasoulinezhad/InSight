@@ -48,6 +48,9 @@
   }
   .seg button:last-child { border-right:0; }
   .seg button.active { background:var(--panel2); color:var(--text); }
+  select#range { background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:8px 12px; font-size:13px; cursor:pointer; }
+  select#range:focus { outline:none; border-color:var(--accent); }
   main { flex:1 1 auto; overflow-y:auto; padding:18px 20px 60px; }
   .company { margin-bottom:26px; }
   .company-head {
@@ -149,6 +152,13 @@
       <button data-f="sell">Net sellers</button>
       <button data-f="inst">Institutions</button>
     </div>
+    <select id="range" title="Show transactions from this period">
+      <option value="1">Last month</option>
+      <option value="3">Last 3 months</option>
+      <option value="6">Last 6 months</option>
+      <option value="12">Last year</option>
+      <option value="24" selected>Last 2 years</option>
+    </select>
   </div>
   <div class="controls adder">
     <div class="add-row" style="flex:1">
@@ -176,7 +186,7 @@ const fmtMoney = (v, cur) => {
 };
 const fmtShares = n => !n ? "0" : n.toLocaleString();
 
-let STATE = { data:null, q:"", filter:"all" };
+let STATE = { data:null, q:"", filter:"all", months:24 };
 
 function entityKind(box){
   if (box.is_issuer_buyback) return "buyback";
@@ -294,7 +304,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
 
 async function load(){
   try {
-    const r = await fetch("/api/data");
+    const r = await fetch("/api/data?months=" + STATE.months);
     STATE.data = await r.json();
     render();
   } catch(e){
@@ -428,6 +438,9 @@ refreshBtn.addEventListener("click", async () => {
 
 document.getElementById("q").addEventListener("input", e => {
   STATE.q = e.target.value; render();
+});
+document.getElementById("range").addEventListener("change", e => {
+  STATE.months = +e.target.value; load();
 });
 document.querySelectorAll("#filter button").forEach(b => {
   b.addEventListener("click", () => {

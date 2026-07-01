@@ -50,7 +50,19 @@ insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
 
 # show the browser (useful if your IP gets a bot challenge)
 insight-scrape --headful
+
+# cache control (each company is cached to avoid re-fetching)
+insight-scrape --max-age 24    # reuse cache younger than 24h (default 12)
+insight-scrape --force         # ignore the cache, re-fetch everything
+insight-scrape --no-cache      # don't read or write the cache
 ```
+
+Each company's fetched data is cached (one JSON per issuer under the app
+folder's `cache/`); a re-run reuses data younger than `--max-age` hours instead
+of re-fetching, and only launches the browser if something actually needs
+fetching. The app's **Refresh** button always forces a fresh fetch. The app UI
+also filters transactions by a selectable window (1M/3M/6M/1Y/2Y) via
+`GET /api/data?months=N`.
 
 The watchlist and all output live in a per-user app folder (created on first
 run), so nothing depends on the repo location:
