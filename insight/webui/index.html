@@ -202,6 +202,8 @@ const fmtMoney = (v, cur) => {
   return (cur ? cur+" " : "$") + s;
 };
 const fmtShares = n => !n ? "0" : n.toLocaleString();
+const fmtPrice = (v, cur) => v == null ? "—" :
+  (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
 let STATE = { view:"companies", data:null, people:null, q:"", filter:"all", months:24 };
 
@@ -258,11 +260,13 @@ function renderCard(box){
         <div class="lbl">Bought</div>
         <div class="val">${fmtMoney(box.buy_value, cur)}</div>
         <div class="sh">${fmtShares(box.buy_shares)} sh</div>
+        ${box.avg_buy_price!=null ? `<div class="sh">avg ${fmtPrice(box.avg_buy_price, cur)}/sh</div>` : ""}
       </div>
       <div class="amt sell">
         <div class="lbl">Sold</div>
         <div class="val">${fmtMoney(box.sell_value, cur)}</div>
         <div class="sh">${fmtShares(box.sell_shares)} sh</div>
+        ${box.avg_sell_price!=null ? `<div class="sh">avg ${fmtPrice(box.avg_sell_price, cur)}/sh</div>` : ""}
       </div>
     </div>
     <div class="foot">
@@ -367,11 +371,13 @@ function renderPersonCompany(c){
         <div class="lbl">Bought</div>
         <div class="val">${fmtMoney(c.buy_value, cur)}</div>
         <div class="sh">${fmtShares(c.buy_shares)} sh</div>
+        ${c.avg_buy_price!=null ? `<div class="sh">avg ${fmtPrice(c.avg_buy_price, cur)}/sh</div>` : ""}
       </div>
       <div class="amt sell">
         <div class="lbl">Sold</div>
         <div class="val">${fmtMoney(c.sell_value, cur)}</div>
         <div class="sh">${fmtShares(c.sell_shares)} sh</div>
+        ${c.avg_sell_price!=null ? `<div class="sh">avg ${fmtPrice(c.avg_sell_price, cur)}/sh</div>` : ""}
       </div>
     </div>
     <div class="foot">

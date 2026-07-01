@@ -59,6 +59,12 @@ def _empty_box(name: str, role: str, entity_type: str) -> dict:
     }
 
 
+def _avg_price(value: float, shares: int) -> float | None:
+    """Volume-weighted average cost per share (total $ / total shares), or None
+    when there are no shares to divide by."""
+    return round(value / shares, 4) if shares else None
+
+
 def _add_txn(box: dict, rec: dict) -> None:
     ttype = (rec.get("transaction_type") or "").lower()
     shares = rec.get("shares") or 0
@@ -147,6 +153,8 @@ def build_view(records: list[dict], watchlist: list[dict]) -> dict:
     for comp in companies.values():
         boxes = list(comp["boxes_by_insider"].values())
         for b in boxes:
+            b["avg_buy_price"] = _avg_price(b["buy_value"], b["buy_shares"])
+            b["avg_sell_price"] = _avg_price(b["sell_value"], b["sell_shares"])
             b["buy_value"] = round(b["buy_value"], 2)
             b["sell_value"] = round(b["sell_value"], 2)
             b["net_value"] = round(b["net_value"], 2)
@@ -300,6 +308,8 @@ def build_people_view(records: list[dict]) -> dict:
     for person in people.values():
         companies = list(person.pop("companies_by_key").values())
         for c in companies:
+            c["avg_buy_price"] = _avg_price(c["buy_value"], c["buy_shares"])
+            c["avg_sell_price"] = _avg_price(c["sell_value"], c["sell_shares"])
             c["buy_value"] = round(c["buy_value"], 2)
             c["sell_value"] = round(c["sell_value"], 2)
             c["net_value"] = round(c["net_value"], 2)
