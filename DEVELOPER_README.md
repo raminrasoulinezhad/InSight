@@ -365,13 +365,20 @@ nothing downstream changes.
 Unit tests live under `tests/` (pytest) and cover the pure logic — parsing,
 classification, aggregation math, average-cost calculations, history merge/dedup,
 delisted filtering, watchlist add/remove, and the scraper's row/URL parsing —
-without any network or browser. Run them:
+without any network or browser. Dev tooling is a `uv` dependency group:
 
 ```bash
-uv run --extra dev pytest        # or: pip install -e '.[dev]' && pytest
+uv sync --group dev            # install dev tools (pytest, ruff, mypy, …)
+uv run pytest                  # tests
+uv run ruff check insight tests
+uv run mypy insight            # strict on the pure core; glue modules relaxed
 ```
 
 The network/browser parts (live MarketBeat fetch, discovery, delisting redirect)
 are intentionally isolated behind pure helpers (`_extract_tickers`,
 `_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
 inputs rather than live HTTP.
+
+CI (`.github/workflows/`) runs the same ruff/mypy/pytest checks on every push and
+PR, plus a `gitleaks` secret scan over the full history as a server-side backstop
+to the local pre-commit hook.

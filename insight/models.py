@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 from datetime import date
+from typing import Any
 
 # Tokens that indicate the "insider" is a company / fund / institution
 # rather than a natural person (covers issuer buybacks too).
@@ -62,7 +63,7 @@ class InsiderTransaction:
         # are the same entity. MarketBeat shows a short issuer name
         # ("Athabasca Oil") but the full legal name on the row ("Athabasca Oil
         # Corporation"), so test containment in BOTH directions.
-        def norm(s):
+        def norm(s: str) -> str:
             return re.sub(r"[^a-z0-9]", "", s.lower())
 
         n, iss = norm(name), norm(self.issuer_name)
@@ -71,7 +72,7 @@ class InsiderTransaction:
             self.entity_type = "institution"
         return self
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 

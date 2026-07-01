@@ -15,16 +15,18 @@ dependencies = [
     "playwright-stealth==2.0.3",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8"]
-
 [project.scripts]
 insight = "insight.app:main"
 insight-scrape = "insight.scrape:main"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["insight"]
@@ -40,8 +42,64 @@ include = [
     "insight",
     "README.md",
     "DEVELOPER_README.md",
+    "CLAUDE.md",
     "REPORT.md",
+    "LICENSE",
     "assets",
     "install-desktop.sh",
     "insight.desktop",
 ]
+
+# ---------------------------------------------------------------------------
+# Tooling (consolidated here, MoneyTor-style, instead of a standalone ruff.toml)
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["insight"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["insight", "tests"]
+
+[tool.ruff.lint]
+# Sensible, strict-leaning default set. Expand as the codebase grows.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # comprehensions
+    "SIM", # simplify
+    "RUF", # ruff-specific
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["insight"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+
+# The pure core (models, aggregate, issuers, scrape, paths) stays fully strict.
+# The Playwright scraper and the http.server glue are the C++/dynamic-binding
+# analogue of MoneyTor's Qt UI layer — relax them rather than fight Any-typed
+# third-party surfaces.
+[[tool.mypy.overrides]]
+module = ["insight.marketbeat", "insight.app"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+warn_return_any = false
+disable_error_code = ["type-arg", "union-attr", "no-any-return", "attr-defined"]
+
+[[tool.mypy.overrides]]
+module = ["playwright.*", "playwright_stealth.*"]
+ignore_missing_imports = true

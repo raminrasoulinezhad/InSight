@@ -30,6 +30,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from . import paths
 from .marketbeat import discover_tickers, scrape_many
@@ -55,7 +56,7 @@ CSV_FIELDS = [
 ]
 
 
-def load_targets(path: Path, cli_tickers: list[str]) -> list[dict]:
+def load_targets(path: Path, cli_tickers: list[str]) -> list[dict[str, str]]:
     if cli_tickers:
         targets = []
         for spec in cli_tickers:
@@ -75,7 +76,7 @@ def write_outputs(
     by_ticker_dir = outdir / "by_ticker"
     by_ticker_dir.mkdir(exist_ok=True)
 
-    all_rows: list[dict] = []
+    all_rows: list[dict[str, Any]] = []
     for key, recs in results.items():
         rows = [r.to_dict() for r in recs]
         all_rows.extend(rows)
@@ -116,7 +117,7 @@ def summarize(results: dict[str, list[InsiderTransaction]]) -> None:
         )
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
     ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
     ap.add_argument("--tickers", nargs="*", default=[], help="EXCH:TICKER specs, overrides config")

@@ -25,6 +25,8 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from pathlib import Path
+from typing import Any
 
 _SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/"
 _HEADERS = {
@@ -77,7 +79,7 @@ def candidate_key(exchange: str, ticker: str) -> str:
     return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
 
 
-def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> list[dict]:
+def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> list[dict[str, Any]]:
     """Return ranked issuer candidates matching `name`.
 
     Each candidate: {legal_name, ticker, exchange, exchange_raw, country,
@@ -101,7 +103,7 @@ def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> lis
         raw = json.loads(resp.read().decode("utf-8"))
 
     seen: set[str] = set()
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for item in raw:
         ticker = _strip(item.get("symbol", ""))
         exch = map_exchange(item.get("exchange", ""))
@@ -123,7 +125,7 @@ def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> lis
             }
         )
 
-    def rank(c: dict) -> tuple:
+    def rank(c: dict[str, Any]) -> tuple[int, int, str]:
         return (
             0 if c["country"] == country_first else 1,
             _EXCHANGE_RANK.get(c["exchange"], 99),
@@ -135,10 +137,10 @@ def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> lis
     # Collapse dual-listings of the SAME issuer in the SAME country (e.g. a name
     # listed on both TSXV and NEO/Cboe Canada) to one row, keeping the
     # best-ranked exchange. The issuer is identical for insider-filing purposes.
-    def norm(s):
+    def norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]", "", s.lower())
 
-    best: dict[tuple, dict] = {}
+    best: dict[tuple[str, str], dict[str, Any]] = {}
     for c in out:  # already rank-sorted, so first seen is best
         ckey = (norm(c["legal_name"]), c["country"])
         if ckey not in best:
@@ -149,11 +151,12 @@ def search_issuers(name: str, limit: int = 15, country_first: str = "CA") -> lis
 # ---------- watchlist mutation ----------
 
 
-def load_watchlist(config_path) -> dict:
-    return json.loads(config_path.read_text())
+def load_watchlist(config_path: Path) -> dict[str, Any]:
+    cfg: dict[str, Any] = json.loads(config_path.read_text())
+    return cfg
 
 
-def in_watchlist(cfg: dict, exchange: str, ticker: str) -> bool:
+def in_watchlist(cfg: dict[str, Any], exchange: str, ticker: str) -> bool:
     key = candidate_key(exchange, ticker)
     return any(
         candidate_key(c.get("exchange", ""), c.get("ticker", "")) == key
@@ -161,7 +164,7 @@ def in_watchlist(cfg: dict, exchange: str, ticker: str) -> bool:
     )
 
 
-def add_to_watchlist(config_path, candidate: dict) -> tuple[bool, str]:
+def add_to_watchlist(config_path: Path, candidate: dict[str, Any]) -> tuple[bool, str]:
     """Append a resolved candidate to companies.json. Returns (added, msg)."""
     name = (candidate.get("legal_name") or candidate.get("name") or "").strip()
     exchange = (candidate.get("exchange") or "").upper()
@@ -186,7 +189,7 @@ def add_to_watchlist(config_path, candidate: dict) -> tuple[bool, str]:
     return True, f"Added {name} ({exchange}:{ticker})"
 
 
-def remove_from_watchlist(config_path, exchange: str, ticker: str) -> tuple[bool, str]:
+def remove_from_watchlist(config_path: Path, exchange: str, ticker: str) -> tuple[bool, str]:
     """Remove a company from companies.json by EXCHANGE:TICKER. Returns (removed, msg)."""
     exchange = (exchange or "").upper()
     ticker = (ticker or "").upper()

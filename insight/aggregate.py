@@ -21,9 +21,11 @@ import calendar
 import json
 import os
 import threading
+from collections.abc import Callable
 from datetime import date
 from glob import glob
 from pathlib import Path
+from typing import Any
 
 # ---- access cache -------------------------------------------------------------
 # Search over names/companies is the app's main job, and every /api/data and
@@ -34,15 +36,19 @@ from pathlib import Path
 # changes — turning repeated access into an in-memory dict lookup. This beats an
 # embedded DB for a single-user, few-MB dataset (no query/serialization layer);
 # SQLite/FTS5 is the escalation path if the data ever outgrows memory.
+Rec = dict[str, Any]  # one normalized transaction record (JSON object)
+View = dict[str, Any]  # a built company/people view
+DirSig = tuple[tuple[str, int, int], ...]  # (name, mtime_ns, size) per snapshot
+
 _CACHE_LOCK = threading.Lock()
-_records_cache: dict[str, tuple] = {}  # data_dir -> (sig, records)
-_view_cache: dict[tuple, dict] = {}  # (kind, data_dir, sig, cfg_sig, del_sig, months) -> view
+_records_cache: dict[str, tuple[DirSig, list[Rec]]] = {}  # data_dir -> (sig, records)
+_view_cache: dict[tuple[Any, ...], View] = {}  # full signature -> view
 _VIEW_CACHE_MAX = 64
 
 
-def _dir_signature(data_dir: Path) -> tuple:
+def _dir_signature(data_dir: Path) -> DirSig:
     """Cheap fingerprint of the snapshot set: (name, mtime_ns, size) per file."""
-    sig = []
+    sig: list[tuple[str, int, int]] = []
     for p in sorted(glob(str(data_dir / "insider_*.json"))):
         try:
             st = os.stat(p)
@@ -52,7 +58,7 @@ def _dir_signature(data_dir: Path) -> tuple:
     return tuple(sig)
 
 
-def _file_signature(path: Path) -> tuple | None:
+def _file_signature(path: Path) -> tuple[int, int] | None:
     try:
         st = path.stat()
         return (st.st_mtime_ns, st.st_size)
@@ -74,7 +80,7 @@ def latest_data_file(data_dir: Path) -> Path | None:
     return Path(files[-1]) if files else None
 
 
-def _empty_box(name: str, role: str, entity_type: str) -> dict:
+def _empty_box(name: str, role: str, entity_type: str) -> Rec:
     return {
         "insider_name": name,
         "insider_role": role,
@@ -101,7 +107,7 @@ def _avg_price(value: float, shares: int) -> float | None:
     return round(value / shares, 4) if shares else None
 
 
-def _add_txn(box: dict, rec: dict) -> None:
+def _add_txn(box: Rec, rec: Rec) -> None:
     ttype = (rec.get("transaction_type") or "").lower()
     shares = rec.get("shares") or 0
     value = rec.get("total_value") or 0.0
@@ -137,7 +143,7 @@ def _add_txn(box: dict, rec: dict) -> None:
     )
 
 
-def build_view(records: list[dict], watchlist: list[dict]) -> dict:
+def build_view(records: list[Rec], watchlist: list[Rec]) -> View:
     """Group records into companies -> insider boxes.
 
     `watchlist` (companies.json entries) defines which companies appear: issuers
@@ -145,7 +151,7 @@ def build_view(records: list[dict], watchlist: list[dict]) -> dict:
     gaps visible, and records for issuers not on the watchlist are ignored so a
     removed company disappears instead of lingering from stale scraped data.
     """
-    companies: dict[str, dict] = {}
+    companies: dict[str, dict[str, Any]] = {}
 
     def company_key(exchange: str, ticker: str) -> str:
         return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
@@ -230,7 +236,7 @@ def _person_key(name: str) -> str:
     return " ".join((name or "").split()).lower()
 
 
-def _empty_person(name: str, entity_type: str) -> dict:
+def _empty_person(name: str, entity_type: str) -> View:
     return {
         "insider_name": name,
         "entity_type": entity_type,
@@ -251,7 +257,7 @@ def _empty_person(name: str, entity_type: str) -> dict:
     }
 
 
-def _empty_person_company(key: str, issuer_name: str, exchange: str, ticker: str) -> dict:
+def _empty_person_company(key: str, issuer_name: str, exchange: str, ticker: str) -> View:
     return {
         "key": key,
         "issuer_name": issuer_name,
@@ -270,7 +276,7 @@ def _empty_person_company(key: str, issuer_name: str, exchange: str, ticker: str
     }
 
 
-def _accumulate(agg: dict, rec: dict) -> None:
+def _accumulate(agg: dict[str, Any], rec: Rec) -> None:
     """Fold one record's buy/sell numbers into a person or per-company aggregate."""
     ttype = (rec.get("transaction_type") or "").lower()
     shares = rec.get("shares") or 0
@@ -296,7 +302,7 @@ def _accumulate(agg: dict, rec: dict) -> None:
         agg["latest_date"] = d
 
 
-def build_people_view(records: list[dict]) -> dict:
+def build_people_view(records: list[Rec]) -> View:
     """Group records into insiders -> the companies they traded.
 
     Unlike the company view, this is NOT gated to the watchlist: it spans EVERY
@@ -310,7 +316,7 @@ def build_people_view(records: list[dict]) -> dict:
     def company_key(exchange: str, ticker: str) -> str:
         return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
 
-    people: dict[str, dict] = {}
+    people: dict[str, dict[str, Any]] = {}
     for rec in records:
         if rec.get("is_issuer_buyback"):
             continue
@@ -368,7 +374,7 @@ def build_people_view(records: list[dict]) -> dict:
     }
 
 
-def _txn_key(r: dict) -> tuple:
+def _txn_key(r: Rec) -> tuple[Any, ...]:
     """Stable identity of a single transaction, for cross-file dedup.
 
     Two scrapes of the same underlying filing normalize to identical fields, so
@@ -388,7 +394,7 @@ def _txn_key(r: dict) -> tuple:
     )
 
 
-def load_all_records(data_dir: Path) -> list[dict]:
+def load_all_records(data_dir: Path) -> list[Rec]:
     """Merge every dated data file into one deduplicated record set.
 
     Each scrape writes only a snapshot of MarketBeat's most-recent page, so no
@@ -407,7 +413,7 @@ def load_all_records(data_dir: Path) -> list[dict]:
         if hit is not None and hit[0] == sig:
             return hit[1]
 
-    merged: dict[tuple, dict] = {}
+    merged: dict[tuple[Any, ...], Rec] = {}
     for path in sorted(glob(str(data_dir / "insider_*.json"))):
         try:
             recs = json.loads(Path(path).read_text())
@@ -422,7 +428,7 @@ def load_all_records(data_dir: Path) -> list[dict]:
     return records
 
 
-def _company_key(exchange, ticker: str) -> str:
+def _company_key(exchange: str | None, ticker: str | None) -> str:
     return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
 
 
@@ -443,7 +449,7 @@ def _delisted_keys(config_path: Path) -> set[str]:
 
 def _load_records(
     data_dir: Path, config_path: Path, months: int | None
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[Rec], list[Rec]]:
     """Shared loader for the company and people views.
 
     Returns (records, watchlist). Records are the deduplicated union of ALL
@@ -476,7 +482,7 @@ def _load_records(
     return records, watchlist
 
 
-def _stamp(view: dict, data_dir: Path, months: int | None) -> dict:
+def _stamp(view: View, data_dir: Path, months: int | None) -> View:
     """Attach shared metadata: newest snapshot date + how many were merged."""
     files = sorted(glob(str(data_dir / "insider_*.json")))
     data_file = Path(files[-1]) if files else None
@@ -487,7 +493,9 @@ def _stamp(view: dict, data_dir: Path, months: int | None) -> dict:
     return view
 
 
-def _cached_view(kind: str, data_dir: Path, config_path: Path, months: int | None, builder):
+def _cached_view(
+    kind: str, data_dir: Path, config_path: Path, months: int | None, builder: Callable[[], View]
+) -> View:
     """Return a memoized built view, rebuilding only when an input file changes.
 
     Keyed by the snapshot-set signature plus the watchlist and delisted file
@@ -515,21 +523,21 @@ def _cached_view(kind: str, data_dir: Path, config_path: Path, months: int | Non
     return view
 
 
-def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
+def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> View:
     """Build the company view from the merged history + watchlist (cached)."""
 
-    def build():
+    def build() -> View:
         records, watchlist = _load_records(data_dir, config_path, months)
         return _stamp(build_view(records, watchlist), data_dir, months)
 
     return _cached_view("company", data_dir, config_path, months, build)
 
 
-def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> dict:
+def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> View:
     """Build the people view from the merged history (spans all scraped
     companies, not just the watchlist). Cached like the company view."""
 
-    def build():
+    def build() -> View:
         records, _watchlist = _load_records(data_dir, config_path, months)
         return _stamp(build_people_view(records), data_dir, months)
 
