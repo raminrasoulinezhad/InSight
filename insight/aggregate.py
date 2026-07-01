@@ -372,15 +372,34 @@ def load_all_records(data_dir: Path) -> list[dict]:
     return list(merged.values())
 
 
+def _company_key(exchange, ticker: str) -> str:
+    return f"{(exchange or '').upper()}:{(ticker or '').upper()}"
+
+
+def _delisted_keys(config_path: Path) -> set[str]:
+    """Load EXCH:TICKER keys the scraper flagged as delisted/acquired.
+
+    Lives next to the watchlist (app_dir/delisted.json). These are filtered out
+    of both views so acquired/delisted names stop showing stale activity; the
+    underlying snapshots are left intact (the flag is reversible)."""
+    p = config_path.parent / "delisted.json"
+    if not p.exists():
+        return set()
+    try:
+        return {str(k).upper() for k in json.loads(p.read_text())}
+    except (ValueError, OSError):
+        return set()
+
+
 def _load_records(
     data_dir: Path, config_path: Path, months: int | None
 ) -> tuple[list[dict], list[dict]]:
     """Shared loader for the company and people views.
 
     Returns (records, watchlist). Records are the deduplicated union of ALL
-    dated snapshots (see load_all_records). `months`, when given, keeps only
-    transactions dated within the last N calendar months so downstream
-    aggregates reflect the selected window.
+    dated snapshots (see load_all_records), minus anything flagged delisted.
+    `months`, when given, keeps only transactions dated within the last N
+    calendar months so downstream aggregates reflect the selected window.
     """
     watchlist = []
     if config_path.exists():
@@ -390,6 +409,15 @@ def _load_records(
         ]
 
     records = load_all_records(data_dir)
+
+    delisted = _delisted_keys(config_path)
+    if delisted:
+        records = [
+            r for r in records if _company_key(r.get("exchange"), r.get("ticker")) not in delisted
+        ]
+        watchlist = [
+            c for c in watchlist if _company_key(c.get("exchange"), c.get("ticker")) not in delisted
+        ]
 
     if months:
         cutoff = months_ago(date.today(), int(months)).isoformat()

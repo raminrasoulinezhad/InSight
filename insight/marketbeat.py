@@ -19,6 +19,7 @@ lag SEDI by days, and does NOT cover small TSX-Venture issuers.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -123,6 +124,21 @@ class MarketBeatScraper:
         if any(m in title for m in _BLOCK_MARKERS) or "perfdrive" in page.url:
             raise BotBlocked(f"{exchange}:{ticker} blocked by bot protection")
 
+        # If the insider-trades URL redirected away, this ticker has no insider
+        # page. Two sub-cases, told apart by the final URL:
+        #   /stocks/<EXCH>/<TICKER>/  -> profile kept, insider page gone
+        #                                = delisted/acquired -> flag as delisted
+        #   /stocks/<EXCH>/           -> ticker dropped to the exchange list
+        #                                = unknown/uncovered -> just "no data"
+        low_url = (page.url or "").lower()
+        if "insider-trades" not in low_url:
+            m = re.search(rf"/stocks/{re.escape(exchange.lower())}/([^/?#]+)", low_url)
+            if m and m.group(1):
+                raise CompanyDelisted(
+                    f"{exchange}:{ticker} redirected to {page.url} — no insider page"
+                )
+            return []  # unknown / not covered
+
         # MarketBeat serves a generic "stock list" page when a ticker is
         # unknown; the real page title contains "Insider Trading Activity".
         if "insider trading activity" not in title:
@@ -200,6 +216,11 @@ class BotBlocked(RuntimeError):
     """Raised when a page is intercepted by anti-bot protection."""
 
 
+class CompanyDelisted(RuntimeError):
+    """Raised when a ticker's insider page is gone (delisted/acquired): the URL
+    redirects to the company profile with no insider-trades subpage."""
+
+
 # ---- ticker-universe discovery ------------------------------------------------
 # MarketBeat serves a per-exchange stock-list page (e.g. /stocks/TSE/) whose HTML
 # links to every covered ticker as /stocks/<EXCH>/<TICKER>/. We enumerate those
@@ -258,6 +279,27 @@ def _read_cache(cache_dir: Path, key: str) -> dict | None:
         return None
 
 
+def _delete_cache(cache_dir: Path, key: str) -> None:
+    """Drop a company's cache file (used when it is found delisted/acquired)."""
+    with contextlib.suppress(FileNotFoundError):
+        _cache_path(cache_dir, key).unlink()
+
+
+def _load_delisted(path: Path | None) -> set[str]:
+    if not path or not Path(path).exists():
+        return set()
+    try:
+        return {str(k).upper() for k in json.loads(Path(path).read_text())}
+    except (ValueError, OSError):
+        return set()
+
+
+def _save_delisted(path: Path | None, keys: set[str]) -> None:
+    if path is None:
+        return
+    Path(path).write_text(json.dumps(sorted(keys), indent=2))
+
+
 def _cache_age_hours(entry: dict) -> float:
     try:
         ts = datetime.fromisoformat(entry["scraped_at"])
@@ -287,6 +329,7 @@ def scrape_many(
     cache_dir: Path | None = None,
     max_age_hours: float = 12.0,
     force: bool = False,
+    delisted_path: Path | None = None,
 ) -> dict[str, list[InsiderTransaction]]:
     """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
 
@@ -295,10 +338,16 @@ def scrape_many(
     `force`). The browser is only launched if at least one company needs
     fetching. One target failing (block / not covered) never aborts the rest,
     and a failed fetch falls back to any stale cache so data is not lost.
+
+    When a fetch finds a ticker delisted/acquired (its insider page is gone),
+    its cache file is deleted and it is recorded in `delisted_path` so the app
+    can hide its now-meaningless history. The flag is self-healing: a company
+    that later returns data (or is served from a valid cache) is un-flagged.
     """
     targets = list(targets)
     results: dict[str, list[InsiderTransaction]] = {}
     to_fetch: list[tuple[str, dict, dict | None]] = []
+    delisted = _load_delisted(delisted_path)
 
     for t in targets:
         key = f"{t['exchange'].upper()}:{t['ticker'].upper()}"
@@ -306,12 +355,14 @@ def scrape_many(
         if entry is not None and not force and _cache_age_hours(entry) < max_age_hours:
             recs = _records_from_cache(entry)
             results[key] = recs
+            delisted.discard(key)  # a live cache entry means it is not delisted
             age = _cache_age_hours(entry)
             print(f"  [{key}] {t.get('name', '')}: cached ({len(recs)} txns, {age:.1f}h old)")
         else:
             to_fetch.append((key, t, entry))
 
     if not to_fetch:
+        _save_delisted(delisted_path, delisted)
         return results
 
     with MarketBeatScraper(headless=headless) as mb:
@@ -319,10 +370,17 @@ def scrape_many(
             try:
                 recs = mb.fetch(t["exchange"], t["ticker"], t.get("name", ""))
                 results[key] = recs
+                delisted.discard(key)  # data (or a valid empty page) came back
                 if cache_dir:
                     _write_cache(cache_dir, key, recs)
                 status = f"{len(recs)} transactions" if recs else "NOT COVERED"
                 print(f"  [{key}] {t.get('name', '')}: {status}")
+            except CompanyDelisted as e:
+                results[key] = []
+                delisted.add(key)
+                if cache_dir:
+                    _delete_cache(cache_dir, key)
+                print(f"  [{key}] DELISTED — dropped from cache: {e}")
             except BotBlocked as e:
                 results[key] = _records_from_cache(entry) if entry else []
                 note = " (using stale cache)" if entry else ""
@@ -332,4 +390,6 @@ def scrape_many(
                 note = " (using stale cache)" if entry else ""
                 print(f"  [{key}] ERROR: {type(e).__name__}: {str(e)[:120]}{note}")
             time.sleep(1.0)  # be polite between requests
+
+    _save_delisted(delisted_path, delisted)
     return results

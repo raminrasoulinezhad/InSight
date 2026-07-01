@@ -95,7 +95,11 @@ def _do_refresh(discover: bool = False):
         # bypasses the cache (force=True). A discover run scrapes ~215 companies,
         # so it relies on the cache (force=False) to stay tractable on repeats.
         results = scrape_many(
-            targets, headless=True, cache_dir=paths.cache_dir(), force=not discover
+            targets,
+            headless=True,
+            cache_dir=paths.cache_dir(),
+            force=not discover,
+            delisted_path=paths.delisted_file(),
         )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)

@@ -173,6 +173,7 @@ def main(argv=None) -> int:
         cache_dir=cache_dir,
         max_age_hours=args.max_age,
         force=args.force,
+        delisted_path=paths.delisted_file(),
     )
     write_outputs(results, outdir, run_date)
     summarize(results)

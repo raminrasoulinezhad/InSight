@@ -57,6 +57,16 @@ def config_file() -> Path:
     return cfg
 
 
+def delisted_file() -> Path:
+    """Tickers found to be delisted/acquired during a scrape (no insider page).
+
+    A JSON list of "EXCH:TICKER". The scraper maintains it (adds on detection,
+    removes if a company's data returns) and the app filters these out of both
+    views so acquired/delisted names stop showing stale, meaningless activity.
+    """
+    return app_dir() / "delisted.json"
+
+
 def cache_dir() -> Path:
     """Per-company scrape cache (one JSON per issuer) used to avoid re-fetching
     data that is still fresh."""

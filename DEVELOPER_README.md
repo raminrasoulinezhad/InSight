@@ -158,6 +158,17 @@ filter runs over that union. Running the scraper regularly (e.g. via cron) is
 what deepens the window over time — so **don't delete old dated files** if you
 want the history; they are the history.
 
+**Delisted / acquired companies are dropped automatically.** When a fetch finds
+a ticker's insider page gone — the URL redirects to `…/stocks/<EXCH>/<TICKER>/`
+(profile kept, no `insider-trades` subpage), as happens after an acquisition —
+the scraper raises `CompanyDelisted`, deletes that company's cache file, and
+records `EXCH:TICKER` in `delisted.json`. Both views filter those out, so stale
+insider activity for acquired names stops showing. The snapshots themselves are
+left intact (nothing is destroyed), and the flag is **self-healing**: if a
+company's data ever returns, the next scrape un-flags it. A ticker that instead
+redirects to the bare `…/stocks/<EXCH>/` list (unknown / not covered) is treated
+as "no data", not delisted.
+
 ### Example summary
 
 ```
