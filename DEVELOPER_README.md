@@ -346,3 +346,19 @@ The editable watchlist and dated outputs live in the per-user app folder (see
 
 Adding a new source = a new module that yields `InsiderTransaction` objects;
 nothing downstream changes.
+
+## Tests
+
+Unit tests live under `tests/` (pytest) and cover the pure logic — parsing,
+classification, aggregation math, average-cost calculations, history merge/dedup,
+delisted filtering, watchlist add/remove, and the scraper's row/URL parsing —
+without any network or browser. Run them:
+
+```bash
+uv run --extra dev pytest        # or: pip install -e '.[dev]' && pytest
+```
+
+The network/browser parts (live MarketBeat fetch, discovery, delisting redirect)
+are intentionally isolated behind pure helpers (`_extract_tickers`,
+`_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
+inputs rather than live HTTP.
