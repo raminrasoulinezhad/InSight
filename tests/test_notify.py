@@ -161,10 +161,12 @@ class TestEvaluate:
 
 class TestDescribeAndConfig:
     def test_describe_sentence(self):
+        # Brief, to the point: who + action + shares + issuer + per-share price.
         s = notify._describe(rec("HYMC", "Eric Sprott", "Buy", 24000, 200000.0, "2026-06-16"))
-        assert "Eric Sprott bought 24,000 shares of" in s
-        assert "(TSE:HYMC)" in s
-        assert "2026-06-16" in s
+        assert s == "Eric Sprott bought 24,000 shares of HYMC Inc (~8.33 CAD each)"
+        # the terse format drops the exchange:ticker and the date
+        assert "TSE:HYMC" not in s
+        assert "2026-06-16" not in s
 
     def test_public_config_masks_password(self, tmp_path):
         p = tmp_path / "notify.json"

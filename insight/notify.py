@@ -170,8 +170,23 @@ def _fmt_money(v: float | None, cur: str) -> str:
     return (cur + " " if cur else "$") + s
 
 
+def _num(v: float) -> str:
+    """Compact number: 50.50 -> '50.5', 50.0 -> '50', 1234.5 -> '1,234.5'."""
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def _price_suffix(rec: dict[str, Any]) -> str:
+    """' (~50.5 CAD each)' from avg_price, falling back to total value."""
+    cur = rec.get("currency") or ""
+    price = rec.get("avg_price")
+    if price:
+        return f" (~{_num(price)} {cur} each)" if cur else f" (~{_num(price)} each)"
+    val = rec.get("total_value")
+    return f" ({_fmt_money(val, cur)})" if val else ""
+
+
 def _describe(rec: dict[str, Any]) -> str:
-    """A one-line human sentence about a single transaction."""
+    """A brief one-line sentence: who did what, how many shares, at what price."""
     ttype = (rec.get("transaction_type") or "").lower()
     if "buy" in ttype:
         action = "bought"
@@ -181,13 +196,9 @@ def _describe(rec: dict[str, Any]) -> str:
         action = rec.get("transaction_type") or "traded"
     who = rec.get("insider_name") or "An insider"
     issuer = rec.get("issuer_name") or rec.get("ticker") or ""
-    tick = f"{rec.get('exchange', '')}:{rec.get('ticker', '')}"
     shares = rec.get("shares")
     sh = f"{shares:,} shares of " if shares else ""
-    val = rec.get("total_value")
-    money = f" ({_fmt_money(val, rec.get('currency', ''))})" if val else ""
-    date = rec.get("transaction_date") or ""
-    return f"{who} {action} {sh}{issuer} ({tick}) on {date}{money}."
+    return f"{who} {action} {sh}{issuer}{_price_suffix(rec)}"
 
 
 def _email_html(label: str, lines: list[str]) -> str:
@@ -267,8 +278,11 @@ def send_ntfy(ntfy_cfg: dict[str, Any], title: str, message: str) -> None:
 
 
 def _deliver(cfg: dict[str, Any], subject: str, lines: list[str], label: str) -> tuple[bool, str]:
-    """Send one alarm's message over every enabled channel. Returns (any_ok, err)."""
-    text = subject + "\n\n" + "\n".join("• " + x for x in lines)
+    """Send one alarm's message over every enabled channel. Returns (any_ok, err).
+
+    Kept terse: a single transaction stands on its own line; several are bulleted.
+    """
+    text = lines[0] if len(lines) == 1 else "\n".join("• " + x for x in lines)
     any_ok = False
     errs = []
     email_cfg = cfg.get("email", {})
@@ -281,7 +295,7 @@ def _deliver(cfg: dict[str, Any], subject: str, lines: list[str], label: str) ->
     ntfy_cfg = cfg.get("ntfy", {})
     if ntfy_cfg.get("enabled") and ntfy_cfg.get("topic"):
         try:
-            send_ntfy(ntfy_cfg, "InSight alert", text)
+            send_ntfy(ntfy_cfg, "InSight", text)
             any_ok = True
         except Exception as e:
             errs.append(f"ntfy: {type(e).__name__}: {e}")
@@ -321,7 +335,10 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
         )
         lines = [_describe(r) for r in recs]
         label = alarm.get("label", alarm_key(alarm))
-        subject = f"InSight: {len(lines)} new insider transaction(s) — {label}"
+        if len(lines) == 1:
+            subject = f"InSight: {lines[0]}"
+        else:
+            subject = f"InSight: {len(lines)} new insider trades — {label}"
         ok, err = _deliver(cfg, subject, lines, label)
         if err:
             errors.append(err)
@@ -361,8 +378,8 @@ def save_settings(path: Path, incoming: dict[str, Any]) -> None:
 
 def send_test(path: Path) -> tuple[bool, str]:
     cfg = load_config(path)
-    lines = ["This is a test alert from InSight. Notifications are working."]
-    ok, err = _deliver(cfg, "InSight: test alert", lines, "test")
+    lines = ["Test alert — notifications are working."]
+    ok, err = _deliver(cfg, "InSight: test alert — notifications are working", lines, "test")
     if ok and not err:
         return True, "Test sent."
     if ok:
