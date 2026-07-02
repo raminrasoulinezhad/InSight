@@ -86,7 +86,96 @@ means the company is buying its own shares.
 
 ---
 
-## 3. Desktop shortcut (optional)
+## 3. Alerts (optional)
+
+InSight can **notify you when a new insider trade appears** for a company or
+person you care about. You set an **alarm**, and after each data refresh InSight
+checks for anything new and pushes you a message. Two free channels are
+supported — use either or both:
+
+- **Email** — via Gmail (or any SMTP provider).
+- **Phone push** — via **ntfy**, a free push app; alerts pop up on your phone.
+
+### Set an alarm
+
+In the app, click the **🔔** button on any company card or insider, then open the
+**Alarms** tab to manage them. Only trades that arrive *after* you set the alarm
+will fire — your existing history won't spam you.
+
+Alarms are checked after each scrape (the daily timer, or when you click
+**↻ Refresh data**).
+
+### Option A — Email (free, via Gmail)
+
+Email is sent over **SMTP** — the internet's standard for sending mail. You just
+tell InSight which mail server to use and give it a login. With Gmail this is
+free, but there's one catch: **you can't use your normal Gmail password.** Google
+requires a one-time **App Password** instead.
+
+**1. Turn on 2-Step Verification.** Go to
+[myaccount.google.com](https://myaccount.google.com) → **Security** → enable
+**2-Step Verification** (App Passwords aren't available without it).
+
+**2. Create an App Password.** Go straight to
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+(the menu link is often hidden — the direct URL is easiest). Name it `InSight`
+and click **Create**. Google shows a **16-character password** in a popup —
+**copy it now**, you can't see it again (but you can always delete it and make a
+new one).
+
+**3. Fill in the Alarms tab → 📧 Email (SMTP)** panel:
+
+| Field | Value |
+|---|---|
+| **Enabled** | ✅ checked |
+| **SMTP host** | `smtp.gmail.com` |
+| **SMTP port** | `587` |
+| **Username** | your full Gmail address (e.g. `you@gmail.com`) |
+| **App password** | the 16-character password from step 2 |
+| **From** | your Gmail address (Gmail rewrites anything else anyway) |
+| **Send to** | where you want alerts — usually the same Gmail address |
+
+**From and Send to can be the same address** — InSight simply emails you, and it
+lands in your inbox.
+
+**4. Click Save settings, then Send test** to confirm it works.
+
+> **Note:** free Gmail allows up to ~500 emails/day — far more than personal
+> alerts will ever use. For higher volume, a provider like Brevo or Mailgun has a
+> free tier, but for one person watching a watchlist, Gmail is plenty.
+
+### Option B — Phone push (free, via ntfy)
+
+**ntfy** delivers instant push notifications to your phone with **no account and
+no credentials** — you just pick a private *topic* name and subscribe to it.
+
+**1. Install the app.** Get **ntfy** from the
+[App Store](https://apps.apple.com/us/app/ntfy/id1625396347) or
+[Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy).
+
+**2. Pick a private topic and subscribe.** In the app tap **+**, and enter a
+**long, hard-to-guess** topic name — anyone who knows it can send you
+notifications, so treat it like a password. For example: `insight-alerts-pick-your-own`.
+
+**3. Fill in the Alarms tab → 🔔 Push (ntfy.sh)** panel:
+
+| Field | Value |
+|---|---|
+| **Enabled** | ✅ checked |
+| **Server** | `https://ntfy.sh` (the host only — **not** the topic) |
+| **Topic** | the topic you chose, e.g. `insight-alerts-pick-your-own` |
+
+The full push URL is just *Server* + `/` + *Topic* — so if you can push to
+`ntfy.sh/insight-alerts-pick-your-own` from a browser or `curl`, put `https://ntfy.sh` in
+**Server** and `insight-alerts-pick-your-own` in **Topic**. Don't paste the topic into the
+Server field.
+
+**4. Click Save settings, then Send test** — a notification should appear on your
+phone within a second or two.
+
+---
+
+## 4. Desktop shortcut (optional)
 
 Want InSight in your applications menu with an icon?
 

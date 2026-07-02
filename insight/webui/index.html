@@ -540,9 +540,9 @@ function renderAlarms(){
     <div class="panel">
       <h3>🔔 Push (ntfy.sh)</h3>
       <div class="frow"><label>Enabled</label><input type="checkbox" id="y-en" ${y.enabled?"checked":""}></div>
-      <div class="frow"><label>Server</label><input type="text" id="y-server" value="${esc(y.server||"https://ntfy.sh")}"></div>
-      <div class="frow"><label>Topic</label><input type="text" id="y-topic" value="${esc(y.topic||"")}" placeholder="e.g. insight-ramin-7f3a"></div>
-      <p class="hint">Install the ntfy app, “subscribe” to this topic, and you’ll get push alerts. Pick a long, private topic name.</p>
+      <div class="frow"><label>Server</label><input type="text" id="y-server" value="${esc(y.server||"https://ntfy.sh")}" placeholder="https://ntfy.sh"></div>
+      <div class="frow"><label>Topic</label><input type="text" id="y-topic" value="${esc(y.topic||"")}" placeholder="e.g. insight-alerts-pick-your-own"></div>
+      <p class="hint">Server is the host only (e.g. <code>https://ntfy.sh</code>) — <b>do not</b> include the topic. The Topic is the full path after the host: for <code>ntfy.sh/insight-alerts-pick-your-own</code>, Server is <code>https://ntfy.sh</code> and Topic is <code>insight-alerts-pick-your-own</code>. Install the ntfy app and “subscribe” to this topic. Pick a long, private topic name.</p>
     </div>
     <div class="frow">
       <button class="btn" id="notify-save">Save settings</button>

@@ -202,8 +202,7 @@ def _email_html(label: str, lines: list[str]) -> str:
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">'
         '<img src="cid:insightlogo" width="36" height="36" alt="InSight"'
         ' style="border-radius:8px"/>'
-        '<h2 style="margin:0;font-size:18px">In<span style="color:#58a6ff">●</span>Sight alert'
-        "</h2></div>"
+        '<h2 style="margin:0;font-size:18px">InSight alert</h2></div>'
         f'<p style="{muted};margin:0 0 12px">New insider activity for '
         f'<b style="color:#e6edf3">{_esc(label)}</b>:</p>'
         f'<ul style="padding-left:18px;margin:0">{items}</ul>'
