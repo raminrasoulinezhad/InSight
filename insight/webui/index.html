@@ -175,6 +175,7 @@
     <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the People tab.">
       <input type="checkbox" id="discover" /> Scan all TSE (~215)
     </label>
+    <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Opens a visible browser; solve the CAPTCHA once if prompted. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
   </div>
   <div class="tabs" id="tabs">
@@ -702,11 +703,13 @@ document.addEventListener("click", e => {
 
 /* ---- refresh (re-scrape) with status polling ---- */
 const refreshBtn = document.getElementById("refresh");
+const sediBtn = document.getElementById("sedi");
 const refreshMsg = document.getElementById("refreshmsg");
 let pollTimer = null;
 
 function setRefreshing(on, msg){
-  refreshBtn.disabled = on;
+  refreshBtn.disabled = on;                    // both buttons share one job slot
+  sediBtn.disabled = on;
   refreshBtn.textContent = on ? "↻ Refreshing…" : "↻ Refresh data";
   refreshMsg.textContent = msg || "";
 }
@@ -726,15 +729,26 @@ async function pollRefresh(){
   }
 }
 
-refreshBtn.addEventListener("click", async () => {
-  if (refreshBtn.disabled) return;
-  const discover = document.getElementById("discover").checked;
-  setRefreshing(true, discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
+async function startRefresh(url, startMsg){
+  setRefreshing(true, startMsg);
   try {
-    const r = await fetch("/api/refresh" + (discover ? "?discover=1" : ""), { method:"POST" });
+    const r = await fetch(url, { method:"POST" });
     if (r.status === 409){ setRefreshing(true, "A refresh is already running…"); }
     if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
   } catch(e){ setRefreshing(false, "Could not start: " + e.message); }
+}
+
+refreshBtn.addEventListener("click", () => {
+  if (refreshBtn.disabled) return;
+  const discover = document.getElementById("discover").checked;
+  startRefresh("/api/refresh" + (discover ? "?discover=1" : ""),
+    discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
+});
+
+sediBtn.addEventListener("click", () => {
+  if (sediBtn.disabled) return;
+  startRefresh("/api/refresh?source=sedi",
+    "Starting SEDI… a browser window will open — solve the CAPTCHA there if prompted.");
 });
 
 let qTimer = null;

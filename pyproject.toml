@@ -93,7 +93,7 @@ warn_unused_configs = true
 # analogue of MoneyTor's Qt UI layer — relax them rather than fight Any-typed
 # third-party surfaces.
 [[tool.mypy.overrides]]
-module = ["insight.marketbeat", "insight.app", "insight.notify"]
+module = ["insight.marketbeat", "insight.sedi", "insight.app", "insight.notify"]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 disallow_untyped_calls = false

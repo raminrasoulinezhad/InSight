@@ -90,3 +90,16 @@ def chrome_profile_dir() -> Path:
     p = app_dir() / "chrome-profile"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def sedi_profile_dir() -> Path:
+    """Dedicated, persistent browser profile for the SEDI scraper.
+
+    SEDI (sedi.ca) sits behind a ShieldSquare bot wall. Running headful with a
+    persistent profile lets a solved challenge / session cookie survive between
+    runs, so the CAPTCHA only has to be cleared occasionally rather than every
+    scrape. Kept separate from the --window app profile to avoid collisions.
+    """
+    p = app_dir() / "sedi-profile"
+    p.mkdir(parents=True, exist_ok=True)
+    return p

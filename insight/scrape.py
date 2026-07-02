@@ -35,6 +35,7 @@ from typing import Any
 from . import paths
 from .marketbeat import discover_tickers, scrape_many
 from .models import InsiderTransaction
+from .sedi import SediScraper
 
 CSV_FIELDS = [
     "issuer_name",
@@ -70,11 +71,18 @@ def load_targets(path: Path, cli_tickers: list[str]) -> list[dict[str, str]]:
 
 
 def write_outputs(
-    results: dict[str, list[InsiderTransaction]], outdir: Path, run_date: str
+    results: dict[str, list[InsiderTransaction]],
+    outdir: Path,
+    run_date: str,
+    source: str = "marketbeat",
 ) -> None:
+    """Write the dated snapshot (+ CSVs). Non-default sources get a filename tag
+    (insider_sedi_YYYY-MM-DD.json) so they merge into the app's deduped view via
+    the insider_*.json glob without clobbering another source's snapshot."""
     outdir.mkdir(parents=True, exist_ok=True)
     by_ticker_dir = outdir / "by_ticker"
     by_ticker_dir.mkdir(exist_ok=True)
+    tag = "" if source == "marketbeat" else f"{source}_"
 
     all_rows: list[dict[str, Any]] = []
     for key, recs in results.items():
@@ -83,15 +91,15 @@ def write_outputs(
         # per-company CSV (only when there's data)
         if rows:
             safe = key.replace(":", "_")
-            with (by_ticker_dir / f"{safe}_{run_date}.csv").open("w", newline="") as fh:
+            with (by_ticker_dir / f"{safe}_{tag}{run_date}.csv").open("w", newline="") as fh:
                 w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
                 w.writeheader()
                 w.writerows(rows)
 
     # combined JSON
-    (outdir / f"insider_{run_date}.json").write_text(json.dumps(all_rows, indent=2))
+    (outdir / f"insider_{tag}{run_date}.json").write_text(json.dumps(all_rows, indent=2))
     # combined CSV
-    with (outdir / f"insider_{run_date}.csv").open("w", newline="") as fh:
+    with (outdir / f"insider_{tag}{run_date}.csv").open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         w.writeheader()
         w.writerows(all_rows)
@@ -132,6 +140,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--outdir", default=None, help="output dir (default: per-user app folder)")
     ap.add_argument(
+        "--source",
+        choices=["marketbeat", "sedi"],
+        default="marketbeat",
+        help="data source (default: marketbeat). 'sedi' = Canada's official SEDI, "
+        "covers small TSX-V names but runs a visible browser and may need you to "
+        "solve a one-time CAPTCHA",
+    )
+    ap.add_argument(
+        "--months",
+        type=int,
+        default=24,
+        help="SEDI date range to request, in months back from today (default: 24)",
+    )
+    ap.add_argument(
+        "--capture",
+        default=None,
+        metavar="DIR",
+        help="(sedi) dump each fetched page's HTML/screenshot to DIR for debugging selectors",
+    )
+    ap.add_argument(
         "--headful", action="store_true", help="run a visible browser (helps on flagged IPs)"
     )
     ap.add_argument(
@@ -168,15 +196,38 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"Targets: {len(targets)} companies\n")
 
-    results = scrape_many(
-        targets,
-        headless=not args.headful,
-        cache_dir=cache_dir,
-        max_age_hours=args.max_age,
-        force=args.force,
-        delisted_path=paths.delisted_file(),
-    )
-    write_outputs(results, outdir, run_date)
+    if args.source == "sedi":
+        # SEDI is bot-walled: force a visible browser + persistent profile so a
+        # one-time CAPTCHA solve sticks. Its delisted-detection doesn't apply
+        # (no per-ticker insider URL to redirect), so no delisted file is passed.
+        from .sedi import is_canadian
+
+        capture = Path(args.capture) if args.capture else None
+        targets = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
+        print("Source: SEDI (a browser window will open; solve any CAPTCHA once).\n")
+        results = scrape_many(
+            targets,
+            cache_dir=cache_dir,
+            max_age_hours=args.max_age,
+            force=args.force,
+            scraper_factory=lambda: SediScraper(
+                headless=False,
+                profile_dir=paths.sedi_profile_dir(),
+                months=args.months,
+                capture_dir=capture,
+            ),
+            source="sedi",
+        )
+    else:
+        results = scrape_many(
+            targets,
+            headless=not args.headful,
+            cache_dir=cache_dir,
+            max_age_hours=args.max_age,
+            force=args.force,
+            delisted_path=paths.delisted_file(),
+        )
+    write_outputs(results, outdir, run_date, source=args.source)
     summarize(results)
     print(f"\nWrote: {outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")
 

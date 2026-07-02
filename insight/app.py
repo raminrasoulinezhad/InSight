@@ -58,16 +58,42 @@ _refresh_lock = threading.Lock()
 _refresh = {"running": False, "message": "", "finished": False, "ok": False, "date": None}
 
 
-def _do_refresh(discover: bool = False):
-    """Re-scrape via MarketBeat and write a new dated file.
+def _finish_refresh(results, targets, run_date: str) -> None:
+    """Shared refresh tail: fire alarms, then mark the job done with a summary."""
+    # Fire alarms for newly-seen transactions (never let this break refresh).
+    try:
+        from .notify import evaluate_and_notify
+
+        evaluate_and_notify(paths.notify_file(), DATA_DIR)
+    except Exception:
+        traceback.print_exc()
+    covered = sum(1 for v in results.values() if v)
+    total = sum(len(v) for v in results.values())
+    with _refresh_lock:
+        _refresh.update(
+            running=False,
+            finished=True,
+            ok=True,
+            date=run_date,
+            message=f"Done — {total} transactions across {covered}/{len(targets)} companies.",
+        )
+
+
+def _do_refresh(discover: bool = False, source: str = "marketbeat"):
+    """Re-scrape and write a new dated snapshot.
 
     Runs in a background thread so the HTTP request returns immediately; the
     UI polls /api/refresh/status. Imports are local so a missing scraper dep
     (e.g. Playwright not installed) surfaces as a job error, not an app crash.
 
-    When `discover` is set, MarketBeat's ~215-company TSE universe is merged
-    into the watchlist so GUI-only users get the same broad coverage as
-    `insight-scrape --discover`.
+    `source="marketbeat"` (default): fast, headless. When `discover` is set,
+    MarketBeat's ~215-company TSE universe is merged into the watchlist so
+    GUI-only users get the same broad coverage as `insight-scrape --discover`.
+
+    `source="sedi"`: Canada's official SEDI, which covers small TSX-V names
+    MarketBeat misses. SEDI is bot-walled, so this opens a VISIBLE browser and
+    may need the user to solve a CAPTCHA once; the watchlist (never discover) is
+    scraped and written to a source-tagged snapshot that merges into the view.
     """
     try:
         from .marketbeat import discover_tickers, scrape_many
@@ -78,6 +104,34 @@ def _do_refresh(discover: bool = False):
             for c in json.loads(CONFIG.read_text())["companies"]
             if not str(c.get("name", "")).startswith("_")
         ]
+
+        if source == "sedi":
+            from .sedi import SediScraper, is_canadian
+
+            targets = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
+            with _refresh_lock:
+                _refresh["message"] = (
+                    f"Opening a browser for SEDI — solve the CAPTCHA in that window "
+                    f"if it appears. Fetching {len(targets)} Canadian companies…"
+                )
+            results = scrape_many(
+                targets,
+                cache_dir=paths.cache_dir(),
+                force=True,
+                scraper_factory=lambda: SediScraper(
+                    headless=False,
+                    profile_dir=paths.sedi_profile_dir(),
+                    # dump HTML for any company that yields no rows, so an empty
+                    # result can be diagnosed rather than being silent.
+                    capture_dir=paths.app_dir() / "sedi-debug",
+                ),
+                source="sedi",
+            )
+            run_date = date.today().isoformat()
+            write_outputs(results, DATA_DIR, run_date, source="sedi")
+            _finish_refresh(results, targets, run_date)
+            return
+
         if discover:
             with _refresh_lock:
                 _refresh["message"] = "Discovering ticker universe…"
@@ -103,23 +157,7 @@ def _do_refresh(discover: bool = False):
         )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
-        # Fire alarms for newly-seen transactions (never let this break refresh).
-        try:
-            from .notify import evaluate_and_notify
-
-            evaluate_and_notify(paths.notify_file(), DATA_DIR)
-        except Exception:
-            traceback.print_exc()
-        covered = sum(1 for v in results.values() if v)
-        total = sum(len(v) for v in results.values())
-        with _refresh_lock:
-            _refresh.update(
-                running=False,
-                finished=True,
-                ok=True,
-                date=run_date,
-                message=f"Done — {total} transactions across {covered}/{len(targets)} companies.",
-            )
+        _finish_refresh(results, targets, run_date)
     except Exception as e:
         with _refresh_lock:
             _refresh.update(
@@ -198,6 +236,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/refresh":
             qs = urllib.parse.parse_qs(parsed.query)
             discover = qs.get("discover", ["0"])[0].lower() in ("1", "true", "yes")
+            source = "sedi" if qs.get("source", [""])[0].lower() == "sedi" else "marketbeat"
             with _refresh_lock:
                 if _refresh["running"]:
                     self._send_json(409, {"started": False, **_refresh})
@@ -205,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 _refresh.update(
                     running=True, finished=False, ok=False, message="Starting…", date=None
                 )
-            threading.Thread(target=_do_refresh, args=(discover,), daemon=True).start()
+            threading.Thread(target=_do_refresh, args=(discover, source), daemon=True).start()
             self._send_json(202, {"started": True})
         elif parsed.path == "/api/notify/settings":
             try:

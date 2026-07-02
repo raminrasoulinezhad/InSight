@@ -20,6 +20,7 @@ from __future__ import annotations
 import calendar
 import json
 import os
+import re
 import threading
 from collections.abc import Callable
 from datetime import date
@@ -74,10 +75,24 @@ def months_ago(d: date, n: int) -> date:
     return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
 
 
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _file_date(path: str | Path) -> str:
+    """The YYYY-MM-DD embedded in a snapshot filename ('' if none).
+
+    Snapshots may carry a source tag (insider_YYYY-MM-DD.json for MarketBeat,
+    insider_sedi_YYYY-MM-DD.json for SEDI), so the display/newest date is taken
+    from the embedded date rather than raw filename sort order.
+    """
+    m = _DATE_RE.search(Path(path).name)
+    return m.group(1) if m else ""
+
+
 def latest_data_file(data_dir: Path) -> Path | None:
-    """Newest data/insider_YYYY-MM-DD.json, or None if none exist yet."""
-    files = sorted(glob(str(data_dir / "insider_*.json")))
-    return Path(files[-1]) if files else None
+    """Newest data/insider_*.json by embedded date, or None if none exist yet."""
+    files = glob(str(data_dir / "insider_*.json"))
+    return Path(max(files, key=lambda f: (_file_date(f), f))) if files else None
 
 
 def _empty_box(name: str, role: str, entity_type: str) -> Rec:
@@ -485,9 +500,9 @@ def _load_records(
 def _stamp(view: View, data_dir: Path, months: int | None) -> View:
     """Attach shared metadata: newest snapshot date + how many were merged."""
     files = sorted(glob(str(data_dir / "insider_*.json")))
-    data_file = Path(files[-1]) if files else None
+    data_file = latest_data_file(data_dir)
     view["data_file"] = data_file.name if data_file else None
-    view["data_date"] = data_file.stem.replace("insider_", "") if data_file else None
+    view["data_date"] = _file_date(data_file) if data_file else None
     view["range_months"] = int(months) if months else None
     view["history_files"] = len(files)
     return view

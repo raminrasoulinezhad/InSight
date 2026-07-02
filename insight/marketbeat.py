@@ -24,9 +24,10 @@ import json
 import re
 import time
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import Page, sync_playwright
 from playwright_stealth import Stealth
@@ -346,6 +347,9 @@ def scrape_many(
     max_age_hours: float = 12.0,
     force: bool = False,
     delisted_path: Path | None = None,
+    *,
+    scraper_factory: Callable[[], Any] | None = None,
+    source: str = "marketbeat",
 ) -> dict[str, list[InsiderTransaction]]:
     """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
 
@@ -359,11 +363,23 @@ def scrape_many(
     its cache file is deleted and it is recorded in `delisted_path` so the app
     can hide its now-meaningless history. The flag is self-healing: a company
     that later returns data (or is served from a valid cache) is un-flagged.
+
+    `scraper_factory` supplies the browser session (default: MarketBeatScraper);
+    a compatible object is any context manager exposing
+    `.fetch(exchange, ticker, name) -> list[InsiderTransaction]`. `source` names
+    the data source: for anything other than the default MarketBeat the cache is
+    kept in a per-source sub-folder so keys from different sources never collide.
     """
     targets = list(targets)
     results: dict[str, list[InsiderTransaction]] = {}
     to_fetch: list[tuple[str, dict, dict | None]] = []
     delisted = _load_delisted(delisted_path)
+
+    # Non-default sources get their own cache namespace (sub-folder) so a
+    # company scraped by two sources doesn't overwrite the other's cache file.
+    if cache_dir is not None and source != "marketbeat":
+        cache_dir = cache_dir / source
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
     for t in targets:
         key = f"{t['exchange'].upper()}:{t['ticker'].upper()}"
@@ -381,7 +397,8 @@ def scrape_many(
         _save_delisted(delisted_path, delisted)
         return results
 
-    with MarketBeatScraper(headless=headless) as mb:
+    factory = scraper_factory or (lambda: MarketBeatScraper(headless=headless))
+    with factory() as mb:
         for key, t, entry in to_fetch:
             try:
                 recs = mb.fetch(t["exchange"], t["ticker"], t.get("name", ""))
