@@ -186,7 +186,10 @@ def _price_suffix(rec: dict[str, Any]) -> str:
 
 
 def _describe(rec: dict[str, Any]) -> str:
-    """A brief one-line sentence: who did what, how many shares, at what price."""
+    """A brief one-line sentence: who did what, how many shares, at what price, when.
+
+    The buy/sell date always appears — it's what distinguishes an alert.
+    """
     ttype = (rec.get("transaction_type") or "").lower()
     if "buy" in ttype:
         action = "bought"
@@ -198,7 +201,9 @@ def _describe(rec: dict[str, Any]) -> str:
     issuer = rec.get("issuer_name") or rec.get("ticker") or ""
     shares = rec.get("shares")
     sh = f"{shares:,} shares of " if shares else ""
-    return f"{who} {action} {sh}{issuer}{_price_suffix(rec)}"
+    date = rec.get("transaction_date")
+    when = f" on {date}" if date else ""
+    return f"{who} {action} {sh}{issuer}{_price_suffix(rec)}{when}"
 
 
 def _email_html(label: str, lines: list[str]) -> str:

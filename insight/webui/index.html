@@ -175,6 +175,7 @@
     <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the People tab.">
       <input type="checkbox" id="discover" /> Scan all TSE (~215)
     </label>
+    <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Opens a visible browser; solve the CAPTCHA once if prompted. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
   </div>
   <div class="tabs" id="tabs">
@@ -196,6 +197,9 @@
       <button data-f="inst">Institutions</button>
     </div>
     <select id="range" title="Show transactions from this period">
+      <option value="d7">Last week</option>
+      <option value="d14">Last 2 weeks</option>
+      <option value="d21">Last 3 weeks</option>
       <option value="1">Last month</option>
       <option value="3">Last 3 months</option>
       <option value="6">Last 6 months</option>
@@ -231,7 +235,7 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", months:24,
+let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"24",
               notify:null, alarmKeys:new Set(), alarmById:{} };
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -599,7 +603,11 @@ async function load(){
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
   try {
     const url = STATE.view === "people" ? "/api/people" : "/api/data";
-    const r = await fetch(url + "?months=" + STATE.months);
+    // Range token is "dN" for a week/day window, else a plain month count.
+    const qp = STATE.range[0] === "d"
+      ? "days=" + STATE.range.slice(1)
+      : "months=" + STATE.range;
+    const r = await fetch(url + "?" + qp);
     const d = await r.json();
     if (STATE.view === "people"){ indexPeople(d); STATE.people = d; }
     else { indexCompanies(d); STATE.data = d; }
@@ -702,11 +710,13 @@ document.addEventListener("click", e => {
 
 /* ---- refresh (re-scrape) with status polling ---- */
 const refreshBtn = document.getElementById("refresh");
+const sediBtn = document.getElementById("sedi");
 const refreshMsg = document.getElementById("refreshmsg");
 let pollTimer = null;
 
 function setRefreshing(on, msg){
-  refreshBtn.disabled = on;
+  refreshBtn.disabled = on;                    // both buttons share one job slot
+  sediBtn.disabled = on;
   refreshBtn.textContent = on ? "↻ Refreshing…" : "↻ Refresh data";
   refreshMsg.textContent = msg || "";
 }
@@ -726,15 +736,26 @@ async function pollRefresh(){
   }
 }
 
-refreshBtn.addEventListener("click", async () => {
-  if (refreshBtn.disabled) return;
-  const discover = document.getElementById("discover").checked;
-  setRefreshing(true, discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
+async function startRefresh(url, startMsg){
+  setRefreshing(true, startMsg);
   try {
-    const r = await fetch("/api/refresh" + (discover ? "?discover=1" : ""), { method:"POST" });
+    const r = await fetch(url, { method:"POST" });
     if (r.status === 409){ setRefreshing(true, "A refresh is already running…"); }
     if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
   } catch(e){ setRefreshing(false, "Could not start: " + e.message); }
+}
+
+refreshBtn.addEventListener("click", () => {
+  if (refreshBtn.disabled) return;
+  const discover = document.getElementById("discover").checked;
+  startRefresh("/api/refresh" + (discover ? "?discover=1" : ""),
+    discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
+});
+
+sediBtn.addEventListener("click", () => {
+  if (sediBtn.disabled) return;
+  startRefresh("/api/refresh?source=sedi",
+    "Starting SEDI… a browser window will open — solve the CAPTCHA there if prompted.");
 });
 
 let qTimer = null;
@@ -745,7 +766,7 @@ document.getElementById("q").addEventListener("input", e => {
   qTimer = setTimeout(render, 90);
 });
 document.getElementById("range").addEventListener("change", e => {
-  STATE.months = +e.target.value; load();
+  STATE.range = e.target.value; load();
 });
 document.querySelectorAll("#filter button").forEach(b => {
   b.addEventListener("click", () => {

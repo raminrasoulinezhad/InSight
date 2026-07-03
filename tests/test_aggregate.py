@@ -243,6 +243,15 @@ class TestDelistedAndLoadRecords:
         # the 2020 record is older than 24 months from any 2026 "today"
         assert all(r["transaction_date"] >= "2024" for r in records)
 
+    def test_days_filter_takes_precedence_over_months(self, tmp_path):
+        cfg = self._setup(tmp_path)
+        # A wide month window keeps the ancient 2020 record...
+        wide, _ = _load_records(tmp_path, cfg, months=240)
+        assert any(r["transaction_date"].startswith("2020") for r in wide)
+        # ...but a 7-day window overrides months and drops everything older.
+        recent, _ = _load_records(tmp_path, cfg, months=240, days=7)
+        assert all(not r["transaction_date"].startswith("2020") for r in recent)
+
     def test_stamp_history_files(self, tmp_path):
         self._setup(tmp_path)
         (tmp_path / "insider_2026-05-01.json").write_text("[]")
@@ -250,6 +259,14 @@ class TestDelistedAndLoadRecords:
         assert view["history_files"] == 2
         assert view["data_date"] == "2026-06-30"  # newest
         assert view["range_months"] == 12
+        assert view["range_days"] is None
+
+    def test_stamp_days_window(self, tmp_path):
+        self._setup(tmp_path)
+        view = _stamp({}, tmp_path, months=12, days=14)
+        # days wins: report the day window and blank the month field.
+        assert view["range_days"] == 14
+        assert view["range_months"] is None
 
     def test_load_view_end_to_end_hides_delisted(self, tmp_path):
         cfg = self._setup(tmp_path, delisted=["TSE:IPL"])
