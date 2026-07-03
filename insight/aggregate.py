@@ -23,7 +23,7 @@ import os
 import re
 import threading
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from glob import glob
 from pathlib import Path
 from typing import Any
@@ -463,14 +463,15 @@ def _delisted_keys(config_path: Path) -> set[str]:
 
 
 def _load_records(
-    data_dir: Path, config_path: Path, months: int | None
+    data_dir: Path, config_path: Path, months: int | None, days: int | None = None
 ) -> tuple[list[Rec], list[Rec]]:
     """Shared loader for the company and people views.
 
     Returns (records, watchlist). Records are the deduplicated union of ALL
     dated snapshots (see load_all_records), minus anything flagged delisted.
-    `months`, when given, keeps only transactions dated within the last N
-    calendar months so downstream aggregates reflect the selected window.
+    The window keeps only transactions dated within the selected span: `days`
+    (used for the sub-month week options) takes precedence when given, else
+    `months` keeps the last N calendar months.
     """
     watchlist = []
     if config_path.exists():
@@ -490,26 +491,36 @@ def _load_records(
             c for c in watchlist if _company_key(c.get("exchange"), c.get("ticker")) not in delisted
         ]
 
-    if months:
+    cutoff = None
+    if days:
+        cutoff = (date.today() - timedelta(days=int(days))).isoformat()
+    elif months:
         cutoff = months_ago(date.today(), int(months)).isoformat()
+    if cutoff is not None:
         records = [r for r in records if (r.get("transaction_date") or "") >= cutoff]
 
     return records, watchlist
 
 
-def _stamp(view: View, data_dir: Path, months: int | None) -> View:
+def _stamp(view: View, data_dir: Path, months: int | None, days: int | None = None) -> View:
     """Attach shared metadata: newest snapshot date + how many were merged."""
     files = sorted(glob(str(data_dir / "insider_*.json")))
     data_file = latest_data_file(data_dir)
     view["data_file"] = data_file.name if data_file else None
     view["data_date"] = _file_date(data_file) if data_file else None
-    view["range_months"] = int(months) if months else None
+    view["range_months"] = int(months) if months and not days else None
+    view["range_days"] = int(days) if days else None
     view["history_files"] = len(files)
     return view
 
 
 def _cached_view(
-    kind: str, data_dir: Path, config_path: Path, months: int | None, builder: Callable[[], View]
+    kind: str,
+    data_dir: Path,
+    config_path: Path,
+    months: int | None,
+    days: int | None,
+    builder: Callable[[], View],
 ) -> View:
     """Return a memoized built view, rebuilding only when an input file changes.
 
@@ -523,6 +534,7 @@ def _cached_view(
         _file_signature(config_path),
         _file_signature(config_path.parent / "delisted.json"),
         months,
+        days,
     )
     with _CACHE_LOCK:
         cached = _view_cache.get(key)
@@ -538,22 +550,26 @@ def _cached_view(
     return view
 
 
-def load_view(data_dir: Path, config_path: Path, months: int | None = None) -> View:
+def load_view(
+    data_dir: Path, config_path: Path, months: int | None = None, days: int | None = None
+) -> View:
     """Build the company view from the merged history + watchlist (cached)."""
 
     def build() -> View:
-        records, watchlist = _load_records(data_dir, config_path, months)
-        return _stamp(build_view(records, watchlist), data_dir, months)
+        records, watchlist = _load_records(data_dir, config_path, months, days)
+        return _stamp(build_view(records, watchlist), data_dir, months, days)
 
-    return _cached_view("company", data_dir, config_path, months, build)
+    return _cached_view("company", data_dir, config_path, months, days, build)
 
 
-def load_people_view(data_dir: Path, config_path: Path, months: int | None = None) -> View:
+def load_people_view(
+    data_dir: Path, config_path: Path, months: int | None = None, days: int | None = None
+) -> View:
     """Build the people view from the merged history (spans all scraped
     companies, not just the watchlist). Cached like the company view."""
 
     def build() -> View:
-        records, _watchlist = _load_records(data_dir, config_path, months)
-        return _stamp(build_people_view(records), data_dir, months)
+        records, _watchlist = _load_records(data_dir, config_path, months, days)
+        return _stamp(build_people_view(records), data_dir, months, days)
 
-    return _cached_view("people", data_dir, config_path, months, build)
+    return _cached_view("people", data_dir, config_path, months, days, build)

@@ -205,8 +205,10 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             m = qs.get("months", [""])[0]
             months = int(m) if m.isdigit() and int(m) > 0 else None
+            d = qs.get("days", [""])[0]
+            days = int(d) if d.isdigit() and int(d) > 0 else None
             view = (load_people_view if path == "/api/people" else load_view)(
-                DATA_DIR, CONFIG, months=months
+                DATA_DIR, CONFIG, months=months, days=days
             )
             self._send_json(200, view)
         elif path == "/api/search":

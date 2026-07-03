@@ -197,6 +197,9 @@
       <button data-f="inst">Institutions</button>
     </div>
     <select id="range" title="Show transactions from this period">
+      <option value="d7">Last week</option>
+      <option value="d14">Last 2 weeks</option>
+      <option value="d21">Last 3 weeks</option>
       <option value="1">Last month</option>
       <option value="3">Last 3 months</option>
       <option value="6">Last 6 months</option>
@@ -232,7 +235,7 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", months:24,
+let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"24",
               notify:null, alarmKeys:new Set(), alarmById:{} };
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -600,7 +603,11 @@ async function load(){
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
   try {
     const url = STATE.view === "people" ? "/api/people" : "/api/data";
-    const r = await fetch(url + "?months=" + STATE.months);
+    // Range token is "dN" for a week/day window, else a plain month count.
+    const qp = STATE.range[0] === "d"
+      ? "days=" + STATE.range.slice(1)
+      : "months=" + STATE.range;
+    const r = await fetch(url + "?" + qp);
     const d = await r.json();
     if (STATE.view === "people"){ indexPeople(d); STATE.people = d; }
     else { indexCompanies(d); STATE.data = d; }
@@ -759,7 +766,7 @@ document.getElementById("q").addEventListener("input", e => {
   qTimer = setTimeout(render, 90);
 });
 document.getElementById("range").addEventListener("change", e => {
-  STATE.months = +e.target.value; load();
+  STATE.range = e.target.value; load();
 });
 document.querySelectorAll("#filter button").forEach(b => {
   b.addEventListener("click", () => {
