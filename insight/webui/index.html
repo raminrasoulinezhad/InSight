@@ -25,7 +25,6 @@
   }
   .titlerow { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
   h1 { font-size:18px; margin:0; letter-spacing:.5px; }
-  h1 .dot { color:var(--accent); }
   .meta { color:var(--muted); font-size:12px; }
   .refresh-btn { background:var(--panel2); color:var(--text); border:1px solid var(--line);
     border-radius:8px; padding:5px 12px; font-size:12px; cursor:pointer; }
@@ -139,7 +138,11 @@
   .nodata { text-align:center; color:var(--muted); padding:60px 20px; }
   /* add-company picker */
   .adder { position:relative; }
-  .add-row { display:flex; gap:8px; }
+  .add-toggle { background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer; }
+  .add-toggle:hover { border-color:var(--accent); color:var(--accent); }
+  .add-row { display:flex; gap:8px; flex:1; }
+  .add-row.hidden { display:none; }
   .add-row input { flex:1 1 280px; }
   .add-row button { background:var(--accent); color:#06121f; border:0; border-radius:8px;
     padding:0 16px; font-weight:600; cursor:pointer; }
@@ -169,7 +172,7 @@
 <body>
 <header>
   <div class="titlerow">
-    <h1>In<span class="dot">●</span>Sight</h1>
+    <h1>InSight</h1>
     <span class="meta" id="datameta">loading…</span>
     <button id="refresh" class="refresh-btn">↻ Refresh data</button>
     <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the People tab.">
@@ -208,7 +211,8 @@
     </select>
   </div>
   <div class="controls adder">
-    <div class="add-row" style="flex:1">
+    <button id="addtoggle" class="add-toggle">＋ Add company</button>
+    <div class="add-row hidden" id="addrow">
       <input type="search" id="addq" placeholder="Add a company to the watchlist by name (e.g. New Found Gold)…"
              autocomplete="off" />
       <button id="addbtn">Search</button>
@@ -622,10 +626,27 @@ async function load(){
 const flag = cc => ({CA:"🇨🇦",US:"🇺🇸",GB:"🇬🇧",DE:"🇩🇪",HK:"🇭🇰",AU:"🇦🇺"}[cc]||cc||"");
 const picker = document.getElementById("picker");
 const addq = document.getElementById("addq");
+const addToggle = document.getElementById("addtoggle");
+const addRow = document.getElementById("addrow");
 let searchTimer = null, lastQuery = "";
 
 function hidePicker(){ picker.classList.add("hidden"); picker.innerHTML = ""; }
 function showPicker(html){ picker.innerHTML = html; picker.classList.remove("hidden"); }
+
+// The add-company search box is revealed on demand (via the "＋ Add company"
+// button) so it doesn't sit next to the filter box; it collapses again once a
+// company is picked, the user clicks away, or Escape is pressed.
+function showAdder(){
+  addRow.classList.remove("hidden");
+  addToggle.style.display = "none";
+  addq.focus();
+}
+function hideAdder(){
+  hidePicker();
+  addRow.classList.add("hidden");
+  addToggle.style.display = "";
+  addq.value = ""; lastQuery = "";
+}
 
 function toast(msg){
   let t = document.getElementById("toast");
@@ -661,7 +682,7 @@ async function runSearch(){
 }
 
 async function addCandidate(c){
-  hidePicker(); addq.value = "";
+  hideAdder();
   try {
     const r = await fetch("/api/watchlist", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -694,18 +715,22 @@ document.getElementById("feed").addEventListener("click", e => {
     removeCompany(btn.dataset.exch, btn.dataset.ticker, btn.dataset.name);
 });
 
+addToggle.addEventListener("click", showAdder);
 addq.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 280);
 });
-addq.addEventListener("keydown", e => { if (e.key === "Enter"){ clearTimeout(searchTimer); runSearch(); } });
+addq.addEventListener("keydown", e => {
+  if (e.key === "Enter"){ clearTimeout(searchTimer); runSearch(); }
+  if (e.key === "Escape"){ clearTimeout(searchTimer); hideAdder(); }
+});
 document.getElementById("addbtn").addEventListener("click", () => { clearTimeout(searchTimer); runSearch(); });
 picker.addEventListener("click", e => {
   const row = e.target.closest(".cand");
   if (row && picker._cands) addCandidate(picker._cands[+row.dataset.i]);
 });
 document.addEventListener("click", e => {
-  if (!e.target.closest(".adder")) hidePicker();
+  if (!e.target.closest(".adder")) hideAdder();
 });
 
 /* ---- refresh (re-scrape) with status polling ---- */
@@ -791,6 +816,7 @@ document.querySelectorAll("#tabs button").forEach(b => {
 // on the Alarms tab, which has its own settings form.
 function applyViewChrome(){
   const isAlarms = STATE.view === "alarms";
+  hideAdder();
   document.querySelectorAll("header .controls").forEach(el => { el.style.display = isAlarms ? "none" : ""; });
   document.getElementById("q").placeholder = STATE.view === "people"
     ? "Filter by insider name, company, or ticker…"
