@@ -70,6 +70,24 @@ class TestIsCanadian:
         assert sedi.is_canadian({"exchange": "NYSE"}) is False
 
 
+class TestIsBotWall:
+    def test_403_forbidden_title_is_wall(self):
+        # Radware's hard block: "403 Forbidden" title + hex "Transaction ID" body.
+        assert sedi._is_bot_wall("403 Forbidden", "https://www.sedi.ca/x", "") is True
+
+    def test_radware_block_body_is_wall(self):
+        body = "Access to this page has been denied because you are using automation tools."
+        assert sedi._is_bot_wall("", "https://www.sedi.ca/x", body) is True
+
+    def test_perfdrive_url_is_wall(self):
+        assert sedi._is_bot_wall("Loading", "https://sedi.ca.perfdrive.com/?ssa=1", "") is True
+
+    def test_normal_report_is_not_wall(self):
+        # A real ITD report mentions "Transaction" columns but is not the wall.
+        body = "Insider Transaction Detail  Transaction date  Nature of transaction"
+        assert sedi._is_bot_wall("SEDI - Insider Transactions", "https://sedi.ca", body) is False
+
+
 class TestNameAndRelationship:
     def test_flip_last_first(self):
         assert sedi._flip_name("Billan, Jason") == "Jason Billan"

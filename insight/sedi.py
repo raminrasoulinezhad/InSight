@@ -235,7 +235,43 @@ def _parse_report_rows(
 
 _ACCESS_URL = "https://www.sedi.ca/sedi/SVTReportsAccessController?locale=en_CA"
 _ITD_URL = "https://www.sedi.ca/sedi/SVTItdController?locale=en_CA"
-_WALL_MARKERS = ("shieldsquare", "captcha", "just a moment", "access denied")
+
+# SEDI sits behind Radware Bot Manager (formerly ShieldSquare / PerfDrive). When
+# it decides the browser is a bot it serves a hard "403 Forbidden" block page
+# carrying a hex "Transaction ID:" reference — NOT a solvable hCaptcha. We match
+# the block by page *title* (the 403) and by the Radware block-copy in the
+# *body*, so it is recognized as a wall instead of being mistaken for a normal
+# page (which made the scraper barrel into the form, fail to find it, and return
+# an empty result silently). Body markers are Radware-specific phrasing so they
+# don't collide with SEDI's own "Transaction ..." result columns.
+_WALL_TITLE_MARKERS = (
+    "shieldsquare",
+    "captcha",
+    "just a moment",
+    "access denied",
+    "403 forbidden",
+    "forbidden",
+)
+_WALL_BODY_MARKERS = (
+    "access to this page has been denied",
+    "you are using automation tools",
+    "why did this happen",
+    "radware",
+)
+
+
+def _is_bot_wall(title: str, url: str, body: str = "") -> bool:
+    """True if the current page is the Radware/ShieldSquare bot wall. Pure so it
+    can be unit-tested; `_walled()` supplies the live title/url/body."""
+    t = (title or "").lower()
+    u = (url or "").lower()
+    b = (body or "").lower()
+    if "perfdrive" in u:
+        return True
+    if any(m in t for m in _WALL_TITLE_MARKERS):
+        return True
+    return any(m in b for m in _WALL_BODY_MARKERS)
+
 
 # SEDI's report is table-soup (hundreds of nested tables). Collect every leaf
 # row (a <tr> with no nested table) in DOM order, so the group-header rows and
@@ -266,28 +302,47 @@ class SediScraper:
         months: int = 24,
         capture_dir: Path | None = None,
         manual_wait_s: int = 240,
+        channel: str | None = "chrome",
     ):
         self._headless = headless
         self._profile_dir = profile_dir
         self._months = months
         self._capture_dir = capture_dir
         self._manual_wait_s = manual_wait_s
+        # Prefer real Google Chrome over bundled Chromium: its fingerprint is far
+        # less bot-like, which is often the difference between passing Radware's
+        # check and getting a hard 403. Falls back to Chromium if Chrome isn't
+        # installed (see __enter__).
+        self._channel = channel
         self._pw = None
         self._ctx = None
         self._page = None
 
-    def __enter__(self) -> SediScraper:
-        self._stealth_cm = Stealth().use_sync(sync_playwright())
-        self._pw = self._stealth_cm.__enter__()
-        # A persistent context keeps the solved-challenge cookie between runs.
-        self._ctx = self._pw.chromium.launch_persistent_context(
+    def _launch(self, channel: str | None):
+        return self._pw.chromium.launch_persistent_context(
             str(self._profile_dir) if self._profile_dir else "",
             headless=self._headless,
+            channel=channel,
             user_agent=_UA,
             locale="en-CA",
             viewport={"width": 1366, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
         )
+
+    def __enter__(self) -> SediScraper:
+        self._stealth_cm = Stealth().use_sync(sync_playwright())
+        self._pw = self._stealth_cm.__enter__()
+        # A persistent context keeps the solved-challenge cookie between runs.
+        try:
+            self._ctx = self._launch(self._channel)
+        except Exception as e:
+            if self._channel:
+                print(
+                    f"  SEDI: '{self._channel}' channel unavailable ({e}); using bundled Chromium."
+                )
+                self._ctx = self._launch(None)
+            else:
+                raise
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         return self
 
@@ -300,9 +355,12 @@ class SediScraper:
 
     # ------------------------------------------------------------------
     def _walled(self) -> bool:
-        title = (self._page.title() or "").lower()
-        url = (self._page.url or "").lower()
-        return any(m in title for m in _WALL_MARKERS) or "perfdrive" in url
+        title = self._page.title() or ""
+        url = self._page.url or ""
+        body = ""
+        with contextlib.suppress(Exception):
+            body = self._page.inner_text("body")
+        return _is_bot_wall(title, url, body)
 
     def _clear_wall_or_raise(self, ctx: str) -> None:
         """If the bot wall is up: headless -> BotBlocked; headful -> wait for a
@@ -311,15 +369,23 @@ class SediScraper:
             return
         if self._headless:
             raise BotBlocked(f"SEDI bot wall while {ctx} (headless — cannot solve)")
-        print(f"  SEDI: bot wall while {ctx} — solve the CAPTCHA in the window…")
+        print(
+            f"  SEDI: Radware bot wall while {ctx}. If there's a CAPTCHA, solve it in the "
+            "window. A bare '403 Forbidden / Transaction ID' page is a hard IP/fingerprint "
+            "block with nothing to solve — reloading periodically in case it re-validates…"
+        )
         waited = 0
         step = 3000
+        reload_every = 15000  # nudge Radware to re-run its JS check after cookies settle
         while waited < self._manual_wait_s * 1000:
             self._page.wait_for_timeout(step)
             waited += step
             if not self._walled():
                 print("  SEDI: wall cleared, continuing.")
                 return
+            if waited % reload_every < step:
+                with contextlib.suppress(Exception):
+                    self._page.reload(wait_until="domcontentloaded", timeout=30000)
         raise BotBlocked(f"SEDI bot wall not cleared within {self._manual_wait_s}s while {ctx}")
 
     def _dump(self, label: str) -> None:
