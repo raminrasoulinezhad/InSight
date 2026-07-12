@@ -5,14 +5,17 @@
 
 """Turn flat InsiderTransaction records into the shape the UI renders:
 
-    watchlist company  ->  one "box" per insider/entity
+    watchlist company  ->  a list of individual transactions (newest first)
 
-Each box aggregates all of that insider's transactions for the company:
-buy/sell counts, total transaction count, shares and dollar amounts bought
-and sold, plus the insider's name, role and whether they're an individual,
-an institution, or the issuer itself (a buyback).
+The company view keeps every transaction separate rather than aggregating per
+insider: what matters is *who* traded and *when*, so each row stays its own
+record (date, insider, role, buy/sell side, shares, price, value). Per-company
+running totals (buy/sell counts, shares, dollar amounts, net) are still computed
+for the header and for the client-side charts.
 
-The app layer never touches raw rows — it asks for this structure.
+Transactions are ordered by transaction_date (the date the trade happened), not
+by any filing/reporting date. The app layer never touches raw rows — it asks for
+this structure.
 """
 
 from __future__ import annotations
@@ -95,12 +98,29 @@ def latest_data_file(data_dir: Path) -> Path | None:
     return Path(max(files, key=lambda f: (_file_date(f), f))) if files else None
 
 
-def _empty_box(name: str, role: str, entity_type: str) -> Rec:
+def _avg_price(value: float, shares: int) -> float | None:
+    """Volume-weighted average cost per share (total $ / total shares), or None
+    when there are no shares to divide by."""
+    return round(value / shares, 4) if shares else None
+
+
+def _side(ttype: str) -> str:
+    """Normalize a raw transaction type to buy / sell / other (for coloring)."""
+    t = (ttype or "").lower()
+    if "buy" in t:
+        return "buy"
+    if "sell" in t:
+        return "sell"
+    return "other"
+
+
+def _empty_company(key: str, issuer_name: str, exchange: str, ticker: str, confirmed: bool) -> Rec:
     return {
-        "insider_name": name,
-        "insider_role": role,
-        "entity_type": entity_type,
-        "is_issuer_buyback": False,
+        "key": key,
+        "issuer_name": issuer_name,
+        "exchange": exchange,
+        "ticker": ticker,
+        "confirmed": confirmed,
         "txn_count": 0,
         "buy_count": 0,
         "sell_count": 0,
@@ -112,59 +132,67 @@ def _empty_box(name: str, role: str, entity_type: str) -> Rec:
         "net_value": 0.0,
         "currency": "",
         "latest_date": None,
+        "_insiders": set(),  # distinct name|role, dropped before serialization
         "transactions": [],
     }
 
 
-def _avg_price(value: float, shares: int) -> float | None:
-    """Volume-weighted average cost per share (total $ / total shares), or None
-    when there are no shares to divide by."""
-    return round(value / shares, 4) if shares else None
+def _add_company_txn(comp: Rec, rec: Rec) -> None:
+    """Fold one record into a company's running totals and append it as a row."""
+    name = (rec.get("insider_name") or "Unknown").strip()
+    role = (rec.get("insider_role") or "").strip()
+    comp["_insiders"].add(f"{name}|{role}")
 
-
-def _add_txn(box: Rec, rec: Rec) -> None:
-    ttype = (rec.get("transaction_type") or "").lower()
+    side = _side(rec.get("transaction_type", ""))
     shares = rec.get("shares") or 0
     value = rec.get("total_value") or 0.0
-    box["txn_count"] += 1
-    if "buy" in ttype:
-        box["buy_count"] += 1
-        box["buy_shares"] += shares
-        box["buy_value"] += value
-        box["net_value"] += value
-    elif "sell" in ttype:
-        box["sell_count"] += 1
-        box["sell_shares"] += shares
-        box["sell_value"] += value
-        box["net_value"] -= value
+    comp["txn_count"] += 1
+    if side == "buy":
+        comp["buy_count"] += 1
+        comp["buy_shares"] += shares
+        comp["buy_value"] += value
+        comp["net_value"] += value
+    elif side == "sell":
+        comp["sell_count"] += 1
+        comp["sell_shares"] += shares
+        comp["sell_value"] += value
+        comp["net_value"] -= value
     else:
-        box["other_count"] += 1
-    if rec.get("currency") and not box["currency"]:
-        box["currency"] = rec["currency"]
-    if rec.get("is_issuer_buyback"):
-        box["is_issuer_buyback"] = True
+        comp["other_count"] += 1
+    if rec.get("currency") and not comp["currency"]:
+        comp["currency"] = rec["currency"]
     d = rec.get("transaction_date")
-    if d and (box["latest_date"] is None or d > box["latest_date"]):
-        box["latest_date"] = d
-    box["transactions"].append(
+    if d and (comp["latest_date"] is None or d > comp["latest_date"]):
+        comp["latest_date"] = d
+
+    comp["transactions"].append(
         {
             "date": d,
+            "insider_name": name,
+            "insider_role": role,
+            "entity_type": rec.get("entity_type", "unknown"),
+            "is_issuer_buyback": bool(rec.get("is_issuer_buyback")),
             "type": rec.get("transaction_type", ""),
+            "side": side,
             "shares": shares,
             "avg_price": rec.get("avg_price"),
-            "total_value": value,
+            "total_value": round(value, 2),
             "currency": rec.get("currency", ""),
         }
     )
 
 
 def build_view(records: list[Rec], watchlist: list[Rec]) -> View:
-    """Group records into companies -> insider boxes.
+    """Group records into companies -> a list of individual transactions.
 
     `watchlist` (companies.json entries) defines which companies appear: issuers
     with zero scraped transactions still show (as empty cards) to make coverage
     gaps visible, and records for issuers not on the watchlist are ignored so a
     removed company disappears instead of lingering from stale scraped data.
+
+    Each company carries its transactions newest-first (by transaction_date) plus
+    running buy/sell totals for the header and charts. Transactions are kept
+    separate — not aggregated per insider — so every trade shows who and when.
     """
     companies: dict[str, dict[str, Any]] = {}
 
@@ -174,14 +202,13 @@ def build_view(records: list[Rec], watchlist: list[Rec]) -> View:
     # seed from the watchlist so uncovered names still render
     for c in watchlist:
         key = company_key(c.get("exchange", ""), c.get("ticker", ""))
-        companies[key] = {
-            "key": key,
-            "issuer_name": c.get("name", key),
-            "exchange": (c.get("exchange") or "").upper(),
-            "ticker": (c.get("ticker") or "").upper(),
-            "confirmed": c.get("confirmed", True),
-            "boxes_by_insider": {},
-        }
+        companies[key] = _empty_company(
+            key,
+            c.get("name", key),
+            (c.get("exchange") or "").upper(),
+            (c.get("ticker") or "").upper(),
+            c.get("confirmed", True),
+        )
 
     for rec in records:
         key = company_key(rec.get("exchange", ""), rec.get("ticker", ""))
@@ -194,39 +221,20 @@ def build_view(records: list[Rec], watchlist: list[Rec]) -> View:
         # prefer a real scraped issuer name over the watchlist label
         if rec.get("issuer_name"):
             comp["issuer_name"] = rec["issuer_name"]
+        _add_company_txn(comp, rec)
 
-        name = (rec.get("insider_name") or "Unknown").strip()
-        role = (rec.get("insider_role") or "").strip()
-        ikey = f"{name}|{role}"
-        box = comp["boxes_by_insider"].get(ikey)
-        if box is None:
-            box = comp["boxes_by_insider"][ikey] = _empty_box(
-                name, role, rec.get("entity_type", "unknown")
-            )
-        _add_txn(box, rec)
-
-    # finalize: dict -> sorted list, round money, compute company totals
+    # finalize: sort rows newest-first, round money, drop internal fields
     out_companies = []
     for comp in companies.values():
-        boxes = list(comp["boxes_by_insider"].values())
-        for b in boxes:
-            b["avg_buy_price"] = _avg_price(b["buy_value"], b["buy_shares"])
-            b["avg_sell_price"] = _avg_price(b["sell_value"], b["sell_shares"])
-            b["buy_value"] = round(b["buy_value"], 2)
-            b["sell_value"] = round(b["sell_value"], 2)
-            b["net_value"] = round(b["net_value"], 2)
-            b.pop("boxes_by_insider", None)
-        # biggest movers first (by gross dollar activity)
-        boxes.sort(key=lambda b: b["buy_value"] + b["sell_value"], reverse=True)
-        comp.pop("boxes_by_insider", None)
-        comp["boxes"] = boxes
-        comp["txn_count"] = sum(b["txn_count"] for b in boxes)
-        comp["insider_count"] = len(boxes)
-        comp["buy_value"] = round(sum(b["buy_value"] for b in boxes), 2)
-        comp["sell_value"] = round(sum(b["sell_value"] for b in boxes), 2)
-        comp["latest_date"] = max(
-            (b["latest_date"] for b in boxes if b["latest_date"]), default=None
-        )
+        txns = comp["transactions"]
+        # stable double-sort: name ascending, then transaction_date descending,
+        # so rows read newest-first with a tidy name order within a single date.
+        txns.sort(key=lambda t: t["insider_name"])
+        txns.sort(key=lambda t: t["date"] or "", reverse=True)
+        comp["insider_count"] = len(comp.pop("_insiders"))
+        comp["buy_value"] = round(comp["buy_value"], 2)
+        comp["sell_value"] = round(comp["sell_value"], 2)
+        comp["net_value"] = round(comp["net_value"], 2)
         out_companies.append(comp)
 
     # companies with activity first, then alphabetical

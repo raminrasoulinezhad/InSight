@@ -124,6 +124,45 @@ class TestEvaluate:
         assert notify.evaluate_and_notify(p, data)["sent"] == 0
         assert sent == []
 
+    def test_grants_and_exercises_do_not_alert(self, tmp_path, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append(msg))
+        data = tmp_path / "data"
+        data.mkdir()
+        write_snapshot(data, "2026-06-30", [])
+        p = tmp_path / "notify.json"
+        self._enable_ntfy(p)
+        notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
+
+        # only compensation events arrive -> no alert, but baseline advances
+        write_snapshot(
+            data,
+            "2026-07-01",
+            [
+                rec("ATH", "Insider A", ttype="Grant of options", d="2026-06-20"),
+                rec("ATH", "Insider A", ttype="Exercise of rights", d="2026-06-21"),
+            ],
+        )
+        assert notify.evaluate_and_notify(p, data)["sent"] == 0
+        assert sent == []
+
+        # a real Buy arrives alongside another grant -> only the Buy is reported
+        write_snapshot(
+            data,
+            "2026-07-02",
+            [
+                rec("ATH", "Insider A", ttype="Grant of options", d="2026-06-20"),
+                rec("ATH", "Insider A", ttype="Exercise of rights", d="2026-06-21"),
+                rec("ATH", "Insider B", ttype="Grant of rights", d="2026-06-29"),
+                rec("ATH", "Insider C", ttype="Buy", d="2026-06-30"),
+            ],
+        )
+        res = notify.evaluate_and_notify(p, data)
+        assert res["sent"] == 1
+        assert len(sent) == 1
+        assert "Insider C" in sent[0]
+        assert "Insider B" not in sent[0]  # the grant is not mentioned
+
     def test_person_alarm_across_companies(self, tmp_path, monkeypatch):
         sent = []
         monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append(msg))

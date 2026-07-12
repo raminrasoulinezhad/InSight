@@ -90,35 +90,43 @@ class TestBuildView:
         keys = {c["key"] for c in self.view["companies"]}
         assert "NYSE:OTHER" not in keys
 
-    def test_insider_box_math(self):
+    def test_company_totals(self):
         abc = next(c for c in self.view["companies"] if c["ticker"] == "ABC")
-        assert abc["insider_count"] == 2
-        jane = next(b for b in abc["boxes"] if b["insider_name"] == "Jane Doe")
-        assert jane["buy_count"] == 2
-        assert jane["buy_shares"] == 150
-        assert jane["buy_value"] == 1600.0
-        assert jane["sell_count"] == 1
-        assert jane["sell_shares"] == 30
-        assert jane["sell_value"] == 450.0
-        assert jane["net_value"] == 1150.0
-        assert jane["latest_date"] == "2026-05-10"
-        assert jane["avg_buy_price"] == round(1600 / 150, 4)
-        assert jane["avg_sell_price"] == 15.0
+        assert abc["insider_count"] == 2  # Jane Doe + Bob Roe
+        assert abc["txn_count"] == 4
+        assert abc["buy_count"] == 2
+        assert abc["buy_shares"] == 150
+        assert abc["buy_value"] == 1600.0
+        assert abc["sell_count"] == 2
+        assert abc["sell_shares"] == 230  # Jane 30 + Bob 200
+        assert abc["sell_value"] == 2450.0  # 450 + 2000
+        assert abc["net_value"] == -850.0
+        assert abc["latest_date"] == "2026-05-10"
 
-    def test_avg_none_when_no_side(self):
+    def test_transactions_kept_separate_and_sorted_newest_first(self):
         abc = next(c for c in self.view["companies"] if c["ticker"] == "ABC")
-        bob = next(b for b in abc["boxes"] if b["insider_name"] == "Bob Roe")
-        assert bob["avg_buy_price"] is None
-        assert bob["avg_sell_price"] == 10.0
-
-    def test_boxes_sorted_by_gross_activity(self):
-        abc = next(c for c in self.view["companies"] if c["ticker"] == "ABC")
-        assert abc["boxes"][0]["insider_name"] == "Jane Doe"  # gross 2050 > Bob 2000
+        txns = abc["transactions"]
+        assert len(txns) == 4  # each trade is its own row, not aggregated
+        assert [t["date"] for t in txns] == [
+            "2026-05-10",
+            "2026-05-01",
+            "2026-04-01",
+            "2026-03-01",
+        ]
+        newest = txns[0]
+        assert newest["insider_name"] == "Jane Doe"
+        assert newest["side"] == "buy"
+        assert newest["shares"] == 50
+        oldest = txns[-1]
+        assert oldest["insider_name"] == "Bob Roe"
+        assert oldest["side"] == "sell"
+        assert oldest["shares"] == 200
 
     def test_empty_company_still_present(self):
         xyz = next(c for c in self.view["companies"] if c["ticker"] == "XYZ")
-        assert xyz["boxes"] == []
+        assert xyz["transactions"] == []
         assert xyz["txn_count"] == 0
+        assert "_insiders" not in xyz  # internal field dropped before serialization
 
 
 class TestBuildPeopleView:

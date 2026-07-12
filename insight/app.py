@@ -6,10 +6,10 @@
 
 """InSight desktop/web app — view insider transactions in a window.
 
-Runs a tiny local web server and serves a single-page UI: a scrollable feed of
-"boxes", one per insider/entity, grouped under each watchlist company. Each box
-shows buy/sell/total counts, the shares and dollar amounts bought and sold, and
-who was trading.
+Runs a tiny local web server and serves a single-page UI: a scrollable feed
+grouped by watchlist company, each showing its individual insider transactions
+(newest first) as a table plus share-activity charts — who traded, when, on
+which side, and for how much.
 
 Usage (installed via `uv tool install`, or `uv run insight` from a checkout):
     insight                 # serve on http://127.0.0.1:8765 + open browser
@@ -56,6 +56,36 @@ CONFIG = paths.config_file()
 # ---- background refresh (re-scrape) job state ----
 _refresh_lock = threading.Lock()
 _refresh = {"running": False, "message": "", "finished": False, "ok": False, "date": None}
+
+
+def _sedi_page_keys() -> list[str]:
+    """EXCH:TICKER for every company with a saved SEDI report snapshot, so the UI
+    can show its 'SEDI report' button only where a cached page actually exists."""
+    keys = []
+    for f in paths.sedi_pages_dir().glob("*.html"):
+        exch, sep, ticker = f.stem.partition("_")
+        if sep and exch and ticker:
+            keys.append(f"{exch.upper()}:{ticker.upper()}")
+    return keys
+
+
+def _read_sedi_page(exchange: str, ticker: str) -> bytes | None:
+    """The saved SEDI report HTML for a company, with a <base> injected so its
+    relative CSS/image URLs resolve back to sedi.ca. None if never snapshotted.
+    The filename is derived (sanitized) from the ticker, so the query can't be
+    used to read arbitrary files."""
+    path = paths.sedi_pages_dir() / paths.sedi_page_filename(exchange, ticker)
+    if not path.exists():
+        return None
+    try:
+        html = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    base = '<base href="https://www.sedi.ca/sedi/">'
+    i = html.lower().find("<head")
+    j = html.find(">", i) if i != -1 else -1
+    html = (html[: j + 1] + base + html[j + 1 :]) if j != -1 else base + html
+    return html.encode("utf-8")
 
 
 def _finish_refresh(results, targets, run_date: str) -> None:
@@ -210,7 +240,21 @@ class Handler(BaseHTTPRequestHandler):
             view = (load_people_view if path == "/api/people" else load_view)(
                 DATA_DIR, CONFIG, months=months, days=days
             )
+            if path == "/api/data":
+                view["sedi_pages"] = _sedi_page_keys()
             self._send_json(200, view)
+        elif path == "/api/sedi-page":
+            qs = urllib.parse.parse_qs(parsed.query)
+            body = _read_sedi_page(qs.get("exchange", [""])[0], qs.get("ticker", [""])[0])
+            if body is None:
+                self._send(
+                    404,
+                    "<h2>No saved SEDI page for this company yet</h2>"
+                    "<p>Use “⛏ Fetch from SEDI” to snapshot it, then try again.</p>".encode(),
+                    "text/html; charset=utf-8",
+                )
+            else:
+                self._send(200, body, "text/html; charset=utf-8")
         elif path == "/api/search":
             q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
             try:

@@ -9,7 +9,7 @@ rows captured from a live SEDI Insider Transaction Detail report."""
 
 from __future__ import annotations
 
-from insight import sedi
+from insight import paths, sedi
 
 
 class TestDateParsing:
@@ -212,3 +212,19 @@ class TestParseReportRows:
         assert recs[1].transaction_type == "Sell"
         # a new group header switches the current insider
         assert recs[2].insider_name == "Eric Sprott"
+
+
+class TestSediPageFilename:
+    def test_upper_and_extension(self):
+        assert paths.sedi_page_filename("tse", "abc") == "TSE_ABC.html"
+
+    def test_preserves_dot_and_dash(self):
+        # tickers like "ABC.A" / "ABC-B" stay legible in the filename
+        assert paths.sedi_page_filename("TSXV", "ABC.A") == "TSXV_ABC.A.html"
+        assert paths.sedi_page_filename("CSE", "ABC-B") == "CSE_ABC-B.html"
+
+    def test_sanitizes_separators_and_traversal(self):
+        # anything that could escape the pages dir is replaced with '_'
+        fn = paths.sedi_page_filename("../etc", "a/b\\c")
+        assert "/" not in fn and "\\" not in fn
+        assert fn == ".._ETC_A_B_C.html"

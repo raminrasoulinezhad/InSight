@@ -81,6 +81,10 @@
     padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer; filter:grayscale(1) opacity(.6); }
   .bell:hover { border-color:var(--accent); filter:none; }
   .bell.on { border-color:var(--inst); filter:none; background:#33290e; }
+  .sedi-link { background:transparent; color:var(--muted); border:1px solid var(--line);
+    border-radius:6px; padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer;
+    text-decoration:none; margin-left:6px; }
+  .sedi-link:hover { border-color:var(--accent); color:var(--accent); }
   .company-head .bell { margin-left:6px; }
   .company-head .del-co { margin-left:8px; }
   /* alarms / settings */
@@ -136,6 +140,34 @@
   .foot { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
   .empty { color:var(--muted); font-style:italic; padding:6px 0; }
   .nodata { text-align:center; color:var(--muted); padding:60px 20px; }
+  /* per-company charts + transaction table */
+  .charts { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .chart { flex:1 1 320px; min-width:280px; background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; padding:10px 12px 6px; }
+  .chart-h { color:var(--muted); font-size:11px; margin-bottom:4px; }
+  .svg-chart { width:100%; height:auto; display:block; }
+  .svg-chart .axis { stroke:var(--line); stroke-width:1; }
+  .svg-chart line.tl-buy, .svg-chart line.tl-sell { stroke-width:2; }
+  .svg-chart .tl-buy, .svg-chart circle.tl-buy { stroke:var(--buy); fill:var(--buy); }
+  .svg-chart .tl-sell, .svg-chart circle.tl-sell { stroke:var(--sell); fill:var(--sell); }
+  .svg-chart circle { stroke:none; }
+  .svg-chart text { fill:var(--muted); font-size:8px; }
+  .txn-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+  .txn-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .txn-table th, .txn-table td { padding:7px 10px; text-align:left; white-space:nowrap;
+    border-bottom:1px solid var(--line); }
+  .txn-table th { color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.3px; background:var(--panel2); position:sticky; top:0; }
+  .txn-table tbody tr:last-child td { border-bottom:0; }
+  .txn-table tbody tr:hover { background:var(--panel); }
+  .txn-table .t-num { text-align:right; font-variant-numeric:tabular-nums; }
+  .txn-table .t-buy { color:var(--buy); }
+  .txn-table .t-sell { color:var(--sell); }
+  .txn-table .t-role, .txn-table .t-date { color:var(--muted); }
+  .t-badge { font-size:9px; text-transform:uppercase; letter-spacing:.3px; margin-left:6px;
+    padding:1px 5px; border-radius:4px; vertical-align:middle; }
+  .t-badge.institution { background:#33290e; color:var(--inst); }
+  .t-badge.buyback { background:#2a1e3d; color:var(--buyback); }
   /* add-company picker */
   .adder { position:relative; }
   .add-toggle { background:var(--panel2); color:var(--text); border:1px solid var(--line);
@@ -240,7 +272,7 @@ const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
 let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"24",
-              notify:null, alarmKeys:new Set(), alarmById:{} };
+              notify:null, alarmKeys:new Set(), alarmById:{}, sediPages:new Set() };
 
 // Alarm identity — must match notify.alarm_key on the backend.
 const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -259,10 +291,11 @@ function bellBtn(type, d){
 // loads, so filtering on each keystroke is a plain substring test (no per-item
 // array-build/join/lowercase). This is the app's main hot path.
 function indexCompanies(d){
+  STATE.sediPages = new Set(d.sedi_pages || []);
   for (const c of d.companies || []){
     c._hay = (c.issuer_name + " " + c.exchange + ":" + c.ticker).toLowerCase();
-    for (const b of c.boxes || [])
-      b._hay = ((b.insider_name||"") + " " + (b.insider_role||"")).toLowerCase();
+    for (const t of c.transactions || [])
+      t._hay = ((t.insider_name||"") + " " + (t.insider_role||"")).toLowerCase();
   }
 }
 function indexPeople(d){
@@ -270,11 +303,6 @@ function indexPeople(d){
     const cos = (p.companies||[]).map(c => c.issuer_name+" "+c.ticker+" "+c.exchange).join(" ");
     p._hay = ((p.insider_name||"") + " " + (p.roles||[]).join(" ") + " " + cos).toLowerCase();
   }
-}
-
-function entityKind(box){
-  if (box.is_issuer_buyback) return "buyback";
-  return box.entity_type === "institution" ? "institution" : "individual";
 }
 
 function boxMatchesFilter(box){
@@ -286,79 +314,113 @@ function boxMatchesFilter(box){
   return true;
 }
 
-function matchesQuery(company, box){
-  const q = STATE.qnorm;
-  if (!q) return true;
-  return company._hay.includes(q) || (box ? box._hay.includes(q) : false);
+// The segmented control filters the individual transaction rows shown for a
+// company: buy/sell keep only that side, "inst" keeps institution/buyback rows.
+function txnMatchesFilter(t){
+  const f = STATE.filter;
+  if (f === "all") return true;
+  if (f === "inst") return t.entity_type === "institution" || t.is_issuer_buyback;
+  if (f === "buy")  return t.side === "buy";
+  if (f === "sell") return t.side === "sell";
+  return true;
 }
 
-function renderCard(box){
-  const kind = entityKind(box);
-  const total = (box.buy_value||0) + (box.sell_value||0);
-  const buyPct = total ? (box.buy_value/total*100) : (box.buy_count? 100:0);
-  const sellPct = total ? (box.sell_value/total*100) : (box.sell_count?100:0);
-  const cur = box.currency || "";
-  const badgeLabel = kind === "buyback" ? "Buyback" : kind;
-  return `
-  <div class="card ${kind==='buyback'?'buyback':''}">
-    <div class="who">
-      <div>
-        <div class="nm">${esc(box.insider_name)}</div>
-        <div class="role">${esc(box.insider_role||"—")}</div>
-      </div>
-      <span class="badge ${kind}">${badgeLabel}</span>
-    </div>
-    <div class="bar">
-      <div class="b" style="width:${buyPct}%"></div>
-      <div class="s" style="width:${sellPct}%"></div>
-    </div>
-    <div class="counts">
-      <span class="chip buy"><span class="n">${box.buy_count}</span> buys</span>
-      <span class="chip sell"><span class="n">${box.sell_count}</span> sells</span>
-      <span class="chip"><span class="n">${box.txn_count}</span> txns</span>
-    </div>
-    <div class="amounts">
-      <div class="amt buy">
-        <div class="lbl">Bought</div>
-        <div class="val">${fmtMoney(box.buy_value, cur)}</div>
-        <div class="sh">${fmtShares(box.buy_shares)} sh</div>
-        ${box.avg_buy_price!=null ? `<div class="sh">avg ${fmtPrice(box.avg_buy_price, cur)}/sh</div>` : ""}
-      </div>
-      <div class="amt sell">
-        <div class="lbl">Sold</div>
-        <div class="val">${fmtMoney(box.sell_value, cur)}</div>
-        <div class="sh">${fmtShares(box.sell_shares)} sh</div>
-        ${box.avg_sell_price!=null ? `<div class="sh">avg ${fmtPrice(box.avg_sell_price, cur)}/sh</div>` : ""}
-      </div>
-    </div>
-    <div class="foot">
-      <span>net ${box.net_value>=0?'+':''}${fmtMoney(box.net_value, cur)}</span>
-      <span>latest ${box.latest_date||"—"}</span>
+const dayLbl = ms => new Date(ms).toISOString().slice(0,10);
+
+// Graph 1 — every buy/sell plotted on a date axis: buys as green lollipops above
+// the baseline, sells as red below, stem height proportional to share count.
+function svgTimeline(txns){
+  const W = 600, H = 57, padX = 40, padTop = 8, padBot = 13;
+  const half = (H - padTop - padBot) / 2, mid = padTop + half;
+  const times = txns.map(t => Date.parse(t.date));
+  let minT = Math.min(...times), maxT = Math.max(...times);
+  if (minT === maxT){ minT -= 864e5; maxT += 864e5; }   // single date → pad ±1d
+  const maxSh = Math.max(...txns.map(t => t.shares||0)) || 1;
+  const marks = txns.map(t => {
+    const x = padX + (Date.parse(t.date)-minT)/(maxT-minT)*(W-padX-10);
+    const h = (t.shares/maxSh) * (half - 4);
+    const up = t.side === "buy", y2 = up ? mid-h : mid+h, cls = up ? "buy" : "sell";
+    return `<line class="tl-${cls}" x1="${x.toFixed(1)}" y1="${mid}" x2="${x.toFixed(1)}" y2="${y2.toFixed(1)}"/>`
+         + `<circle class="tl-${cls}" cx="${x.toFixed(1)}" cy="${y2.toFixed(1)}" r="2"/>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" class="svg-chart">
+    <line class="axis" x1="${padX}" y1="${mid}" x2="${W-6}" y2="${mid}"/>
+    ${marks}
+    <text x="4" y="${padTop+4}">${fmtShares(maxSh)} sh</text>
+    <text x="${padX}" y="${H-8}">${dayLbl(minT)}</text>
+    <text x="${W-6}" y="${H-8}" text-anchor="end">${dayLbl(maxT)}</text>
+  </svg>`;
+}
+
+function renderCharts(rows){
+  const bs = rows.filter(t => (t.side==="buy" || t.side==="sell") && t.date && (t.shares||0) > 0);
+  if (!bs.length) return `<div class="empty">No dated buy/sell share activity to chart.</div>`;
+  return `<div class="charts">
+    <div class="chart">
+      <div class="chart-h">Transactions over time — buys (green) above, sells (red) below · by shares</div>
+      ${svgTimeline(bs)}
     </div>
   </div>`;
 }
 
+function renderTxnTable(rows){
+  const body = rows.map(t => {
+    const cur = t.currency || "";
+    const sideCls = t.side === "buy" ? "t-buy" : t.side === "sell" ? "t-sell" : "";
+    const kind = t.is_issuer_buyback ? "buyback"
+      : (t.entity_type === "institution" ? "institution" : "");
+    const badge = kind ? `<span class="t-badge ${kind}">${kind}</span>` : "";
+    return `<tr>
+      <td class="t-date">${esc(t.date||"—")}</td>
+      <td>${esc(t.insider_name)}${badge}</td>
+      <td class="t-role">${esc(t.insider_role||"—")}</td>
+      <td class="${sideCls}">${esc(t.type||t.side)}</td>
+      <td class="t-num">${fmtShares(t.shares)}</td>
+      <td class="t-num">${fmtPrice(t.avg_price, cur)}</td>
+      <td class="t-num ${sideCls}">${fmtMoney(t.total_value, cur)}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="txn-table-wrap"><table class="txn-table">
+    <thead><tr>
+      <th>Date</th><th>Insider</th><th>Role</th><th>Type</th>
+      <th class="t-num">Shares</th><th class="t-num">Price</th><th class="t-num">Value</th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
 function renderCompany(c){
-  const boxes = c.boxes.filter(b => boxMatchesFilter(b) && matchesQuery(c, b));
-  // if a text query is set and nothing in this company matches name/insider, skip
-  if (STATE.qnorm && boxes.length === 0 && !matchesQuery(c, null)) return "";
+  const q = STATE.qnorm;
+  const coMatch = !q || c._hay.includes(q);
+  const all = c.transactions || [];
+  const rows = all.filter(t => txnMatchesFilter(t) && (coMatch || t._hay.includes(q)));
+  // if a query is set and neither the company nor any transaction matches, skip
+  if (q && !coMatch && rows.length === 0) return "";
   const warn = c.confirmed === false
     ? `<span class="pill-warn">unverified ticker</span>` : "";
   let body;
-  if (c.boxes.length === 0){
+  if (all.length === 0){
     body = `<div class="empty">No insider transactions found yet (source may not cover this issuer — see README).</div>`;
-  } else if (boxes.length === 0){
-    body = `<div class="empty">No insiders match the current filter.</div>`;
+  } else if (rows.length === 0){
+    body = `<div class="empty">No transactions match the current filter.</div>`;
   } else {
-    body = `<div class="grid">${boxes.map(renderCard).join("")}</div>`;
+    body = renderCharts(rows) + renderTxnTable(rows);
   }
+  const nIns = c.insider_count === 1 ? "1 insider" : `${c.insider_count} insiders`;
+  const hasSedi = STATE.sediPages.has(`${c.exchange}:${c.ticker}`);
+  const sediBtn = hasSedi
+    ? `<a class="sedi-link" target="_blank" rel="noopener"
+         href="/api/sedi-page?exchange=${encodeURIComponent(c.exchange)}&ticker=${encodeURIComponent(c.ticker)}"
+         title="Open this company's official SEDI report (saved during the last SEDI fetch)">⛏ SEDI report</a>`
+    : "";
   return `
   <section class="company">
     <div class="company-head">
       <span class="name">${esc(c.issuer_name)}</span>
       <span class="ticker">${esc(c.exchange)}:${esc(c.ticker)}</span>
-      <span class="sub">${c.insider_count} insiders · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
+      <span class="sub">${nIns} · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
       ${warn}
+      ${sediBtn}
       ${bellBtn("company", {exch:c.exchange, ticker:c.ticker, label:c.issuer_name})}
       <button class="del-co" title="Remove from watchlist"
         data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}" data-name="${esc(c.issuer_name)}">✕ Remove</button>

@@ -8,7 +8,11 @@
 The user sets alarms on a company ("tell me about any insider trade in ATH") or a
 person ("tell me whenever Eric Sprott trades, in any company"). After each scrape
 `evaluate_and_notify` finds transactions that are new *since the alarm was set*
-and pushes a message over the enabled free channels:
+and pushes a message over the enabled free channels. Compensation events — option
+/ rights / warrant grants and their later exercise — are *not* market trades, so
+they never alert (see `_alertable`); only genuine buys/sells and the like do.
+
+Channels:
 
     - Email  — SMTP (e.g. Gmail/Workspace app password), HTML with the InSight
                logo embedded via CID.
@@ -309,6 +313,21 @@ def _deliver(cfg: dict[str, Any], subject: str, lines: list[str], label: str) ->
 
 # ---- evaluation ---------------------------------------------------------------
 
+# Insider filings include compensation/administrative events — option, rights and
+# warrant *grants* and their later *exercise* — that aren't market buys/sells. The
+# user only wants alerts for genuine trades, so any transaction type mentioning a
+# grant or an exercise is skipped for notification purposes. Matching on the words
+# (not a fixed list) covers every SEDI variant: "Grant of options/rights/warrants",
+# "Exercise of rights/options/warrants", "Exercise for cash", … and survives new
+# wording. Note this affects alerts ONLY — such rows still appear in the app views.
+_ALERT_SKIP_WORDS = ("grant", "exercise")
+
+
+def _alertable(rec: dict[str, Any]) -> bool:
+    """True unless the transaction is a grant or exercise (never worth an alert)."""
+    ttype = (rec.get("transaction_type") or "").lower()
+    return not any(word in ttype for word in _ALERT_SKIP_WORDS)
+
 
 def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
     """Fire any alarm whose target has transactions new since it was last seen.
@@ -338,6 +357,13 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
             (by_key[k] for k in new if k in by_key),
             key=lambda r: r.get("transaction_date") or "",
         )
+        recs = [r for r in recs if _alertable(r)]  # drop grants / option exercises
+        if not recs:
+            # Only compensation events arrived — nothing to alert, but fold them
+            # into the baseline so they aren't re-examined on every future scrape.
+            alarm["seen"] = sorted(current)
+            changed = True
+            continue
         lines = [_describe(r) for r in recs]
         label = alarm.get("label", alarm_key(alarm))
         if len(lines) == 1:

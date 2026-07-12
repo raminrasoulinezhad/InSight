@@ -215,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 profile_dir=paths.sedi_profile_dir(),
                 months=args.months,
                 capture_dir=capture,
+                pages_dir=paths.sedi_pages_dir(),
             ),
             source="sedi",
         )

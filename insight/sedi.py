@@ -39,6 +39,7 @@ from playwright_stealth import Stealth
 
 from .marketbeat import _UA, BotBlocked
 from .models import InsiderTransaction, parse_int, parse_money
+from .paths import sedi_page_filename
 
 # ---- pure parsing (unit-tested; no network) -----------------------------------
 
@@ -301,6 +302,7 @@ class SediScraper:
         profile_dir: Path | None = None,
         months: int = 24,
         capture_dir: Path | None = None,
+        pages_dir: Path | None = None,
         manual_wait_s: int = 240,
         channel: str | None = "chrome",
     ):
@@ -308,6 +310,7 @@ class SediScraper:
         self._profile_dir = profile_dir
         self._months = months
         self._capture_dir = capture_dir
+        self._pages_dir = pages_dir  # snapshot each company's report HTML here
         self._manual_wait_s = manual_wait_s
         # Prefer real Google Chrome over bundled Chromium: its fingerprint is far
         # less bot-like, which is often the difference between passing Radware's
@@ -397,6 +400,16 @@ class SediScraper:
         with contextlib.suppress(Exception):
             self._page.screenshot(path=str(self._capture_dir / f"{safe}.png"), full_page=True)
 
+    def _save_page(self, exchange: str, ticker: str) -> None:
+        """Snapshot the currently-rendered report HTML so the app can serve it as
+        this company's SEDI page. Best-effort — never let it break a scrape."""
+        if not self._pages_dir:
+            return
+        with contextlib.suppress(Exception):
+            self._pages_dir.mkdir(parents=True, exist_ok=True)
+            path = self._pages_dir / sedi_page_filename(exchange, ticker)
+            path.write_text(self._page.content(), encoding="utf-8")
+
     # ------------------------------------------------------------------
     def fetch(self, exchange: str, ticker: str, issuer_hint: str = "") -> list[InsiderTransaction]:
         """Run the ITD 'issuer name' search for one company and parse results.
@@ -427,7 +440,9 @@ class SediScraper:
         self._select_issuer_if_needed(issuer)
 
         now = datetime.now(UTC).isoformat(timespec="seconds")
-        records = _parse_report_rows(self._extract_rows(), issuer, exchange, ticker, _ITD_URL, now)
+        rows = self._extract_rows()  # settles the report DOM before we snapshot it
+        self._save_page(exchange, ticker)  # snapshot the report page for the UI
+        records = _parse_report_rows(rows, issuer, exchange, ticker, _ITD_URL, now)
         if not records:
             self._log_page_error(exchange, ticker)
             self._dump(f"itd_results_{ticker}")  # leave HTML so parsing can be fixed

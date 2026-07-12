@@ -20,6 +20,7 @@ profile for --window mode.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from importlib import resources
 from pathlib import Path
@@ -90,6 +91,27 @@ def chrome_profile_dir() -> Path:
     p = app_dir() / "chrome-profile"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def sedi_pages_dir() -> Path:
+    """Saved SEDI report HTML, one file per company (EXCH_TICKER.html).
+
+    SEDI's ITD report has no stable per-company URL (it's a form/POST wizard
+    behind a bot wall), so the scraper snapshots the rendered report page here as
+    it scrapes. The app serves these locally (via /api/sedi-page) so the user can
+    open the official SEDI report for a company without re-driving the wizard.
+    """
+    p = app_dir() / "sedi-pages"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def sedi_page_filename(exchange: str, ticker: str) -> str:
+    """Filename for a company's saved SEDI report snapshot: 'EXCH_TICKER.html',
+    sanitized to a single safe path segment (no separators / traversal). Shared
+    by the scraper (writing) and the app (reading) so they never diverge."""
+    key = f"{(exchange or '').upper()}_{(ticker or '').upper()}"
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".html"
 
 
 def sedi_profile_dir() -> Path:
