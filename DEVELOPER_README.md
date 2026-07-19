@@ -350,6 +350,18 @@ over the enabled free channels:
   with the InSight logo (CID-embedded) and a sentence per transaction.
 - **ntfy** — a free push topic (`https://ntfy.sh/<topic>`), no credentials.
 
+Every notification's **title** (email subject + ntfy title) is `InSight:
+<target>` — it always leads with InSight and names *what* fired (the company name
+or the person), never a bare count of trades. Each generated notification is
+stamped with a monotonic reference index that appears **in the message body**
+(`#N`, plus a "Notification #N" line in the email footer) and is appended to an
+**append-only JSONL log**, `notifications.log`, beside `notify.json` (see
+`paths.notify_log_file()`). A line records the index, timestamp, target label,
+the message lines and the per-channel delivery outcome — so any alert, delivered
+or failed, can be traced back later when debugging or reporting an issue. The
+next index is derived from the log itself (no separate counter), and logging is
+best-effort so it never breaks a scrape.
+
 State (channel settings + alarms) lives in `notify.json` in the app folder —
 **never the repo**, since it holds the SMTP password (the API masks it in
 responses). Each alarm keeps a `seen` set of transaction keys baselined at

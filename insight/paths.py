@@ -77,6 +77,18 @@ def notify_file() -> Path:
     return app_dir() / "notify.json"
 
 
+def notify_log_file() -> Path:
+    """Append-only log of every notification InSight generates (JSONL, one record
+    per line).
+
+    Each record carries the notification's index, timestamp, target label and the
+    per-channel delivery result, so a delivered alert can be traced back later when
+    debugging or reporting an issue. Lives beside notify.json in the per-user app
+    folder; it only ever grows (append-only) and is safe to delete.
+    """
+    return app_dir() / "notifications.log"
+
+
 def cache_dir() -> Path:
     """Per-company scrape cache (one JSON per issuer) used to avoid re-fetching
     data that is still fresh."""

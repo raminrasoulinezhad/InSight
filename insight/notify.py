@@ -24,6 +24,12 @@ fire; the baseline is captured at creation so pre-existing history never alerts.
 Sends are best-effort — a failure is reported but never breaks a scrape, and an
 alarm's `seen` set is only advanced once at least one channel delivered, so a
 transient outage retries on the next scrape.
+
+Every notification generated is stamped with a monotonic index (`#N`, shown in the
+message) and appended to an append-only JSONL log beside notify.json (see
+paths.notify_log_file()). The log records the index, timestamp, target and the
+per-channel delivery outcome so any alert — delivered or failed — can be traced
+back later for debugging / issue reports.
 """
 
 from __future__ import annotations
@@ -82,6 +88,46 @@ def load_config(path: Path) -> dict[str, Any]:
 
 def save_config(path: Path, cfg: dict[str, Any]) -> None:
     path.write_text(json.dumps(cfg, indent=2))
+
+
+# ---- notification log ---------------------------------------------------------
+# An append-only JSONL trail of every notification generated, kept beside
+# notify.json. Each notification gets a monotonic index (`#N`) that shows up in
+# the message and is the reference used when tracing an alert later. The next
+# index is derived from the log itself so it survives restarts without a separate
+# counter to keep in sync. Logging is best-effort — it must never break a scrape.
+
+
+def _log_file(path: Path) -> Path:
+    """The notification log that sits next to a given notify.json path."""
+    return path.with_name("notifications.log")
+
+
+def _next_index(log_path: Path) -> int:
+    """One past the highest index recorded in the log (1 if empty/missing)."""
+    last = 0
+    if log_path.exists():
+        try:
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last = max(last, int(json.loads(line).get("index", 0)))
+                except (ValueError, TypeError):
+                    continue
+        except OSError:
+            return 1
+    return last + 1
+
+
+def _append_log(log_path: Path, entry: dict[str, Any]) -> None:
+    """Append one notification record as a JSON line. Never raises."""
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass  # the log is a debugging aid, not worth failing a scrape over
 
 
 # ---- alarms -------------------------------------------------------------------
@@ -210,7 +256,7 @@ def _describe(rec: dict[str, Any]) -> str:
     return f"{who} {action} {sh}{issuer}{_price_suffix(rec)}{when}"
 
 
-def _email_html(label: str, lines: list[str]) -> str:
+def _email_html(label: str, lines: list[str], index: int) -> str:
     items = "".join(f"<li style='margin:6px 0'>{_esc(x)}</li>" for x in lines)
     wrap = (
         "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"
@@ -227,7 +273,8 @@ def _email_html(label: str, lines: list[str]) -> str:
         f'<b style="color:#e6edf3">{_esc(label)}</b>:</p>'
         f'<ul style="padding-left:18px;margin:0">{items}</ul>'
         f'<p style="{muted};font-size:12px;margin-top:18px">You set this alarm in InSight. '
-        "Open the app to review, or delete the alarm from the Alarms tab.</p>"
+        "Open the app to review, or delete the alarm from the Alarms tab. "
+        f"<br>Notification #{index} — quote this when reporting an issue.</p>"
         "</div>"
     )
 
@@ -286,29 +333,47 @@ def send_ntfy(ntfy_cfg: dict[str, Any], title: str, message: str) -> None:
         resp.read()
 
 
-def _deliver(cfg: dict[str, Any], subject: str, lines: list[str], label: str) -> tuple[bool, str]:
-    """Send one alarm's message over every enabled channel. Returns (any_ok, err).
+def _title(label: str) -> str:
+    """The notification title/subject: always starts with InSight and names *what*
+    it fired for (a company or a person) — never a bare count of trades. The
+    reference index lives in the body, not the title."""
+    return f"InSight: {label}"
 
+
+def _deliver(
+    cfg: dict[str, Any], title: str, lines: list[str], label: str, index: int
+) -> tuple[bool, str, list[dict[str, Any]]]:
+    """Send one notification over every enabled channel.
+
+    Returns (any_ok, joined_err, channels) where `channels` records the per-channel
+    outcome for the notification log. Email subject and ntfy title share `title`;
+    the reference index `#N` is carried in the message body (not the title).
     Kept terse: a single transaction stands on its own line; several are bulleted.
     """
-    text = lines[0] if len(lines) == 1 else "\n".join("• " + x for x in lines)
+    body = lines[0] if len(lines) == 1 else "\n".join("• " + x for x in lines)
+    text = f"{body}\n\n#{index}"  # reference index for tracing this notification later
     any_ok = False
     errs = []
+    channels: list[dict[str, Any]] = []
     email_cfg = cfg.get("email", {})
     if email_cfg.get("enabled") and email_cfg.get("username") and email_cfg.get("to"):
         try:
-            send_email(email_cfg, subject, _email_html(label, lines), text)
+            send_email(email_cfg, title, _email_html(label, lines, index), text)
             any_ok = True
+            channels.append({"channel": "email", "ok": True})
         except Exception as e:  # report, never crash a scrape
             errs.append(f"email: {type(e).__name__}: {e}")
+            channels.append({"channel": "email", "ok": False, "error": f"{type(e).__name__}: {e}"})
     ntfy_cfg = cfg.get("ntfy", {})
     if ntfy_cfg.get("enabled") and ntfy_cfg.get("topic"):
         try:
-            send_ntfy(ntfy_cfg, "InSight", text)
+            send_ntfy(ntfy_cfg, title, text)
             any_ok = True
+            channels.append({"channel": "ntfy", "ok": True})
         except Exception as e:
             errs.append(f"ntfy: {type(e).__name__}: {e}")
-    return any_ok, "; ".join(errs)
+            channels.append({"channel": "ntfy", "ok": False, "error": f"{type(e).__name__}: {e}"})
+    return any_ok, "; ".join(errs), channels
 
 
 # ---- evaluation ---------------------------------------------------------------
@@ -343,6 +408,8 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
 
     records = load_all_records(data_dir)
     by_key = {_key(r): r for r in records}
+    log_path = _log_file(path)
+    index = _next_index(log_path)
     sent = 0
     errors: list[str] = []
     changed = False
@@ -366,11 +433,24 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
             continue
         lines = [_describe(r) for r in recs]
         label = alarm.get("label", alarm_key(alarm))
-        if len(lines) == 1:
-            subject = f"InSight: {lines[0]}"
-        else:
-            subject = f"InSight: {len(lines)} new insider trades — {label}"
-        ok, err = _deliver(cfg, subject, lines, label)
+        title = _title(label)
+        ok, err, channels = _deliver(cfg, title, lines, label, index)
+        _append_log(
+            log_path,
+            {
+                "index": index,
+                "time": datetime.now(UTC).isoformat(timespec="seconds"),
+                "kind": "alarm",
+                "alarm_id": alarm.get("id"),
+                "alarm_key": alarm_key(alarm),
+                "label": label,
+                "title": title,
+                "lines": lines,
+                "delivered": ok,
+                "channels": channels,
+            },
+        )
+        index += 1
         if err:
             errors.append(err)
         if ok:
@@ -410,9 +490,28 @@ def save_settings(path: Path, incoming: dict[str, Any]) -> None:
 def send_test(path: Path) -> tuple[bool, str]:
     cfg = load_config(path)
     lines = ["Test alert — notifications are working."]
-    ok, err = _deliver(cfg, "InSight: test alert — notifications are working", lines, "test")
+    label = "Test"
+    log_path = _log_file(path)
+    index = _next_index(log_path)
+    title = _title(label)
+    ok, err, channels = _deliver(cfg, title, lines, label, index)
+    if not channels:  # nothing configured — no notification was generated
+        return False, "No channel enabled/configured."
+    _append_log(
+        log_path,
+        {
+            "index": index,
+            "time": datetime.now(UTC).isoformat(timespec="seconds"),
+            "kind": "test",
+            "label": label,
+            "title": title,
+            "lines": lines,
+            "delivered": ok,
+            "channels": channels,
+        },
+    )
     if ok and not err:
-        return True, "Test sent."
+        return True, f"Test sent (#{index})."
     if ok:
-        return True, f"Test sent (some channels failed: {err})"
-    return False, err or "No channel enabled/configured."
+        return True, f"Test sent (#{index}; some channels failed: {err})"
+    return False, err

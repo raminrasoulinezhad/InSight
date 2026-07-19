@@ -198,6 +198,99 @@ class TestEvaluate:
         assert notify._key(rec("ATH", "Insider B", d="2026-06-28")) not in alarm["seen"]
 
 
+class TestTitleAndLog:
+    def _enable_ntfy(self, p):
+        cfg = notify.load_config(p)
+        cfg["ntfy"] = {"enabled": True, "server": "https://ntfy.sh", "topic": "t"}
+        notify.save_config(p, cfg)
+
+    def _read_log(self, p):
+        log = notify._log_file(p)
+        return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+    def test_title_names_target_and_index_is_in_body(self, tmp_path, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append((title, msg)))
+        data = tmp_path / "data"
+        data.mkdir()
+        write_snapshot(data, "2026-06-30", [])
+        p = tmp_path / "notify.json"
+        self._enable_ntfy(p)
+        # UI passes the company name as the label
+        notify.add_alarm(
+            p,
+            {"type": "company", "exchange": "TSE", "ticker": "ATH", "label": "Athabasca Oil"},
+            data,
+        )
+        # two new trades arrive at once -> still names the company, not "2 trades"
+        write_snapshot(
+            data,
+            "2026-07-01",
+            [rec("ATH", "Insider A", d="2026-06-27"), rec("ATH", "Insider B", d="2026-06-28")],
+        )
+        assert notify.evaluate_and_notify(p, data)["sent"] == 1
+        title, body = sent[0]
+        # title names the company: no index, no count
+        assert title == "InSight: Athabasca Oil"
+        assert "#" not in title and "trades" not in title
+        # the reference index lives in the body instead
+        assert "#1" in body
+
+    def test_index_increments_and_persists_in_log(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: None)
+        data = tmp_path / "data"
+        data.mkdir()
+        write_snapshot(data, "2026-06-30", [])
+        p = tmp_path / "notify.json"
+        self._enable_ntfy(p)
+        notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
+
+        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider A", d="2026-06-27")])
+        notify.evaluate_and_notify(p, data)
+        write_snapshot(
+            data,
+            "2026-07-02",
+            [rec("ATH", "Insider A", d="2026-06-27"), rec("ATH", "Insider B", d="2026-06-28")],
+        )
+        notify.evaluate_and_notify(p, data)
+
+        log = self._read_log(p)
+        assert [e["index"] for e in log] == [1, 2]  # monotonic, one per notification
+        assert log[0]["delivered"] is True
+        assert log[0]["label"] and log[0]["channels"][0]["channel"] == "ntfy"
+        assert "Insider B" in " ".join(log[1]["lines"])
+
+    def test_failed_delivery_is_logged(self, tmp_path, monkeypatch):
+        def boom(cfg, title, msg):
+            raise RuntimeError("smtp down")
+
+        monkeypatch.setattr(notify, "send_ntfy", boom)
+        data = tmp_path / "data"
+        data.mkdir()
+        write_snapshot(data, "2026-06-30", [])
+        p = tmp_path / "notify.json"
+        self._enable_ntfy(p)
+        notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
+        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider B", d="2026-06-28")])
+        notify.evaluate_and_notify(p, data)
+
+        log = self._read_log(p)
+        assert len(log) == 1
+        assert log[0]["delivered"] is False
+        assert log[0]["channels"][0]["ok"] is False
+        assert "smtp down" in log[0]["channels"][0]["error"]
+
+    def test_test_notification_is_indexed_and_logged(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: None)
+        p = tmp_path / "notify.json"
+        self._enable_ntfy(p)
+        ok, msg = notify.send_test(p)
+        assert ok is True
+        assert "#1" in msg
+        log = self._read_log(p)
+        assert log[0]["index"] == 1 and log[0]["kind"] == "test"
+
+
 class TestDescribeAndConfig:
     def test_describe_sentence(self):
         # Brief, to the point: who + action + shares + issuer + per-share price + date.
