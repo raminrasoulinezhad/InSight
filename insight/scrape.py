@@ -125,6 +125,26 @@ def summarize(results: dict[str, list[InsiderTransaction]]) -> None:
         )
 
 
+def _prune(outdir: Path, keep: int) -> int:
+    """Drop dated snapshots already folded into the consolidated store.
+
+    Snapshots overwhelmingly restate each other, so once they are folded the
+    originals are redundant bulk. Pruning only ever removes files the store has
+    provably absorbed (see store.prune_folded); the newest `keep` are left as a
+    hand-inspectable tail.
+    """
+    from .aggregate import _txn_key
+    from .store import prune_folded
+
+    removed, freed = prune_folded(outdir, _txn_key, keep=keep)
+    if not removed:
+        print(f"Nothing to prune in {outdir} (no folded snapshots beyond the newest {keep}).")
+        return 0
+    print(f"Pruned {len(removed)} folded snapshot(s) from {outdir}, freeing {freed / 1e6:.1f} MB.")
+    print(f"Kept the newest {keep}. All records remain in {outdir}/store.json.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
     ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
@@ -170,11 +190,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--force", action="store_true", help="ignore the cache and re-fetch everything")
     ap.add_argument("--no-cache", action="store_true", help="do not use the company cache")
+    ap.add_argument(
+        "--prune-snapshots",
+        nargs="?",
+        type=int,
+        const=2,
+        default=None,
+        metavar="KEEP",
+        help="reclaim disk: delete dated snapshots already folded into store.json, "
+        "keeping the newest KEEP (default 2), then exit without scraping. No records "
+        "are lost — the store holds the deduplicated union of everything ever scraped",
+    )
     args = ap.parse_args(argv)
 
     config = Path(args.config) if args.config else paths.config_file()
     outdir = Path(args.outdir) if args.outdir else paths.data_dir()
     cache_dir = None if args.no_cache else paths.cache_dir()
+
+    if args.prune_snapshots is not None:
+        return _prune(outdir, args.prune_snapshots)
 
     targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()

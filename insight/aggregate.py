@@ -31,6 +31,8 @@ from glob import glob
 from pathlib import Path
 from typing import Any
 
+from . import store
+
 # ---- access cache -------------------------------------------------------------
 # Search over names/companies is the app's main job, and every /api/data and
 # /api/people request would otherwise re-read + re-parse + re-merge every dated
@@ -418,16 +420,20 @@ def _txn_key(r: Rec) -> tuple[Any, ...]:
 
 
 def load_all_records(data_dir: Path) -> list[Rec]:
-    """Merge every dated data file into one deduplicated record set.
+    """Every dated data file as one deduplicated record set.
 
     Each scrape writes only a snapshot of MarketBeat's most-recent page, so no
-    single file spans much history. Merging all of them — iterating oldest →
-    newest so a newer scrape wins on an identical-transaction collision — lets
-    the app's window deepen over time as the scraper runs. This is the only free
-    way to accumulate a multi-year history (MarketBeat serves no deep backfill).
+    single file spans much history. Merging all of them — oldest → newest so a
+    newer scrape wins on an identical-transaction collision — lets the app's
+    window deepen over time as the scraper runs. This is the only free way to
+    accumulate a multi-year history (MarketBeat serves no deep backfill).
 
-    The merged result is memoized by directory signature, so repeated access
-    (search/tab-switch) is an in-memory lookup until a scrape changes the files.
+    The merge itself is delegated to `store.sync`, which keeps the result folded
+    into a single consolidated file and re-reads only genuinely new snapshots —
+    otherwise a cold start would re-parse the entire (heavily self-repeating)
+    snapshot pile just to rebuild the same records. On top of that the result is
+    memoized by directory signature, so repeated access (search/tab-switch) is an
+    in-memory lookup until a scrape changes the files.
     """
     key = str(data_dir)
     sig = _dir_signature(data_dir)
@@ -436,15 +442,7 @@ def load_all_records(data_dir: Path) -> list[Rec]:
         if hit is not None and hit[0] == sig:
             return hit[1]
 
-    merged: dict[tuple[Any, ...], Rec] = {}
-    for path in sorted(glob(str(data_dir / "insider_*.json"))):
-        try:
-            recs = json.loads(Path(path).read_text())
-        except (ValueError, OSError):
-            continue  # skip a corrupt/unreadable snapshot rather than fail
-        for r in recs:
-            merged[_txn_key(r)] = r
-    records = list(merged.values())
+    records, _manifest = store.sync(data_dir, _txn_key)
 
     with _CACHE_LOCK:
         _records_cache[key] = (sig, records)
@@ -511,14 +509,19 @@ def _load_records(
 
 
 def _stamp(view: View, data_dir: Path, months: int | None, days: int | None = None) -> View:
-    """Attach shared metadata: newest snapshot date + how many were merged."""
-    files = sorted(glob(str(data_dir / "insider_*.json")))
-    data_file = latest_data_file(data_dir)
-    view["data_file"] = data_file.name if data_file else None
-    view["data_date"] = _file_date(data_file) if data_file else None
+    """Attach shared metadata: newest snapshot date + how many were merged.
+
+    Counted from the store's manifest unioned with what's on disk, so the
+    reported history doesn't shrink when folded snapshots are pruned away.
+    """
+    names = set(store.folded_names(data_dir))
+    names.update(p.name for p in store.snapshot_paths(data_dir))
+    newest = max(names, key=lambda n: (_file_date(n), n)) if names else None
+    view["data_file"] = newest
+    view["data_date"] = _file_date(newest) if newest else None
     view["range_months"] = int(months) if months and not days else None
     view["range_days"] = int(days) if days else None
-    view["history_files"] = len(files)
+    view["history_files"] = len(names)
     return view
 
 
