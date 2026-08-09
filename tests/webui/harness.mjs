@@ -87,7 +87,7 @@ const exposeEpilogue = () =>
   ).join(",") +
   "};\n";
 
-function makeElement(tag = "div") {
+export function makeElement(tag = "div") {
   const el = {
     tagName: tag.toUpperCase(),
     value: "",
@@ -145,11 +145,14 @@ export function loadUi({ fetchResponses = {} } = {}) {
   };
   root.getAttribute = (k) => (k in root._attrs ? root._attrs[k] : null);
 
+  // `queries` lets a test answer a specific document.querySelector(...) with a
+  // node of its own, so code that reaches into the DOM can still be exercised.
+  const queries = new Map();
   const document = {
     getElementById: getEl,
     documentElement: root,
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (sel) => queries.get(sel) ?? null,
+    querySelectorAll: (sel) => queries.get(sel) ?? [],
     addEventListener: () => {},
     createElement: (tag) => makeElement(tag),
     body: makeElement("body"),
@@ -213,5 +216,5 @@ export function loadUi({ fetchResponses = {} } = {}) {
   vm.runInContext(extractScript() + exposeEpilogue(), context, {
     filename: "index.html<script>",
   });
-  return { ctx: context, lex: context.__lex, elements, fetchLog, el: getEl, system };
+  return { ctx: context, lex: context.__lex, elements, fetchLog, el: getEl, system, queries };
 }
