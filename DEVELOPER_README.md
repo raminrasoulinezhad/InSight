@@ -144,9 +144,17 @@ Prefer pip? `pip install .` (or `pip install -e .`) exposes the same
 
 ```
 data/insider_YYYY-MM-DD.json          all records (source-agnostic schema)
-data/insider_YYYY-MM-DD.csv           same, flat CSV
-data/by_ticker/TSE_FNV_YYYY-MM-DD.csv one CSV per company
+data/store.json                       the deduplicated fold of every snapshot
 ```
+
+A scrape used to also write a flat `.csv` and a `by_ticker/` directory of
+per-company CSVs. Nothing read them back — the app loads JSON — and since every
+run restates the same rows they grew by ~5 MB and ~130 files per scrape, reaching
+305 MB across 7,000+ files in a real folder. They are no longer written. Existing
+ones are left alone; delete them by hand (`rm data/*.csv; rm -r data/by_ticker`).
+If you want a spreadsheet export, read `store.json` — it holds the deduplicated
+union of everything ever scraped, which is a better source than any single run's
+CSV was.
 
 (Use `insight-scrape --outdir ./data` to write to an explicit folder instead.)
 
@@ -187,8 +195,7 @@ insight-scrape --prune-snapshots 10   # keep the newest 10
 
 This re-syncs and re-reads the store from disk *before* deleting anything, and
 only ever removes files the manifest proves were absorbed — no records are lost.
-It touches `insider_*.json` only; the per-run `.csv` and `by_ticker/` exports are
-independent and left alone (delete those by hand if you don't use them).
+It touches `insider_*.json` only — the store itself is never a prune candidate.
 
 **Delisted / acquired companies are dropped automatically.** When a fetch finds
 a ticker's insider page gone — the URL redirects to `…/stocks/<EXCH>/<TICKER>/`

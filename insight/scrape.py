@@ -16,8 +16,6 @@ checkout):
 By default the watchlist and output live in the per-user app folder (see
 insight.paths). Outputs, per run (stamped with today's date):
     data/insider_YYYY-MM-DD.json   all records, one source-agnostic schema
-    data/insider_YYYY-MM-DD.csv    same, flat CSV for spreadsheets/DBs
-    data/by_ticker/<EXCH>_<TKR>_YYYY-MM-DD.csv   one file per company
 
 Run it daily (cron / Task Scheduler) to build a history.
 """
@@ -25,7 +23,6 @@ Run it daily (cron / Task Scheduler) to build a history.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from datetime import date
@@ -36,25 +33,6 @@ from . import paths
 from .marketbeat import discover_tickers, scrape_many
 from .models import InsiderTransaction
 from .sedi import SediScraper
-
-CSV_FIELDS = [
-    "issuer_name",
-    "exchange",
-    "ticker",
-    "insider_name",
-    "insider_role",
-    "entity_type",
-    "transaction_date",
-    "transaction_type",
-    "shares",
-    "avg_price",
-    "total_value",
-    "currency",
-    "is_issuer_buyback",
-    "source",
-    "source_url",
-    "scraped_at",
-]
 
 
 def load_targets(path: Path, cli_tickers: list[str]) -> list[dict[str, str]]:
@@ -76,33 +54,22 @@ def write_outputs(
     run_date: str,
     source: str = "marketbeat",
 ) -> None:
-    """Write the dated snapshot (+ CSVs). Non-default sources get a filename tag
+    """Write the dated snapshot. Non-default sources get a filename tag
     (insider_sedi_YYYY-MM-DD.json) so they merge into the app's deduped view via
-    the insider_*.json glob without clobbering another source's snapshot."""
+    the insider_*.json glob without clobbering another source's snapshot.
+
+    Only JSON is written. Earlier versions also emitted a flat `.csv` and a
+    `by_ticker/` directory of per-company CSVs, but nothing ever read them back:
+    the app loads JSON, and each run restated the same rows, so the exports grew
+    by ~5 MB and ~130 files per scrape (a real folder reached 305 MB across
+    7,000+ files) purely as dead weight. Existing CSVs are left alone — delete
+    them by hand when convenient.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
-    by_ticker_dir = outdir / "by_ticker"
-    by_ticker_dir.mkdir(exist_ok=True)
     tag = "" if source == "marketbeat" else f"{source}_"
 
-    all_rows: list[dict[str, Any]] = []
-    for key, recs in results.items():
-        rows = [r.to_dict() for r in recs]
-        all_rows.extend(rows)
-        # per-company CSV (only when there's data)
-        if rows:
-            safe = key.replace(":", "_")
-            with (by_ticker_dir / f"{safe}_{tag}{run_date}.csv").open("w", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
-                w.writeheader()
-                w.writerows(rows)
-
-    # combined JSON
+    all_rows: list[dict[str, Any]] = [r.to_dict() for recs in results.values() for r in recs]
     (outdir / f"insider_{tag}{run_date}.json").write_text(json.dumps(all_rows, indent=2))
-    # combined CSV
-    with (outdir / f"insider_{tag}{run_date}.csv").open("w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
-        w.writeheader()
-        w.writerows(all_rows)
 
 
 def summarize(results: dict[str, list[InsiderTransaction]]) -> None:
@@ -264,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     write_outputs(results, outdir, run_date, source=args.source)
     summarize(results)
-    print(f"\nWrote: {outdir}/insider_{run_date}.json (+ .csv, by_ticker/)")
+    print(f"\nWrote: {outdir}/insider_{run_date}.json")
 
     # Fire any alarms whose watched company/person has new transactions.
     try:

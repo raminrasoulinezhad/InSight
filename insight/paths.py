@@ -43,7 +43,8 @@ def app_dir() -> Path:
 
 
 def data_dir() -> Path:
-    """Where dated scrape output (insider_YYYY-MM-DD.json/.csv) is written."""
+    """Where dated scrape output (insider_YYYY-MM-DD.json) and the consolidated
+    store.json are written."""
     d = app_dir() / "data"
     d.mkdir(parents=True, exist_ok=True)
     return d

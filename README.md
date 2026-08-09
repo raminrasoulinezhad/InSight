@@ -227,6 +227,10 @@ insight-scrape --prune-snapshots
 That deletes only the dated files already merged into the combined copy — no
 trades are lost, and the app looks exactly the same afterwards.
 
+If you used a version before this one, the folder may also hold `.csv` files and
+a `by_ticker` folder. InSight no longer writes those and never reads them, so
+they are safe to delete.
+
 ---
 
 ## Good to know

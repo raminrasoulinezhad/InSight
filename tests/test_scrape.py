@@ -5,7 +5,6 @@
 
 """Output writing + target loading (insight.scrape)."""
 
-import csv
 import json
 
 from insight.models import InsiderTransaction
@@ -29,24 +28,31 @@ def _txn(ticker="ABC"):
 
 
 class TestWriteOutputs:
-    def test_writes_json_csv_and_per_ticker(self, tmp_path):
+    def test_writes_the_dated_json_snapshot(self, tmp_path):
         results = {"TSE:ABC": [_txn("ABC")], "TSE:EMPTY": []}
         write_outputs(results, tmp_path, "2026-07-01")
 
         combined = json.loads((tmp_path / "insider_2026-07-01.json").read_text())
         assert len(combined) == 1
         assert combined[0]["ticker"] == "ABC"
+        assert combined[0]["insider_name"] == "Jane Doe"
+        assert combined[0]["total_value"] == 1000.0
 
-        assert (tmp_path / "insider_2026-07-01.csv").exists()
+    def test_writes_nothing_but_the_snapshot(self, tmp_path):
+        # The CSV and by_ticker/ exports were removed: nothing read them back,
+        # and every scrape restated the same rows, so they grew ~5 MB and ~130
+        # files per run as pure dead weight.
+        write_outputs({"TSE:ABC": [_txn("ABC")], "TSE:EMPTY": []}, tmp_path, "2026-07-01")
+        assert [p.name for p in tmp_path.iterdir()] == ["insider_2026-07-01.json"]
 
-        per = tmp_path / "by_ticker" / "TSE_ABC_2026-07-01.csv"
-        assert per.exists()
-        rows = list(csv.DictReader(per.open()))
-        assert rows[0]["insider_name"] == "Jane Doe"
-        assert rows[0]["total_value"] == "1000.0"
+    def test_a_tagged_source_gets_its_own_snapshot(self, tmp_path):
+        write_outputs({"TSE:ABC": [_txn("ABC")]}, tmp_path, "2026-07-01", source="sedi")
+        assert (tmp_path / "insider_sedi_2026-07-01.json").exists()
+        assert not (tmp_path / "insider_2026-07-01.json").exists()
 
-        # empty company writes no per-ticker file
-        assert not (tmp_path / "by_ticker" / "TSE_EMPTY_2026-07-01.csv").exists()
+    def test_a_scrape_with_no_data_still_writes_a_snapshot(self, tmp_path):
+        write_outputs({"TSE:EMPTY": []}, tmp_path, "2026-07-01")
+        assert json.loads((tmp_path / "insider_2026-07-01.json").read_text()) == []
 
 
 class TestLoadTargets:
