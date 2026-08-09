@@ -68,6 +68,16 @@ def delisted_file() -> Path:
     return app_dir() / "delisted.json"
 
 
+def notes_file() -> Path:
+    """Free-text notes the user keeps per company (your own research, thesis,
+    reminders) — a JSON object keyed "EXCH:TICKER" -> note text.
+
+    Purely user-authored, never touched by the scraper, so it lives beside the
+    watchlist in the per-user app folder rather than in the data snapshots.
+    """
+    return app_dir() / "notes.json"
+
+
 def notify_file() -> Path:
     """Notification settings + alarms (email/ntfy config, watched companies/people).
 

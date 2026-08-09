@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from . import notify, paths
+from . import notes, notify, paths
 from .aggregate import load_people_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -264,6 +264,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/refresh/status":
             with _refresh_lock:
                 self._send_json(200, dict(_refresh))
+        elif path == "/api/notes":
+            self._send_json(200, {"notes": notes.load_notes(paths.notes_file())})
         elif path == "/api/notify/config":
             self._send_json(200, notify.public_config(paths.notify_file()))
         else:
@@ -292,6 +294,18 @@ class Handler(BaseHTTPRequestHandler):
                 )
             threading.Thread(target=_do_refresh, args=(discover, source), daemon=True).start()
             self._send_json(202, {"started": True})
+        elif parsed.path == "/api/notes":
+            try:
+                body = self._read_json()
+                saved, msg = notes.save_note(
+                    paths.notes_file(),
+                    body.get("exchange", ""),
+                    body.get("ticker", ""),
+                    body.get("text", ""),
+                )
+                self._send_json(200 if saved else 400, {"saved": saved, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"saved": False, "msg": f"bad request: {e}"})
         elif parsed.path == "/api/notify/settings":
             try:
                 notify.save_settings(paths.notify_file(), self._read_json())
