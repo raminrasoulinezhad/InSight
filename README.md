@@ -73,8 +73,16 @@ Then reload the app to see the update.
 
 - **Search** — filter by company, ticker, or insider name.
 - **Filter** — show only net buyers, net sellers, or institutions.
-- **Time range** — show trades from the last month, 3 months, 6 months, year,
-  or 2 years (the totals update to match).
+- **Time range** — opens on the **last 2 weeks**; widen it to a month, 3 months,
+  6 months, a year or 2 years whenever you want the longer view (the totals
+  update to match). The short default is what keeps the app quick — a 2‑year
+  window has to draw tens of thousands of rows at once.
+- **Notes** — click **📝** on any company to open a note above its activity. It
+  writes as a bullet list: **Enter** starts the next bullet, **Ctrl+Enter** saves,
+  **Esc** discards. Notes are yours, kept per company, and survive every refresh.
+- **Follow a name** — click an insider in a company's table to see everything
+  *they* traded; click a company on an insider's card to open that company. The
+  **← Back** button (or **Alt+←**) retraces up to 10 steps.
 - **Add a company** — type a name in the *“Add a company…”* box, pick the right
   match, and it joins your watchlist.
 - **Remove a company** — click **✕ Remove** on any company.
@@ -198,6 +206,18 @@ nothing is lost if you move or delete the project:
 | Linux | `~/.local/share/InSight` |
 | macOS | `~/Library/Application Support/InSight` |
 | Windows | `%LOCALAPPDATA%\InSight` |
+
+Every refresh saves a dated file, and those files repeat each other heavily, so
+the folder grows much faster than the actual data does. InSight keeps a single
+combined copy (`data/store.json`) of everything it has ever collected, so if the
+folder gets large you can safely reclaim the space:
+
+```bash
+insight-scrape --prune-snapshots
+```
+
+That deletes only the dated files already merged into the combined copy — no
+trades are lost, and the app looks exactly the same afterwards.
 
 ---
 

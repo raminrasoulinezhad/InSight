@@ -155,8 +155,40 @@ data/by_ticker/TSE_FNV_YYYY-MM-DD.csv one CSV per company
 merges **all** `insider_*.json` snapshots into one deduplicated view (newest
 scrape wins on an identical-transaction collision), and the "Last N months"
 filter runs over that union. Running the scraper regularly (e.g. via cron) is
-what deepens the window over time — so **don't delete old dated files** if you
-want the history; they are the history.
+what deepens the window over time.
+
+**Snapshots are folded into one consolidated store** (`data/store.json`, see
+`store.py`). Because every scrape re-states the history rather than appending to
+it, the snapshot pile is dominated by repetition — a real 57-snapshot folder of
+357 MB deduplicated to 31 032 records. Re-merging that on every cold start cost
+2.4 s, and again after each scrape (a new file invalidates the in-memory cache).
+So snapshots are folded once, oldest → newest, into a single store carrying a
+manifest of what it has already absorbed:
+
+```
+{"version": 1,
+ "folded": {"insider_2026-06-30.json": [mtime_ns, size], ...},
+ "records": [ ...deduplicated records... ]}
+```
+
+`store.sync()` parses only snapshots whose name+mtime+size are missing from the
+manifest, so a fresh scrape costs one small file instead of the whole history —
+**cold start 2.44 s → 0.10 s** on that same folder. The store is a derived cache:
+delete it and it rebuilds. The manifest also *is* the history — it remembers
+every snapshot ever folded, so `history_files` and the newest data date stay
+correct once the originals are gone.
+
+**Reclaiming the disk.** Once folded, the dated files are redundant bulk:
+
+```bash
+insight-scrape --prune-snapshots      # keep the newest 2, delete the rest
+insight-scrape --prune-snapshots 10   # keep the newest 10
+```
+
+This re-syncs and re-reads the store from disk *before* deleting anything, and
+only ever removes files the manifest proves were absorbed — no records are lost.
+It touches `insider_*.json` only; the per-run `.csv` and `by_ticker/` exports are
+independent and left alone (delete those by hand if you don't use them).
 
 **Delisted / acquired companies are dropped automatically.** When a fetch finds
 a ticker's insider page gone — the URL redirects to `…/stocks/<EXCH>/<TICKER>/`
@@ -170,17 +202,28 @@ redirects to the bare `…/stocks/<EXCH>/` list (unknown / not covered) is treat
 as "no data", not delisted.
 
 **Search is the hot path, so access is cached.** Filtering by name/company is the
-app's main job, and rebuilding a view means reading + parsing + merging every
-snapshot. `aggregate` memoizes the merged records and the built views, keyed by a
-cheap signature (each snapshot's mtime+size, plus the watchlist and delisted
+app's main job, and rebuilding a view means re-reading and re-aggregating the
+record set. `aggregate` memoizes the merged records and the built views, keyed by
+a cheap signature (each snapshot's mtime+size, plus the watchlist and delisted
 files). A rebuild happens only when the underlying data actually changes (a
 scrape, add/remove, or delist); otherwise repeated access is an in-memory dict
 lookup — ~1000× faster on a large accumulated history (≈2 s → a few ms in a
-300-snapshot benchmark). The frontend likewise precomputes a lowercased search
-string per company/insider once per load and debounces the box, so typing filters
-in constant work per item. This in-memory approach beats an embedded DB for a
-single-user, few-MB dataset; SQLite/FTS5 is the escalation path only if the data
-ever outgrows memory or needs concurrent writers.
+300-snapshot benchmark). The consolidated store is what makes the *miss* cheap
+too, so the first request after a restart or a scrape no longer stalls. The
+frontend likewise precomputes a lowercased search string per company/insider once
+per load and debounces the box, so typing filters in constant work per item. This
+in-memory approach beats an embedded DB for a single-user, few-MB dataset;
+SQLite/FTS5 is the escalation path only if the data ever outgrows memory or needs
+concurrent writers.
+
+**The window defaults to the last 2 weeks.** The range selector opens on
+`Last 2 weeks`, not the full history. Rendering is a single `innerHTML` rebuild
+of the whole feed, so the window size sets the interaction cost directly: on the
+same data a 2-year window was a 6.2 MB payload and 195 746 feed nodes taking
+699 ms to paint, against 56 KB / 1 805 nodes / 13 ms for 2 weeks. The wider
+ranges are all still one click away — they just aren't what you pay for on every
+load, tab switch and keystroke. If the feed ever needs to render a large window
+smoothly, virtualizing the transaction rows is the next step.
 
 ### Example summary
 
@@ -382,7 +425,9 @@ insight/
   paths.py              per-user data/config/profile dirs (cross-platform)
   models.py             InsiderTransaction schema + parsing helpers
   marketbeat.py         MarketBeat scraper (Playwright + stealth)
+  store.py              dated snapshots -> one deduplicated, incrementally folded store
   aggregate.py          flat records -> per-company / per-insider boxes
+  notes.py              per-company user notes (your own research, kept per ticker)
   issuers.py            name -> issuer-candidate resolver (+ watchlist add)
   companies.default.json  seed watchlist (copied to the app folder on first run)
   webui/index.html      the single-page UI (scrollable insider boxes)
@@ -413,6 +458,39 @@ are intentionally isolated behind pure helpers (`_extract_tickers`,
 `_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
 inputs rather than live HTTP.
 
+### Browser-UI tests (`tests/webui/`)
+
+All of the app's interaction logic lives in `insight/webui/index.html`, so it
+gets its own suite — on **Node's built-in test runner**, so there is still no
+npm install, no `package.json` dependencies and no build step:
+
+```bash
+node --test tests/webui/       # directly
+uv run pytest                  # …or via the bridge in tests/test_webui_js.py
+```
+
+`tests/webui/harness.mjs` reads the real `index.html`, extracts its `<script>`,
+and evaluates it in a `node:vm` context against a small DOM stub — so the tests
+exercise shipped code rather than a copy. Two things to know when writing them:
+
+- Top-level `function` declarations land on the vm context (`ctx`); `let`/`const`
+  bindings (`STATE`, `BULLET`, `NAV_MAX`, the arrow-function helpers) are
+  lexically scoped and are reached through `lex`, which the harness exposes via
+  live getters.
+- Arrays returned from the vm carry that realm's prototype, so wrap them in
+  `Array.from()` before `assert.deepEqual`.
+
+The suite covers bullet normalization and note escaping, timeline geometry
+(nothing clipped, radii ordered by share count), the back-stack state machine
+(typing collapses to one step, the cap drops the oldest), the cross-link markup,
+and markup invariants — including that the preselected `<option>` and
+`STATE.range` still agree, which is the same fact stated in two places.
+
+Anything needing real layout or real events (focus, key handling, paint cost) is
+verified against a live browser instead, not here.
+
 CI (`.github/workflows/`) runs the same ruff/mypy/pytest checks on every push and
-PR, plus a `gitleaks` secret scan over the full history as a server-side backstop
-to the local pre-commit hook.
+PR, plus the Node UI suite, plus a `gitleaks` secret scan over the full history as
+a server-side backstop to the local pre-commit hook. Node is installed explicitly
+in CI because the pytest bridge *skips* when node is missing — without that step
+the UI tests would quietly stop running instead of failing.

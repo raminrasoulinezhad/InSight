@@ -9,13 +9,20 @@ cloud, no paid data services.
 
 ### Core features
 - **Companies tab** — insider activity grouped per watchlist company.
-- **People tab** — the same data re-sliced by *person*, spanning every scraped
+- **Insiders tab** — the same data re-sliced by *person*, spanning every scraped
   company (watchlist or not), so you can follow one insider across companies.
+  (User-visible name only; the view id and `/api/people` are still `people`.)
+- **Cross-links + back-stack** — an insider name on a company opens that insider,
+  a company on an insider's card opens that company; a Back button (and Alt+←)
+  walks up to 10 previous states back.
 - **Watchlist** — add companies by name (TradingView resolver) / remove them.
 - **Refresh** — re-scrape from the UI; optional "Scan all TSE (~215)" to widen
   coverage via MarketBeat's exchange listing.
-- **History accumulation** — each scrape writes a dated snapshot; the app merges
-  all snapshots (deduped) so the window deepens over time.
+- **Notes** — free-text notes per company (a bullet list in the UI), shown above
+  that company's activity. Purely user-authored; never touched by the scraper.
+- **History accumulation** — each scrape writes a dated snapshot; the app folds
+  all snapshots (deduped) into one store so the window deepens over time. The
+  view defaults to the **last 2 weeks**; wider ranges are one click away.
 - **Delisting hygiene** — acquired/delisted tickers are detected during scrape,
   dropped from cache, and hidden from views (self-healing).
 - **Alarms** — per-company / per-person alarms that notify (email via SMTP, or
@@ -27,9 +34,12 @@ cloud, no paid data services.
 - **Scraper:** Playwright + playwright-stealth (Chromium, headless).
 - **UI:** a single self-contained `insight/webui/index.html` (vanilla JS), served
   by `http.server`. No build step, no frontend deps.
-- **Storage:** plain JSON snapshots under a per-user app folder (see `paths.py`).
-  Deliberately **not** a database — in-memory caching beats SQLite at this scale;
-  SQLite/FTS5 is the documented escalation path.
+- **Storage:** plain JSON under a per-user app folder (see `paths.py`). Each
+  scrape writes a dated snapshot; `store.py` folds them **once** into a single
+  deduplicated `store.json` and thereafter reads only genuinely new snapshots, so
+  startup never re-parses a pile that is mostly repetition. Deliberately **not** a
+  database — in-memory caching beats SQLite at this scale; SQLite/FTS5 is the
+  documented escalation path.
 
 ## Commands
 ```bash
@@ -37,8 +47,10 @@ uv run insight                 # serve + open browser
 uv run insight --window        # chromeless desktop window
 uv run insight-scrape          # scrape the watchlist
 uv run insight-scrape --discover   # + MarketBeat's ~215 TSE universe
+uv run insight-scrape --prune-snapshots   # drop folded snapshots, keep newest 2
 
-uv run pytest                  # tests (pure, no network/browser)
+uv run pytest                  # tests (pure, no network/browser; runs the UI suite too)
+node --test tests/webui/       # browser-UI tests alone (Node's runner, no npm deps)
 uv run ruff check insight tests
 uv run ruff format insight tests
 uv run mypy insight            # strict on the core
@@ -61,10 +73,20 @@ app restart.
   (`models.py`). A new data source = a new module yielding these; nothing
   downstream changes.
 - **The watchlist is the source of truth for the Companies tab** (gated). The
-  People tab is intentionally *not* gated — it spans all scraped data.
+  Insiders tab is intentionally *not* gated — it spans all scraped data. That
+  asymmetry is why a cross-link from an insider to a company can land on nothing;
+  the UI says so rather than showing an empty feed. Issuer buybacks are excluded
+  from the Insiders tab (the "insider" is the company), so those rows don't link.
 - **Tests are pure**: network/browser logic is isolated behind testable helpers
   (`_extract_tickers`, `_no_insider_page_kind`, `_row_to_record`, …). Add tests
   for parsing/math/aggregation logic; don't unit-test the live fetch.
+- **UI logic is tested too** (`tests/webui/`, Node's built-in runner — still no
+  frontend deps). The harness evaluates the real `index.html` in a `node:vm`, so
+  new pure UI logic (formatting, geometry, state machines) belongs there.
+- **On-disk writes are concurrent**: the server is a `ThreadingHTTPServer`, so
+  any read-modify-write of a JSON file needs a lock plus a unique temp name +
+  `os.replace` (see `notes.py`, `store.py`). A fixed temp name lets two writers
+  interleave.
 
 ## Architecture (data flow)
 ```
@@ -72,8 +94,10 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
                                                    │
                         scrape.write_outputs ──> data/insider_YYYY-MM-DD.json (dated snapshots)
                                                    │
+                              store.sync ──> data/store.json (deduped; folds only new snapshots)
+                                                   │
         app (HTTP) ──> aggregate.load_view / load_people_view
-                          │  merges all snapshots (cached), filters delisted + months
+                          │  reads the store (cached), filters delisted + the date window
                           ▼
                     webui/index.html  (Companies / People tabs, client-side search)
 ```
@@ -81,10 +105,13 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
 ## Layout
 ```
 insight/
-  app.py          local HTTP server + API (/api/data, /api/people, /api/watchlist, /api/refresh)
-  scrape.py       insight-scrape CLI (targets, output, --discover)
+  app.py          local HTTP server + API (/api/data, /api/people, /api/watchlist,
+                  /api/notes, /api/refresh)
+  scrape.py       insight-scrape CLI (targets, output, --discover, --prune-snapshots)
   marketbeat.py   Playwright scraper + discovery + cache/delisted helpers
-  aggregate.py    snapshots -> company/people views (+ in-memory access cache)
+  store.py        dated snapshots -> one deduplicated store, folded incrementally
+  aggregate.py    records -> company/people views (+ in-memory access cache)
+  notes.py        per-company user notes (EXCH:TICKER -> text)
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
   notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers
