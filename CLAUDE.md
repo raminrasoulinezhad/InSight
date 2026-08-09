@@ -29,8 +29,9 @@ cloud, no paid data services.
   ntfy push) when a new transaction appears; evaluated after each scrape. The
   **Alarms tab** lists what's watched (split Companies / Insiders); the delivery
   setup lives in **Settings ▸ Notifications**.
-- **Themes** — six palettes (Dark, Light, Terminal, Newsprint, Midnight,
-  Canadian) chosen in **Settings ▸ Appearance**, stored server-side.
+- **Themes** — ten palettes, shelved dark/light (Dark, Midnight, Terminal,
+  Caramel, Chic | Light, Newsprint, Sage, Lemon, Canadian), chosen in
+  **Settings ▸ Appearance** and stored server-side.
 
 ## Technical stack
 - **Env / deps:** `uv` (dependency-groups; `uv sync --group dev`).
@@ -52,6 +53,7 @@ uv run insight --window        # chromeless desktop window
 uv run insight-scrape          # scrape the watchlist
 uv run insight-scrape --discover   # + MarketBeat's ~215 TSE universe
 uv run insight-scrape --prune-snapshots   # drop folded snapshots, keep newest 2
+uv run insight-scrape --prune-browser-cache  # clear Chromium caches (keeps cookies)
 
 uv run pytest                  # tests (pure, no network/browser; runs the UI suite too)
 node --test tests/webui/       # browser-UI tests alone (Node's runner, no npm deps)
@@ -103,7 +105,7 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
         app (HTTP) ──> aggregate.load_view / load_people_view
                           │  reads the store (cached), filters delisted + the date window
                           ▼
-                    webui/index.html  (Companies / People tabs, client-side search)
+                    webui/index.html  (Companies / Insiders tabs, client-side search)
 ```
 
 ## Layout
@@ -111,12 +113,13 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
 insight/
   app.py          local HTTP server + API (/api/data, /api/people, /api/watchlist,
                   /api/notes, /api/settings, /api/refresh)
-  scrape.py       insight-scrape CLI (targets, output, --discover, --prune-snapshots)
+  scrape.py       insight-scrape CLI (targets, output, --discover, prune commands)
   marketbeat.py   Playwright scraper + discovery + cache/delisted helpers
   store.py        dated snapshots -> one deduplicated store, folded incrementally
   aggregate.py    records -> company/people views (+ in-memory access cache)
   notes.py        per-company user notes (EXCH:TICKER -> text)
   settings.py     app preferences (theme); separate from notify.json
+  profiles.py     Chromium profile cache caps + pruning (keeps cookies/CAPTCHA)
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
   notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers

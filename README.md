@@ -231,6 +231,18 @@ If you used a version before this one, the folder may also hold `.csv` files and
 a `by_ticker` folder. InSight no longer writes those and never reads them, so
 they are safe to delete.
 
+InSight also keeps two browser profiles (it drives a real browser to fetch data
+and, optionally, to show the app window). Browsers cache a *lot* — these had
+grown to 526 MB on one machine. They now stay small on their own and tidy
+themselves when you close the app, but to clear them right away:
+
+```bash
+insight-scrape --prune-browser-cache
+```
+
+Close InSight first, or it will skip the profile still in use. Your SEDI login is
+kept, so you will not have to solve the CAPTCHA again.
+
 ---
 
 ## Good to know

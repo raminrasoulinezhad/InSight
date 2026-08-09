@@ -112,6 +112,38 @@ def _prune(outdir: Path, keep: int) -> int:
     return 0
 
 
+def _prune_browser_caches(*dirs: Path, quiet: bool = False) -> int:
+    """Reclaim Chromium cache from the given profiles. Best-effort.
+
+    Only regenerable caches are removed (see profiles.DISPOSABLE); cookies and
+    local storage — which for the SEDI profile hold the solved bot-wall
+    challenge — are left alone.
+    """
+    from .profiles import IN_USE, prune_profile
+
+    total = 0
+    busy: list[str] = []
+    for profile_dir in dirs:
+        try:
+            removed, freed = prune_profile(profile_dir)
+        except Exception as e:  # housekeeping must never break a scrape
+            print(f"Cache cleanup skipped for {profile_dir.name}: {e}", file=sys.stderr)
+            continue
+        if removed == [IN_USE]:
+            busy.append(profile_dir.name)
+            continue
+        total += freed
+        if removed and not quiet:
+            print(f"{profile_dir.name}: freed {freed / 1e6:.1f} MB ({len(removed)} entries)")
+    if not quiet:
+        print(f"Reclaimed {total / 1e6:.1f} MB of browser cache." if total else "Nothing to clean.")
+        for name in busy:
+            print(f"Skipped {name}: a browser has it open. Close InSight and re-run.")
+    elif total > 1_000_000:
+        print(f"Reclaimed {total / 1e6:.0f} MB of browser cache.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
     ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
@@ -168,6 +200,13 @@ def main(argv: list[str] | None = None) -> int:
         "keeping the newest KEEP (default 2), then exit without scraping. No records "
         "are lost — the store holds the deduplicated union of everything ever scraped",
     )
+    ap.add_argument(
+        "--prune-browser-cache",
+        action="store_true",
+        help="reclaim disk: clear the Chromium caches in InSight's two browser profiles, "
+        "then exit without scraping. Cookies and local storage are kept, so the solved "
+        "SEDI CAPTCHA survives. Run this with the app and scraper closed",
+    )
     args = ap.parse_args(argv)
 
     config = Path(args.config) if args.config else paths.config_file()
@@ -176,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.prune_snapshots is not None:
         return _prune(outdir, args.prune_snapshots)
+
+    if args.prune_browser_cache:
+        return _prune_browser_caches(paths.sedi_profile_dir(), paths.chrome_profile_dir())
 
     targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()
@@ -220,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
             source="sedi",
         )
+        # The browser has closed, so its caches are safe to drop. The session
+        # cookie that carries the solved CAPTCHA is never touched.
+        _prune_browser_caches(paths.sedi_profile_dir(), quiet=True)
     else:
         results = scrape_many(
             targets,

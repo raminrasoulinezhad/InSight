@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from . import notes, notify, paths, settings
+from . import notes, notify, paths, profiles, settings
 from .aggregate import load_people_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -466,9 +466,24 @@ def _open_app_window(chrome: str, url: str):
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate,TranslateUI",
+        # This window only ever shows a local page, so it has no use for a large
+        # HTTP cache or for Chromium's background component downloads (ML model
+        # stores, TTS engine, Safe Browsing lists) — those alone had reached
+        # ~110 MB in this profile.
+        *profiles.cache_args(component_updates=False),
         "--window-size=1300,880",
     ]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _prune_window_profile() -> None:
+    """Drop the app window's browser caches. Best-effort — never fails an exit."""
+    try:
+        removed, freed = profiles.prune_profile(paths.chrome_profile_dir())
+        if freed > 1_000_000:
+            print(f"Reclaimed {freed / 1e6:.0f} MB of browser cache ({len(removed)} entries).")
+    except Exception as e:
+        print(f"Browser-cache cleanup skipped: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def main(argv=None) -> int:
@@ -510,6 +525,10 @@ def main(argv=None) -> int:
             except KeyboardInterrupt:
                 proc.terminate()
             print("Window closed — shutting down.")
+            # The browser has exited, so its caches are safe to drop. Doing it
+            # here keeps the profile self-managing: nobody has to discover a
+            # cleanup command for disk they never knew was being used.
+            _prune_window_profile()
             httpd.shutdown()
             return 0
 

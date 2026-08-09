@@ -37,6 +37,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
+from . import profiles
 from .marketbeat import _UA, BotBlocked
 from .models import InsiderTransaction, parse_int, parse_money
 from .paths import sedi_page_filename
@@ -329,7 +330,13 @@ class SediScraper:
             user_agent=_UA,
             locale="en-CA",
             viewport={"width": 1366, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+            # The cache cap keeps this persistent profile from growing without
+            # bound (it reached 301 MB before). Component updates are left on:
+            # this profile faces a bot wall, so it should look ordinary.
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                *profiles.cache_args(),
+            ],
         )
 
     def __enter__(self) -> SediScraper:

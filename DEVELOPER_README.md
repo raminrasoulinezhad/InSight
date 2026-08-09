@@ -6,8 +6,8 @@
 
 Proof of concept that collects **insider transactions** (individuals, officers,
 directors, and the **issuer itself** / institutions) for a watchlist of
-Canadian (and US) stocks, normalizes them into one schema, and writes daily
-CSV/JSON for downstream processing.
+Canadian (and US) stocks, normalizes them into one schema, and folds daily JSON
+snapshots into a single deduplicated store for downstream processing.
 
 ## TL;DR — current status
 
@@ -185,6 +185,40 @@ manifest, so a fresh scrape costs one small file instead of the whole history �
 delete it and it rebuilds. The manifest also *is* the history — it remembers
 every snapshot ever folded, so `history_files` and the newest data date stay
 correct once the originals are gone.
+
+### Browser profiles
+
+InSight drives Chromium twice — a persistent profile for the SEDI scraper (so a
+solved bot-wall challenge survives between runs) and another for the `--window`
+app. Both are ordinary browser profiles, so both accumulate browser-sized caches:
+362 MB and 164 MB on a real installation, against 49 MB of actual insider data.
+Nobody would guess that is where their disk went.
+
+Both are now launched with a capped disk cache, and the app window additionally
+passes `--disable-component-update` — it only ever shows a local page, so it has
+no use for the ML model stores, TTS engine and Safe Browsing lists Chromium
+downloads in the background (~110 MB of that profile). The scraper keeps
+component updates on: it faces a bot wall and should look like a normal browser.
+
+For what has already accumulated:
+
+```bash
+insight-scrape --prune-browser-cache
+```
+
+`profiles.prune_profile` removes only entries on an explicit `DISPOSABLE`
+allowlist, all of them caches Chromium regenerates on demand. Session state is
+never touched — for the SEDI profile the cookie jar *is* the solved CAPTCHA, and
+deleting it would mean solving the challenge by hand again. The allowlist is
+deliberate rather than a denylist so a future Chromium directory holding real
+state is not swept up by accident.
+
+Cleanup also runs by itself: after a SEDI scrape and when the `--window` app
+closes, both points where that browser has definitely exited. A profile a browser
+still has open is detected via Chromium's `SingletonLock` (a symlink naming the
+live pid) and skipped — a lock naming a dead pid is a crash leftover and is
+correctly ignored. The check errs toward "in use": skipping a cleanup costs
+disk, a wrong guess costs a broken session.
 
 **Reclaiming the disk.** Once folded, the dated files are redundant bulk:
 
