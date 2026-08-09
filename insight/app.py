@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from . import notes, notify, paths, profiles, settings
+from . import autostart, notes, notify, paths, profiles, settings
 from .aggregate import load_insiders_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -272,6 +272,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"notes": notes.load_notes(paths.notes_file())})
         elif path == "/api/settings":
             self._send_json(200, settings.load_settings(paths.settings_file()))
+        elif path == "/api/autostart":
+            self._send_json(200, autostart.status())
         elif path == "/api/notify/config":
             self._send_json(200, notify.public_config(paths.notify_file()))
         else:
@@ -312,6 +314,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200 if saved else 400, {"saved": saved, "msg": msg})
             except Exception as e:
                 self._send_json(400, {"saved": False, "msg": f"bad request: {e}"})
+        elif parsed.path == "/api/autostart":
+            try:
+                want = bool(self._read_json().get("enabled"))
+                ok, msg = autostart.enable() if want else autostart.disable()
+                self._send_json(200 if ok else 400, {"ok": ok, "msg": msg, **autostart.status()})
+            except Exception as e:
+                self._send_json(400, {"ok": False, "msg": f"bad request: {e}"})
         elif parsed.path == "/api/settings":
             try:
                 saved, msg = settings.save_settings(paths.settings_file(), self._read_json())

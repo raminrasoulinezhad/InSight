@@ -398,6 +398,9 @@
   .settings-pane .panel { max-width:none; }
   .settings-pane h3:first-child { margin-top:0; }
   .settings-hint { color:var(--muted); font-size:12px; margin:0 0 14px; }
+  .startup-code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:11px; color:var(--text); background:var(--bg); border:1px solid var(--line);
+    border-radius:6px; padding:3px 7px; overflow-wrap:anywhere; flex:1 1 200px; }
   /* theme picker */
   .shelf-h { margin:16px 0 8px; font-size:11px; text-transform:uppercase;
     letter-spacing:.6px; color:var(--muted); font-weight:600; }
@@ -498,6 +501,7 @@
       <nav class="settings-nav" id="settings-nav">
         <button data-page="theme" class="active">Appearance</button>
         <button data-page="notify">Notifications</button>
+        <button data-page="startup">Startup</button>
       </nav>
       <div class="settings-pane" id="settings-pane"></div>
     </div>
@@ -531,7 +535,7 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // mirrors settings.json; `theme` is the manual pick, auto_* are
               // the per-mode picks used when following the system
               themeCfg:{theme:"dark", auto:false, auto_dark:"dark", auto_light:"light"},
-              settingsPage:"theme", settingsOpener:null,
+              settingsPage:"theme", settingsOpener:null, autostart:null,
               expanded:new Set() };   // companies showing their full row list
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -1257,9 +1261,60 @@ function notifyPage(){
     </div>`;
 }
 
+/* ---- open at login ------------------------------------------------------- */
+// The server writes whatever file this platform already looks for (an XDG
+// autostart entry, a launchd agent, a Startup-folder script). The UI only
+// reflects it, and shows the path — something that starts itself at login
+// should be easy to find and delete by hand, not only through this checkbox.
+async function loadAutostart(){
+  try { STATE.autostart = await (await fetch("/api/autostart")).json(); }
+  catch(e){ STATE.autostart = null; }
+}
+
+async function setAutostart(on){
+  try {
+    const d = await (await fetch("/api/autostart", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({enabled: !!on})
+    })).json();
+    STATE.autostart = d;
+    toast(d.msg || (d.ok ? "Saved." : "Could not change that."));
+  } catch(e){ toast("Could not change that: " + e.message); }
+  renderSettings();
+}
+
+function startupPage(){
+  const a = STATE.autostart;
+  if (!a) return `<p class="settings-hint">Could not read the startup setting.</p>`;
+  if (!a.supported){
+    return `<p class="settings-hint">Opening at login isn't supported on this
+      system.${a.reason ? " " + esc(a.reason) : ""}</p>`;
+  }
+  return `
+    <p class="settings-hint">Have InSight waiting for you when you sign in.</p>
+    <label class="follow-row">
+      <input type="checkbox" id="autostart-on" ${a.enabled ? "checked" : ""}>
+      <span>
+        <b>Open InSight when I log in</b>
+        <span class="settings-hint">Starts the app window automatically. Nothing is
+          installed system-wide — it is a single file in your own account, and
+          unticking this deletes it.</span>
+      </span>
+    </label>
+    <div class="panel">
+      <h3>What this does</h3>
+      <div class="frow"><label>Runs</label><code class="startup-code">${esc(a.command)}</code></div>
+      <div class="frow"><label>${a.enabled ? "File" : "Would write"}</label>
+        <code class="startup-code">${esc(a.path)}</code></div>
+      <p class="hint">Delete that file at any time to stop it, even without opening InSight.</p>
+    </div>`;
+}
+
 function renderSettings(){
   const pane = document.getElementById("settings-pane");
-  pane.innerHTML = STATE.settingsPage === "notify" ? notifyPage() : themePage();
+  pane.innerHTML = STATE.settingsPage === "notify" ? notifyPage()
+    : STATE.settingsPage === "startup" ? startupPage()
+    : themePage();
   document.querySelectorAll("#settings-nav button").forEach(b =>
     b.classList.toggle("active", b.dataset.page === STATE.settingsPage));
   if (STATE.settingsPage === "notify"){
@@ -1734,6 +1789,7 @@ document.getElementById("settings-pane").addEventListener("click", e => {
 });
 document.getElementById("settings-pane").addEventListener("change", e => {
   if (e.target.id === "follow-system") setFollowSystem(e.target.checked);
+  if (e.target.id === "autostart-on") setAutostart(e.target.checked);
 });
 // Clicking the backdrop (but not the card) closes, like any modal.
 document.getElementById("settings").addEventListener("click", e => {
@@ -1766,7 +1822,7 @@ function applyViewChrome(){
 // Alarms and notes first, so the 🔔 and 📝 buttons render their state on the
 // very first paint instead of flipping on a second pass.
 watchSystemTheme();
-Promise.all([loadAlarms(), loadNotes(), loadTheme()]).then(load);
+Promise.all([loadAlarms(), loadNotes(), loadTheme(), loadAutostart()]).then(load);
 </script>
 </body>
 </html>

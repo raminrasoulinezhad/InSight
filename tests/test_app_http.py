@@ -232,6 +232,38 @@ class TestSettings:
         assert client.post("/api/settings", {"auto_dark": "lemon"})[0] == 400
 
 
+class TestAutostart:
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path: Path, monkeypatch):
+        # Never touch the real autostart directories from a test.
+        from insight import autostart
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home" / ".config"))
+        monkeypatch.setattr(autostart.shutil, "which", lambda _: "/usr/local/bin/insight")
+        monkeypatch.setattr(autostart.subprocess, "run", lambda *a, **k: None)
+
+    def test_status_reports_disabled_initially(self, client: Client):
+        status, d = client.get("/api/autostart")
+        assert status == 200
+        assert d["enabled"] is False
+        assert d["command"].endswith("--window")
+
+    def test_enable_then_disable(self, client: Client):
+        status, d = client.post("/api/autostart", {"enabled": True})
+        assert (status, d["ok"], d["enabled"]) == (200, True, True)
+        assert Path(d["path"]).exists()
+
+        status, d = client.post("/api/autostart", {"enabled": False})
+        assert (status, d["ok"], d["enabled"]) == (200, True, False)
+        assert not Path(d["path"]).exists()
+
+    def test_the_response_carries_fresh_status(self, client: Client):
+        # So the UI can re-render from the reply instead of re-fetching.
+        _, d = client.post("/api/autostart", {"enabled": True})
+        assert client.get("/api/autostart")[1]["enabled"] == d["enabled"]
+
+
 class TestWatchlist:
     def test_removing_a_company(self, client: Client):
         status, d = client.delete("/api/watchlist?exchange=TSE&ticker=ABC")

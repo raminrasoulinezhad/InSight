@@ -458,12 +458,13 @@ test("card text is escaped", () => {
 
 /* ---- settings dialog layout ---------------------------------------------- */
 
-test("the dialog has an Appearance page and a Notifications page", () => {
+test("the dialog's pages are Appearance, Notifications and Startup", () => {
   const nav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)[0];
   const pages = [...nav.matchAll(/data-page="(\w+)"[^>]*>([^<]+)</g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(pages, [
     ["theme", "Appearance"],
     ["notify", "Notifications"],
+    ["startup", "Startup"],
   ]);
 });
 
@@ -561,4 +562,60 @@ test("alarm labels are escaped", () => {
 test("each alarm row keeps its delete button", () => {
   const html2 = alarmSection("T", [{ id: "abc", type: "company", label: "X" }], "none");
   assert.match(html2, /class="del-co del-alarm" data-id="abc"/);
+});
+
+/* ---- the Startup page ---------------------------------------------------- */
+
+test("the startup page offers a toggle and says what it will write", () => {
+  STATE.autostart = {
+    supported: true,
+    enabled: false,
+    path: "/home/x/.config/autostart/insight.desktop",
+    command: "/usr/local/bin/insight --window",
+    reason: "",
+  };
+  const page = ctx.startupPage();
+  assert.match(page, /id="autostart-on"/);
+  assert.ok(!/id="autostart-on"[^>]*checked/.test(page), "off by default");
+  // The path is shown so it can be found and deleted by hand — something that
+  // starts itself at login should not only be switchable off from inside itself.
+  assert.match(page, /insight\.desktop/);
+  assert.match(page, /--window/);
+});
+
+test("an enabled toggle renders checked", () => {
+  STATE.autostart = { supported: true, enabled: true, path: "/p", command: "/c --window" };
+  assert.match(ctx.startupPage(), /id="autostart-on"[^>]*checked/);
+});
+
+test("an unsupported platform explains itself instead of offering a dead switch", () => {
+  STATE.autostart = {
+    supported: false,
+    enabled: false,
+    path: "",
+    command: "",
+    reason: "No autostart convention known for 'sunos5'.",
+  };
+  const page = ctx.startupPage();
+  assert.ok(!page.includes('id="autostart-on"'));
+  assert.match(page, /sunos5/);
+});
+
+test("a failed status read does not render a misleading unchecked box", () => {
+  STATE.autostart = null;
+  const page = ctx.startupPage();
+  assert.ok(!page.includes('id="autostart-on"'));
+  assert.match(page, /Could not read/);
+});
+
+test("the shown path is escaped", () => {
+  STATE.autostart = {
+    supported: true,
+    enabled: true,
+    path: '/home/<script>alert(1)</script>/x',
+    command: "/c --window",
+  };
+  const page = ctx.startupPage();
+  assert.ok(!page.includes("<script>alert(1)</script>"));
+  assert.match(page, /&lt;script&gt;/);
 });

@@ -83,7 +83,9 @@ Then reload the app to see the update.
 - **Follow a name** — click an insider in a company's table to see everything
   *they* traded; click a company on an insider's card to open that company. The
   **← Back** button (or **Alt+←**) retraces up to 10 steps.
-- **Settings ⚙** — top right, two pages. **Appearance** picks from ten themes,
+- **Settings ⚙** — top right, three pages. **Startup** can open InSight
+  automatically when you log in (and untick it to stop). **Appearance** picks
+  from ten themes,
   shelved as **Dark** (Dark, Midnight, Terminal, ☕ Caramel, ✦ Chic) and
   **Light** (Light, Newsprint, 🌿 Sage, 🍋 Lemon, 🍁 Canadian) — it applies
   instantly and is remembered. Tick **Match my system** and InSight follows your

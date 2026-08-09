@@ -29,6 +29,9 @@ cloud, no paid data services.
   ntfy push) when a new transaction appears; evaluated after each scrape. The
   **Alarms tab** lists what's watched (split Companies / Insiders); the delivery
   setup lives in **Settings ▸ Notifications**.
+- **Open at login** — an optional per-user autostart entry (XDG desktop file /
+  launchd agent / Startup shortcut) running `insight --window`, toggled in
+  **Settings ▸ Startup**. See `autostart.py`.
 - **Themes** — ten palettes, shelved dark/light (Dark, Midnight, Terminal,
   Caramel, Chic | Light, Newsprint, Sage, Lemon, Canadian), chosen in
   **Settings ▸ Appearance** and stored server-side. **Match my system** follows
@@ -123,6 +126,7 @@ insight/
   notes.py        per-company user notes (EXCH:TICKER -> text)
   settings.py     app preferences (theme); separate from notify.json
   profiles.py     Chromium profile cache caps + pruning (keeps cookies/CAPTCHA)
+  autostart.py    per-user 'open at login' entry, per OS convention
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
   notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers

@@ -551,6 +551,39 @@ monkeypatched into `tmp_path`, so a test can never read or write the developer's
 own app folder, and `_do_refresh` is stubbed because the real job launches a
 browser.
 
+## Open at login
+
+`autostart.py` writes the file the platform already looks for, rather than
+inventing a mechanism:
+
+```
+Linux    ~/.config/autostart/insight.desktop      XDG Desktop Entry
+macOS    ~/Library/LaunchAgents/<label>.plist     launchd, RunAtLoad
+Windows  %APPDATA%\...\Startup\InSight.cmd        Startup folder
+```
+
+All three are per-user files under the user's own home: no admin rights, no
+system-wide daemon, and deleting the file is a complete uninstall — deliberate,
+because something that starts itself at login should be switchable off even by
+someone who no longer has the app to switch it off with. The Startup page shows
+the exact path for that reason.
+
+The absolute path to `insight` is resolved at install time and written into the
+entry. A login session often has a different PATH than the terminal the user
+enabled it from, and a bare command name is the classic way an autostart entry
+silently does nothing. If the console script isn't on PATH at all (a source
+checkout), it falls back to `python -m insight.app`.
+
+The macOS agent sets `RunAtLoad` but deliberately not `KeepAlive`: this is an app
+the user may close, not a daemon to resurrect. The Windows entry uses
+`start ""` so no console window lingers, and is written with `newline=""` — the
+content already carries CRLF, and Python's default translation would otherwise
+turn each `\n` into a second `\r` and produce `\r\r\n`.
+
+The tests fake `sys.platform` and `Path.home()`, so all three platforms are
+covered wherever they run, and the macOS plist is parsed with `plistlib` rather
+than string-matched.
+
 ## Themes
 
 Every colour in the stylesheet comes from a CSS variable, so a theme is nothing
