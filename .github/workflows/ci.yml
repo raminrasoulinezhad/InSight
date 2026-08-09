@@ -3,6 +3,10 @@ name: CI
 # Lint, type-check, and test on every push and pull request. Mirrors the local
 # dev tooling (ruff / mypy / pytest) so CI fails the same way a developer would
 # locally. Tests are pure (no network/browser), so no Playwright install needed.
+#
+# Node is set up explicitly: the browser-UI tests run on Node's built-in runner
+# and pytest SKIPS them when node is missing, so without this they would quietly
+# stop running here instead of failing.
 
 on:
   push:
@@ -22,6 +26,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Set up Node (for the browser-UI tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Set up Python + sync dev deps
         run: uv sync --group dev
 
@@ -33,6 +42,9 @@ jobs:
 
       - name: Type check (mypy)
         run: uv run mypy insight
+
+      - name: Browser-UI tests (node, no deps)
+        run: node --test tests/webui/
 
       - name: Tests
         run: uv run pytest
