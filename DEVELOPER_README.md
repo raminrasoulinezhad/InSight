@@ -2,91 +2,135 @@
   <img src="assets/logo.png" alt="InSight — Uncovering Insider Intelligence" width="360" />
 </p>
 
-# InSight — Insider Transaction Collector
+# InSight — developer guide
 
-Proof of concept that collects **insider transactions** (individuals, officers,
-directors, and the **issuer itself** / institutions) for a watchlist of
-Canadian (and US) stocks, normalizes them into one schema, and folds daily JSON
-snapshots into a single deduplicated store for downstream processing.
+Collects **insider transactions** (individuals, officers, directors, and the
+**issuer itself**) for a watchlist of Canadian and US stocks, normalizes them
+into one schema, and folds dated snapshots into a single deduplicated store.
 
-## TL;DR — current status
+- **`insight`** — local HTTP server + single-page UI.
+- **`insight-scrape`** — the collector (Playwright).
+- Single-user, local, no database, no cloud, no paid feed.
 
-- ✅ **Working today** against **MarketBeat** per-stock insider-trades pages.
-- ✅ Verified live for: Franco-Nevada (FNV), Canadian Natural Resources (CNQ),
-  Wheaton Precious Metals (WPM), Suncor (SU), Athabasca Oil (ATH),
-  American Eagle Outfitters (AEO).
-- ⚠️ **SEDI (the authoritative Canadian source) could not be used from this
-  machine** — see [Why not SEDI directly?](#why-not-sedi-directly) below.
+User-facing docs live in **[README.md](README.md)**.
+
+---
 
 ## Quick start
 
-InSight installs as a normal application with a single command via
-[`uv`](https://docs.astral.sh/uv/) (one cross-platform tool — the same steps
-work on **Linux, macOS, and Windows**). It ships two commands: `insight` (the
-app window) and `insight-scrape` (the collector). After install the source repo
-is no longer needed and can be deleted.
-
 ```bash
-# 1. install uv (once) — see https://docs.astral.sh/uv/getting-started/install/
-#    Linux/macOS:  curl -LsSf https://astral.sh/uv/install.sh | sh
-#    Windows:      powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# 2. install InSight from a clone (or `git+<url>` to skip cloning)
-uv tool install .
-# uv tool install git+https://github.com/<you>/InSight
-
-# 3. one-time: download the Chromium browser the scraper drives (~150 MB cache)
+# 1. install uv — https://docs.astral.sh/uv/getting-started/install/
+# 2. install InSight
+uv tool install .                  # or: uv tool install git+https://github.com/<you>/InSight
+# 3. one-time: the Chromium the scraper drives (~150 MB)
 uv tool run --from playwright playwright install chromium
 ```
 
-Then, from anywhere:
+Run from a checkout without installing:
 
 ```bash
-# scrape the watchlist
-insight-scrape
-
-# or ad-hoc tickers (EXCHANGE:TICKER)
-insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
-
-# widen coverage: auto-discover MarketBeat's ticker universe and scrape it
-# alongside the watchlist (default exchange TSE, ~215 large/mid-cap names).
-# The Insiders tab then spans every scraped company; the Companies tab stays
-# limited to your watchlist. Small-cap TSX-V/CSE names are not enumerated —
-# MarketBeat does not list them — so this is a best-effort free expansion.
-insight-scrape --discover          # TSE universe + watchlist
-insight-scrape --discover TSE      # same, explicit
-
-# show the browser (useful if your IP gets a bot challenge)
-insight-scrape --headful
-
-# cache control (each company is cached to avoid re-fetching)
-insight-scrape --max-age 24    # reuse cache younger than 24h (default 12)
-insight-scrape --force         # ignore the cache, re-fetch everything
-insight-scrape --no-cache      # don't read or write the cache
+uv run insight --no-browser
+uv run insight-scrape --tickers TSE:FNV
 ```
 
-Each company's fetched data is cached (one JSON per issuer under the app
-folder's `cache/`); a re-run reuses data younger than `--max-age` hours instead
-of re-fetching, and only launches the browser if something actually needs
-fetching. The app's **Refresh** button always forces a fresh fetch. The app UI
-also filters transactions by a selectable window (1M/3M/6M/1Y/2Y) via
-`GET /api/data?months=N`.
+Typically installed editable (`uv tool install --editable .`): UI edits show on
+reload, Python edits need an app restart.
 
-### Run it daily in the background (Linux / systemd)
+---
 
-Because history accumulates across snapshots (above), running the scrape on a
-schedule is what deepens the window over time. On Linux a **systemd user timer**
-is the cleanest option — it runs once a day and, with `Persistent=true`, catches
-up on the next login if the machine was off at the trigger (so effectively:
-"when the machine is on, run once if it hasn't run today, else skip"). It runs
-while you are logged in; for a headless box, also `sudo loginctl enable-linger
-$USER`.
+## Data sources
+
+Both normalize to `InsiderTransaction`, and both merge into the same deduplicated
+view. Snapshots are tagged by source (`insider_sedi_*.json`) so neither clobbers
+the other.
+
+| | **MarketBeat** (`marketbeat.py`) | **SEDI** (`sedi.py`) |
+|---|---|---|
+| Role | Default, everyday | On demand, for what MarketBeat misses |
+| Coverage | ~215 large/mid-cap TSE + US | Every Canadian filing, incl. TSXV/CSE micro-caps |
+| Authority | Aggregator, may lag days | Official CSA system, public within ~5 min |
+| Automation | Headless, unattended | **Headful only** — bot-walled |
+| Fields | Drops ownership type, nature-of-transaction codes, post-transaction balance | Full |
+
+### Why SEDI can't be the default
+
+SEDI sits behind ShieldSquare / PerfDrive, which serves an **hCaptcha** to
+automated and datacenter-IP traffic. Headless *and* stealthed headful requests
+get challenged (verified: `navigator.webdriver=false` + `playwright-stealth`
+still got captcha'd from a VPS IP).
+
+The workaround is not to defeat the wall but to **solve it once by hand**:
+
+- Runs headful with a **persistent profile** (`paths.sedi_profile_dir()`), so the
+  session cookie survives between runs.
+- If the wall is up and nobody can solve it, the fetch raises `BotBlocked` and the
+  batch falls back to cache — same as the MarketBeat path.
+- Canada-only: non-Canadian targets are filtered out by `is_canadian`.
+- Each fetched report page is saved to `paths.sedi_pages_dir()`. The UI shows a
+  **⛏ SEDI report** link on companies that have one, served by `/api/sedi-page`
+  with a `<base>` injected so sedi.ca's relative CSS/images resolve.
+
+Because a human may be needed, SEDI is a deliberate button (**⛏ Fetch from
+SEDI**) and an explicit `--source sedi`, never the daily timer.
+
+`sedi.py` mirrors `marketbeat.py`'s split: pure header-driven parsing
+(`_map_columns`, `_row_to_record`, `_transaction_type`, `_parse_sedi_date`) that
+survives column reordering, plus browser glue whose selectors are best-effort —
+SEDI is a legacy Struts app. Run with `--capture-dir` to dump live HTML when a
+selector needs adjusting.
+
+### Blocked alternatives
+
+- **canadianinsider.com**, **insidertracking.com** — Cloudflare (HTTP 403).
+- Paid aggregators and the CSA bulk license were researched in
+  [`docs/canadian-insider-data-research.md`](docs/canadian-insider-data-research.md).
+  Bottom line: no free, official, person-searchable bulk feed exists.
+
+**Terms of use:** scraping MarketBeat may conflict with their ToS; SEDI's terms
+bar automated collection. For production, prefer a licensed feed.
+
+---
+
+## The scraper CLI
+
+```bash
+insight-scrape                              # the watchlist, via MarketBeat
+insight-scrape --tickers TSE:FNV NYSE:AEO   # ad-hoc (EXCHANGE:TICKER)
+insight-scrape --discover                   # + MarketBeat's TSE universe (~215)
+insight-scrape --source sedi                # official SEDI, opens a browser
+```
+
+| Flag | Effect |
+|---|---|
+| `--config` / `--outdir` | Override the watchlist / output dir (default: app folder) |
+| `--discover [EXCH…]` | Add MarketBeat's exchange listing to the targets (default `TSE`) |
+| `--source {marketbeat,sedi}` | Data source (default `marketbeat`) |
+| `--sedi-months N` | SEDI lookback, months back from today (default 24) |
+| `--capture-dir DIR` | (sedi) dump each page's HTML + screenshot for debugging |
+| `--headful` | Visible browser — helps on flagged IPs |
+| `--max-age H` | Reuse cache younger than H hours (default 12) |
+| `--force` / `--no-cache` | Ignore the cache / don't read or write it |
+| `--keep-snapshots N` | Snapshots to keep after the auto-prune (default 2) |
+| `--prune-snapshots [N]` | Reclaim disk now, no scrape (default keep 2) |
+| `--prune-browser-cache` | Clear the Chromium caches, keep cookies |
+
+Each company is cached as one JSON per issuer under `cache/`; a re-run only
+launches the browser if something actually needs fetching. The app's **Refresh**
+button always forces a fresh fetch.
+
+### Run it daily
+
+Freshness of 1–2 days is plenty, and running regularly is what deepens the
+history window (each scrape only captures the source's most recent page).
+
+**Linux — systemd user timer.** `Persistent=true` catches up after the machine
+was off. For a headless box also `sudo loginctl enable-linger $USER`.
 
 `~/.config/systemd/user/insight-scrape.service`:
 
 ```ini
 [Unit]
-Description=InSight daily insider-transaction scrape (broad TSE universe)
+Description=InSight daily insider-transaction scrape
 
 [Service]
 Type=oneshot
@@ -98,7 +142,7 @@ TimeoutStartSec=1800
 
 ```ini
 [Unit]
-Description=Run the InSight scrape once per day (catches up if the machine was off)
+Description=Run the InSight scrape once per day
 
 [Timer]
 OnCalendar=daily
@@ -111,13 +155,25 @@ WantedBy=timers.target
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now insight-scrape.timer   # install + start
-systemctl --user list-timers insight-scrape.timer    # when it next runs
+systemctl --user list-timers insight-scrape.timer    # next run
 journalctl --user -u insight-scrape.service -n 30    # last run's log
-systemctl --user disable --now insight-scrape.timer  # remove/stop
 ```
 
-The watchlist and all output live in a per-user app folder (created on first
-run), so nothing depends on the repo location:
+**Linux/macOS — cron** (use the absolute path from `which insight-scrape`):
+
+```cron
+30 6 * * *  ~/.local/bin/insight-scrape >> ~/.local/share/InSight/cron.log 2>&1
+```
+
+**Windows** — a daily Task Scheduler task running `insight-scrape` (path from
+`where insight-scrape`).
+
+---
+
+## Storage
+
+Everything lives in a per-user app folder, created on first run — nothing depends
+on the repo location:
 
 | OS | app folder |
 |---|---|
@@ -125,597 +181,490 @@ run), so nothing depends on the repo location:
 | macOS | `~/Library/Application Support/InSight` |
 | Windows | `%LOCALAPPDATA%\InSight` |
 
-<details>
-<summary>Run from a checkout without installing (dev)</summary>
-
-`uv run` reads <code>pyproject.toml</code> and provisions the environment on the
-fly — no manual virtualenv:
-
-```bash
-uv run insight-scrape --tickers TSE:FNV
-uv run insight --no-browser
+```
+data/insider_YYYY-MM-DD.json        a run's snapshot (source-agnostic schema)
+data/insider_sedi_YYYY-MM-DD.json   …from SEDI
+data/store.json                     the deduplicated fold of every snapshot
 ```
 
-Prefer pip? `pip install .` (or `pip install -e .`) exposes the same
-`insight` / `insight-scrape` commands.
-</details>
+Only JSON is written. Earlier versions also emitted a flat `.csv` and a
+`by_ticker/` of per-company CSVs; nothing read them back, and since every run
+restates the same rows they grew ~5 MB and ~130 files per scrape (305 MB across
+7,000+ files in a real folder). Delete leftovers by hand. For a spreadsheet
+export, read `store.json` — it is the deduplicated union of everything.
 
-### Output (per run, stamped with the date, under the app folder)
+### The consolidated store (`store.py`)
 
-```
-data/insider_YYYY-MM-DD.json          all records (source-agnostic schema)
-data/store.json                       the deduplicated fold of every snapshot
-```
+Every scrape *restates* history rather than appending, so the snapshot pile is
+dominated by repetition: a real 57-snapshot folder of 357 MB deduplicated to
+31,032 records. Re-merging that cost 2.4 s on every cold start, and again after
+each scrape.
 
-A scrape used to also write a flat `.csv` and a `by_ticker/` directory of
-per-company CSVs. Nothing read them back — the app loads JSON — and since every
-run restates the same rows they grew by ~5 MB and ~130 files per scrape, reaching
-305 MB across 7,000+ files in a real folder. They are no longer written. Existing
-ones are left alone; delete them by hand (`rm data/*.csv; rm -r data/by_ticker`).
-If you want a spreadsheet export, read `store.json` — it holds the deduplicated
-union of everything ever scraped, which is a better source than any single run's
-CSV was.
+So snapshots are folded once, oldest → newest, into a store carrying a manifest
+of what it has already absorbed:
 
-(Use `insight-scrape --outdir ./data` to write to an explicit folder instead.)
-
-**History accumulates.** Each scrape captures only MarketBeat's most-recent page
-(no deep backfill), so a single file spans limited history. The app therefore
-merges **all** `insider_*.json` snapshots into one deduplicated view (newest
-scrape wins on an identical-transaction collision), and the "Last N months"
-filter runs over that union. Running the scraper regularly (e.g. via cron) is
-what deepens the window over time.
-
-**Snapshots are folded into one consolidated store** (`data/store.json`, see
-`store.py`). Because every scrape re-states the history rather than appending to
-it, the snapshot pile is dominated by repetition — a real 57-snapshot folder of
-357 MB deduplicated to 31 032 records. Re-merging that on every cold start cost
-2.4 s, and again after each scrape (a new file invalidates the in-memory cache).
-So snapshots are folded once, oldest → newest, into a single store carrying a
-manifest of what it has already absorbed:
-
-```
+```json
 {"version": 1,
- "folded": {"insider_2026-06-30.json": [mtime_ns, size], ...},
- "records": [ ...deduplicated records... ]}
+ "folded": {"insider_2026-06-30.json": [mtime_ns, size]},
+ "records": ["…deduplicated records…"]}
 ```
 
-`store.sync()` parses only snapshots whose name+mtime+size are missing from the
-manifest, so a fresh scrape costs one small file instead of the whole history —
-**cold start 2.44 s → 0.10 s** on that same folder. The store is a derived cache:
-delete it and it rebuilds. The manifest also *is* the history — it remembers
-every snapshot ever folded, so `history_files` and the newest data date stay
-correct once the originals are gone.
+- `store.sync()` parses only snapshots whose name+mtime+size are missing from the
+  manifest — a fresh scrape costs one small file, not the whole history.
+  **Cold start 2.44 s → 0.10 s.**
+- Newest scrape wins on an identical-transaction collision.
+- It's a derived cache: delete it and it rebuilds.
+- The manifest also *is* the history — it remembers every snapshot ever folded,
+  so `history_files` and the newest data date stay correct once the originals are
+  gone.
 
-### Browser profiles
+### Reclaiming disk
 
-InSight drives Chromium twice — a persistent profile for the SEDI scraper (so a
-solved bot-wall challenge survives between runs) and another for the `--window`
-app. Both are ordinary browser profiles, so both accumulate browser-sized caches:
-362 MB and 164 MB on a real installation, against 49 MB of actual insider data.
-Nobody would guess that is where their disk went.
-
-Both are now launched with a capped disk cache, and the app window additionally
-passes `--disable-component-update` — it only ever shows a local page, so it has
-no use for the ML model stores, TTS engine and Safe Browsing lists Chromium
-downloads in the background (~110 MB of that profile). The scraper keeps
-component updates on: it faces a bot wall and should look like a normal browser.
-
-For what has already accumulated:
+**Snapshots prune themselves.** Every scrape folds the new snapshot in and drops
+the copies it made redundant, keeping the newest `--keep-snapshots N` (default 2).
+Deliberately automatic: snapshots restate each other, so left alone they grow
+unnoticed, and a cleanup command nobody discovers is the same as no cleanup. It
+also leaves the store warm for the next cold start. Pass a large N to keep
+everything.
 
 ```bash
-insight-scrape --prune-browser-cache
-```
-
-`profiles.prune_profile` removes only entries on an explicit `DISPOSABLE`
-allowlist, all of them caches Chromium regenerates on demand. Session state is
-never touched — for the SEDI profile the cookie jar *is* the solved CAPTCHA, and
-deleting it would mean solving the challenge by hand again. The allowlist is
-deliberate rather than a denylist so a future Chromium directory holding real
-state is not swept up by accident.
-
-Cleanup also runs by itself: after a SEDI scrape and when the `--window` app
-closes, both points where that browser has definitely exited. A profile a browser
-still has open is detected via Chromium's `SingletonLock` (a symlink naming the
-live pid) and skipped — a lock naming a dead pid is a crash leftover and is
-correctly ignored. The check errs toward "in use": skipping a cleanup costs
-disk, a wrong guess costs a broken session.
-
-**Reclaiming the disk happens by itself.** Once folded, the dated files are
-redundant bulk, so every scrape folds the new snapshot in and drops the copies it
-made redundant, keeping the newest `--keep-snapshots N` (default 2). This is
-deliberate rather than opt-in: snapshots restate each other, so left alone they
-grow without anyone noticing, and a cleanup command nobody discovers is the same
-as no cleanup. It also leaves the store warm, so the app's next cold start is
-already fast. Pass a large `--keep-snapshots` to keep everything.
-
-To reclaim on demand without scraping:
-
-```bash
-insight-scrape --prune-snapshots      # keep the newest 2, delete the rest
+insight-scrape --prune-snapshots      # keep the newest 2
 insight-scrape --prune-snapshots 10   # keep the newest 10
 ```
 
-This re-syncs and re-reads the store from disk *before* deleting anything, and
-only ever removes files the manifest proves were absorbed — no records are lost.
-It touches `insider_*.json` only — the store itself is never a prune candidate.
+This re-syncs and re-reads the store *before* deleting, and only removes files the
+manifest proves were absorbed. It touches `insider_*.json` only — the store itself
+is never a prune candidate.
 
-**Delisted / acquired companies are dropped automatically.** When a fetch finds
-a ticker's insider page gone — the URL redirects to `…/stocks/<EXCH>/<TICKER>/`
-(profile kept, no `insider-trades` subpage), as happens after an acquisition —
-the scraper raises `CompanyDelisted`, deletes that company's cache file, and
-records `EXCH:TICKER` in `delisted.json`. Both views filter those out, so stale
-insider activity for acquired names stops showing. The snapshots themselves are
-left intact (nothing is destroyed), and the flag is **self-healing**: if a
-company's data ever returns, the next scrape un-flags it. A ticker that instead
-redirects to the bare `…/stocks/<EXCH>/` list (unknown / not covered) is treated
-as "no data", not delisted.
+### Browser profiles (`profiles.py`)
 
-**Search is the hot path, so access is cached.** Filtering by name/company is the
-app's main job, and rebuilding a view means re-reading and re-aggregating the
-record set. `aggregate` memoizes the merged records and the built views, keyed by
-a cheap signature (each snapshot's mtime+size, plus the watchlist and delisted
-files). A rebuild happens only when the underlying data actually changes (a
-scrape, add/remove, or delist); otherwise repeated access is an in-memory dict
-lookup — ~1000× faster on a large accumulated history (≈2 s → a few ms in a
-300-snapshot benchmark). The consolidated store is what makes the *miss* cheap
-too, so the first request after a restart or a scrape no longer stalls. The
-frontend likewise precomputes a lowercased search string per company/insider once
-per load and debounces the box, so typing filters in constant work per item. This
-in-memory approach beats an embedded DB for a single-user, few-MB dataset;
-SQLite/FTS5 is the escalation path only if the data ever outgrows memory or needs
-concurrent writers.
+InSight drives Chromium twice — a persistent profile for SEDI (so a solved
+challenge survives) and another for the `--window` app. Both accumulate
+browser-sized caches: 362 MB and 164 MB on a real install, against 49 MB of
+actual insider data. Nobody would guess that's where their disk went.
 
-**The window defaults to the last 2 weeks**, and wide windows are bounded so
-picking one isn't a punishment. Rendering is a single `innerHTML` rebuild of the
-whole feed, so its cost is the total node count. Two caps keep that in hand:
+- Both launch with a capped disk cache. The app window also passes
+  `--disable-component-update` — it only shows a local page, so it has no use for
+  the ML model stores, TTS engine and Safe Browsing lists Chromium downloads
+  (~110 MB). The scraper keeps them on: it faces a bot wall and should look like a
+  normal browser.
+- `prune_profile` removes only entries on an explicit `DISPOSABLE` allowlist, all
+  caches Chromium regenerates. An allowlist rather than a denylist so a future
+  Chromium directory holding real state isn't swept up by accident.
+- **Session state is never touched** — for the SEDI profile the cookie jar *is*
+  the solved CAPTCHA.
+- Cleanup also runs by itself after a SEDI scrape and when the `--window` app
+  closes — both points where that browser has definitely exited.
+- A profile a browser still has open is detected via Chromium's `SingletonLock` (a
+  symlink naming the live pid) and skipped; a lock naming a dead pid is a crash
+  leftover and ignored. The check errs toward "in use": skipping a cleanup costs
+  disk, a wrong guess costs a broken session.
 
-* each company's table shows `ROWS_PER_COMPANY` (25) with a *show all* expander —
-  a 2-year window meant 21 416 rows, and nobody reads 400 rows of one company;
-* the timeline collapses marks that land on the same pixel and side, keeping the
-  largest. They were painting on top of each other anyway, so the strip is
-  unchanged, but a busy company costs a node per visible position rather than
-  one per transaction.
+### Delisted companies
 
-On the same data, a 2-year window went from 195 746 nodes / 699 ms to 27 529 /
-105 ms, with a filter click at 74 ms and search at 11 ms. The 2-week default is
-1 881 nodes / 11 ms. True virtualization (rendering only companies near the
-viewport) is the next step if it is ever needed; it wasn't, for a 3–7× win from
-two caps.
+When a fetch finds a ticker's insider page gone — the URL redirects to
+`…/stocks/<EXCH>/<TICKER>/` with no `insider-trades` subpage, as after an
+acquisition — the scraper raises `CompanyDelisted`, deletes that company's cache,
+and records `EXCH:TICKER` in `delisted.json`.
 
-### Example summary
+- Both views filter those out, so stale activity for acquired names stops showing.
+- Snapshots are left intact — nothing is destroyed.
+- **Self-healing:** if the data ever returns, the next scrape un-flags it.
+- A ticker redirecting to the bare `…/stocks/<EXCH>/` list is "no data", not
+  delisted.
 
-```
-TSE:FNV    8 txns  (buys=0 sells=8 institutional=0)  latest=2025-11-26
-TSE:CNQ   15 txns  (buys=2 sells=13 institutional=0) latest=2026-03-24
-TSE:ATH   27 txns  (buys=27 sells=0 institutional=27) latest=2026-05-29   <- issuer buyback
-```
+---
 
-## The application window
+## Performance
 
-A self-contained local web app (the server is Python stdlib only — no X11
-display required) renders the data as a scrollable feed of **boxes**, one per
-insider/entity, grouped under each watchlist company. Each box shows the
-buy / sell / total transaction counts, the shares and dollar amounts bought
-and sold, a buy↔sell ratio bar, and who was trading (name, role, and an
-individual / institution / buyback badge).
+**Access is cached.** Search is the app's main job, and rebuilding a view means
+re-reading and re-aggregating everything. `aggregate` memoizes the merged records
+and built views, keyed by a cheap signature (each snapshot's mtime+size, plus the
+watchlist and delisted files).
 
-```bash
-insight              # serve on http://127.0.0.1:8765 + open a browser
-insight --window     # open as a standalone desktop window (chromeless)
-insight --port 9000
-insight --no-browser # headless box: open the URL yourself
-```
+- A rebuild happens only when the data actually changes (scrape, add/remove,
+  delist); otherwise access is a dict lookup — ~1000× faster on a large history
+  (≈2 s → a few ms over 300 snapshots).
+- The consolidated store makes the *miss* cheap too, so the first request after a
+  restart no longer stalls.
+- The frontend precomputes a lowercased search string per company/insider once per
+  load and debounces the box, so typing costs constant work per item.
+- In-memory beats an embedded DB at this scale. SQLite/FTS5 is the escalation path
+  only if the data outgrows memory or needs concurrent writers.
 
-### Desktop launcher
+**Wide windows are bounded.** Rendering is a single `innerHTML` rebuild, so cost
+is total node count. Two caps:
 
-`--window` opens the UI as a chromeless desktop window (via Chrome's `--app=`
-mode) whose lifetime owns the server — close the window and the server stops.
-The window runs in its own dedicated Chrome profile so it never disturbs your
-main browser. It finds Chrome, Edge, Chromium, or Brave automatically (and
-falls back to Playwright's bundled Chromium) on Linux, macOS, and Windows.
+- each company's table shows `ROWS_PER_COMPANY` (25) with a *show all* expander —
+  a 2-year window meant 21,416 rows, and nobody reads 400 rows of one company;
+- the timeline collapses marks landing on the same pixel and side, keeping the
+  largest. They painted over each other anyway, so the strip is unchanged, but a
+  busy company costs a node per visible position rather than per transaction.
 
-**Linux** — install it as a real app (icon in the app grid) that launches the
-installed `insight` command:
+| Window | Nodes | Render |
+|---|---:|---:|
+| 2 years, before | 195,746 | 699 ms |
+| 2 years, after | 27,529 | 105 ms |
+| 2 weeks (default) | 1,881 | 11 ms |
 
-```bash
-./install-desktop.sh              # add InSight to your application menu
-./install-desktop.sh --uninstall  # remove it
-```
+Filter click 74 ms, search 11 ms. True virtualization is the next step if ever
+needed — it wasn't, for a 3–7× win from two caps.
 
-**macOS / Windows** — run `insight --window` directly, or pin it: on macOS wrap
-it in a one-line `.command` file or an Automator app; on Windows create a
-Start-Menu shortcut whose target is `insight --window` (the `insight.exe`
-shim lives in the uv tools bin, shown by `uv tool dir`).
-
-It reads and merges all `data/insider_YYYY-MM-DD.json` snapshots from the app
-folder (deduplicated; see "History accumulates" above). Re-run
-`insight-scrape` to refresh the data, then reload the page. Watchlist companies
-with no data (e.g. uncovered TSX-V names) appear as empty cards so coverage gaps
-are visible.
-
-Search filters by company/ticker/insider; the segmented control filters to net
-buyers, net sellers, or institutions.
+---
 
 ## The normalized record
 
-Every source is mapped to one schema (`insight/models.py`):
+Every source maps to one schema (`models.py`):
 
 | field | meaning |
 |---|---|
 | `issuer_name`, `exchange`, `ticker` | the company the trade is in |
-| `insider_name`, `insider_role` | who traded (e.g. "Director", "Officer", "Insider") |
+| `insider_name`, `insider_role` | who traded (Director / Officer / Insider …) |
 | `entity_type` | `individual` or `institution` (companies, funds, the issuer) |
 | `is_issuer_buyback` | the company trading its own shares |
 | `transaction_date`, `transaction_type` | ISO date, Buy/Sell/… |
 | `shares`, `avg_price`, `total_value`, `currency` | the numbers (CAD/USD) |
 | `source`, `source_url`, `scraped_at` | provenance |
 
-## Watchlist & adding companies by name
+A new source = a new module yielding these. Nothing downstream changes.
 
-The watchlist (`companies.json`) is keyed by **full legal company name** — the
-stable identifier. Tickers are kept as a secondary field (MarketBeat needs
-them) but are *not* the key, because they collide across exchanges and listings
-(e.g. `NFG` is New Found Gold in Canada but National Fuel Gas in the US;
-`AEO`/`AE` is American Eagle the apparel retailer vs. the gold explorer).
+---
+
+## Watchlist
+
+`companies.json` is keyed by **full legal company name** — the stable identifier.
+Tickers are a secondary field because they collide across exchanges: `NFG` is New
+Found Gold in Canada but National Fuel Gas in the US; `AE` is a gold explorer
+while `AEO` is the apparel retailer.
 
 ```json
 { "name": "New Found Gold Corp.", "exchange": "TSXV", "ticker": "NFG", "country": "CA", "confirmed": true }
 ```
 
-Exchange codes are MarketBeat's: `TSE` (Toronto), `TSXV` (TSX Venture),
-`NYSE`/`NASDAQ` (US).
+Exchange codes are MarketBeat's: `TSE`, `TSXV`, `NYSE`, `NASDAQ`.
 
-**Add by name in the app.** The header has an "Add a company by name" box. As
-you type, `insight/issuers.py` resolves the name to issuer candidates and shows
-a picker; you select the right listing and it's appended to `companies.json`.
-When a name is ambiguous you choose — the app never silently guesses.
+**Add by name.** `issuers.py` resolves a typed name to candidates and the app shows
+a picker — when a name is ambiguous you choose, it never silently guesses.
 
-- Resolver backend: TradingView's public symbol-search endpoint (reachable from
-  this host; covers TSX / TSX-V / CSE / US). It is isolated behind
-  `search_issuers()` so the authoritative **SEDI issuer search** can replace it
-  later without touching the app or watchlist code.
-- API: `GET /api/search?q=<name>` → candidates; `POST /api/watchlist` → add a
-  picked candidate.
+- Backend: TradingView's public symbol-search (covers TSX / TSX-V / CSE / US),
+  isolated behind `search_issuers()` so SEDI's issuer search can replace it later.
+- `GET /api/search?q=` → candidates; `POST /api/watchlist` → add one.
 
-## Run it daily
+---
 
-The transactions need only a 1–2 day freshness, so a daily schedule is plenty.
+## The application window
 
-**Linux/macOS (cron)** — use the absolute path to the installed command
-(`which insight-scrape`):
-
-```cron
-30 6 * * *  ~/.local/bin/insight-scrape >> ~/.local/share/InSight/cron.log 2>&1
-```
-
-**Windows (Task Scheduler)** — create a daily task running `insight-scrape`
-(find its path with `where insight-scrape`).
-
-Each run writes a new date-stamped file, so you accumulate a history you can
-load into a database or diff day-over-day to detect *new* filings.
-
-## Why not SEDI directly?
-
-SEDI (`sedi.ca`) is the official Canadian System for Electronic Disclosure by
-Insiders — the authoritative, near-real-time source (filings public within
-~5 min). It's where MarketBeat and others ultimately get their data. We tried
-to drive it with a headless browser and hit hard walls, **verified live from
-this host**:
-
-- **SEDI** sits behind **ShieldSquare / PerfDrive** bot protection and serves
-  an **hCaptcha** challenge to automated traffic. After a couple of requests
-  the IP was flagged and *every* page (even the welcome page) returned the
-  captcha. This machine's egress IP is a **hosting/VPS IP**, which anti-bot
-  systems score as high-risk — so headless *and* headful automation get
-  challenged regardless.
-- **canadianinsider.com** and **insidertracking.com** (SEDI aggregators) are
-  behind **Cloudflare** bot protection (HTTP 403 "Just a moment…").
-- **MarketBeat** per-stock pages are reachable → used here.
-
-### Getting the authoritative SEDI data later
-
-SEDI scraping *does* work from a normal browser on a residential connection
-(that's how the community [SEDI bookmarklet](https://tomcardoso.github.io/sedi-bookmarklet/)
-works). To productionize the SEDI path, pick one:
-
-1. **Residential / Canadian proxy** in front of the Playwright scraper (most
-   robust; the navigation + table-parsing code is straightforward to add as a
-   second source behind the same `InsiderTransaction` schema).
-2. **Run the scraper on a residential machine** in headful mode and solve the
-   one-time captcha manually; reuse the browser profile so the session sticks.
-3. **A captcha-solving service** (e.g. 2Captcha) — costs money, gray area.
-
-## Known limitations of the MarketBeat source
-
-- **Coverage gap:** small **TSX-Venture** issuers are *not* covered (e.g.
-  *American Eagle Gold Corp*, TSXV:AE returned no page — only the US apparel
-  retailer *American Eagle Outfitters*, NYSE:AEO, exists on MarketBeat). For
-  micro/small-cap TSX-V names you will need SEDI.
-- **Freshness/detail:** MarketBeat aggregates and may lag SEDI by days, and it
-  drops SEDI's richer fields (ownership type, nature-of-transaction codes,
-  post-transaction balance).
-- **Terms of use:** scraping MarketBeat may conflict with their ToS. For
-  production, prefer a licensed feed or the authoritative SEDI route.
-
-## Alarms & notifications
-
-Set an alarm on a **company** ("any insider trade in ATH") or a **person**
-("whenever Eric Sprott trades, in any company") via the 🔔 button on its card.
-The two halves live in different places: the **Alarms tab** lists what you're
-watching, split into Companies and Insiders, while the delivery setup (SMTP
-credentials, ntfy topic) is behind **Settings ⚙ ▸ Notifications** — it is
-configured once and then left alone, so it shouldn't sit in front of the list you
-actually check. Both read the same `notify.json`; only the form moved, and it
-kept its field ids so `collectNotifySettings` was unchanged. The Alarms tab warns
-when alarms exist but no channel is enabled. After every scrape
-(`evaluate_and_notify`, called from the daily timer and the Refresh button), any
-alarm whose target has a transaction *newer than when the alarm was set* fires
-over the enabled free channels:
-
-- **Email** — SMTP (e.g. a Gmail/Workspace **app password**), an HTML message
-  with the InSight logo (CID-embedded) and a sentence per transaction.
-- **ntfy** — a free push topic (`https://ntfy.sh/<topic>`), no credentials.
-
-**Alarms only look back `ALERT_HORIZON_DAYS` (90).** Each alarm remembers a `seen`
-set of transaction keys so a trade alerts once; that set used to be re-baselined
-to the alarm's *entire* matching history on every fire, so it grew forever — 103
-alarms reached 28,604 keys and a 3.1 MB `notify.json`, re-read and re-written on
-every scrape. Bounding the scan to the horizon means a key older than that can
-never fire again and is therefore safe to forget, so `seen` now tracks recent
-activity instead of all time (28,604 → 1,731 keys, 2.8 MB → 0.2 MB on a real
-config; stale keys are dropped on the next scrape, so upgrades self-migrate).
-
-The trade-off is deliberate: a scrape that backfills a genuinely old filing
-(SEDI serves up to 24 months) will not alert on it. An alert about a trade from
-last year is noise, not news.
-
-**`/api/notify/config` publishes a projection, not the stored alarm.** It used to
-return alarms verbatim, so every page load shipped all those `seen` keys to a
-browser that never reads them — 2.8 MB against 56 KB for the actual insider data,
-making it the single largest payload in the app. `public_config` now whitelists
-the fields the UI renders (id, type, label, name, exchange, ticker, created),
-taking that to ~16 KB. A whitelist rather than dropping `seen` by name, so a new
-bookkeeping field doesn't silently start being published.
-
-Every notification's **title** (email subject + ntfy title) is `InSight:
-<target>` — it always leads with InSight and names *what* fired (the company name
-or the person), never a bare count of trades. Each generated notification is
-stamped with a monotonic reference index that appears **in the message body**
-(`#N`, plus a "Notification #N" line in the email footer) and is appended to an
-**append-only JSONL log**, `notifications.log`, beside `notify.json` (see
-`paths.notify_log_file()`). A line records the index, timestamp, target label,
-the message lines and the per-channel delivery outcome — so any alert, delivered
-or failed, can be traced back later when debugging or reporting an issue. The
-next index is derived from the log itself (no separate counter), and logging is
-best-effort so it never breaks a scrape.
-
-State (channel settings + alarms) lives in `notify.json` in the app folder —
-**never the repo**, since it holds the SMTP password (the API masks it in
-responses). Each alarm keeps a `seen` set of transaction keys baselined at
-creation, so pre-existing history never alerts and nothing double-fires; the
-baseline only advances once a channel actually delivered, so a transient outage
-retries next scrape. Sends are best-effort and wrapped — a notification failure
-never breaks a scrape. Truly free SMS isn't offered (carrier email-gateways are
-deprecated/unreliable); email + ntfy are the free, reliable channels.
-
-## Layout
-
-```
-pyproject.toml          packaging + the `insight` / `insight-scrape` commands
-install-desktop.sh       Linux app-menu launcher installer
-insight/
-  app.py                the application window (local web server + UI)
-  scrape.py             scraper CLI entry point (config, output, summary)
-  paths.py              per-user data/config/profile dirs (cross-platform)
-  models.py             InsiderTransaction schema + parsing helpers
-  marketbeat.py         MarketBeat scraper (Playwright + stealth)
-  store.py              dated snapshots -> one deduplicated, incrementally folded store
-  aggregate.py          flat records -> per-company / per-insider boxes
-  notes.py              per-company user notes (your own research, kept per ticker)
-  settings.py           app preferences (theme); kept apart from notify.json
-  issuers.py            name -> issuer-candidate resolver (+ watchlist add)
-  companies.default.json  seed watchlist (copied to the app folder on first run)
-  webui/index.html      the single-page UI (scrollable insider boxes)
-```
-
-The editable watchlist and dated outputs live in the per-user app folder (see
-[Quick start](#quick-start)), not in the repo.
-
-Adding a new source = a new module that yields `InsiderTransaction` objects;
-nothing downstream changes.
-
-## Tests
-
-Unit tests live under `tests/` (pytest) and cover the pure logic — parsing,
-classification, aggregation math, average-cost calculations, history merge/dedup,
-delisted filtering, watchlist add/remove, and the scraper's row/URL parsing —
-without any network or browser. Dev tooling is a `uv` dependency group:
+A self-contained local web app — the server is Python stdlib only, no X11 needed —
+rendering a scrollable feed of boxes, one per insider, grouped by company. Each
+shows buy/sell/total counts, shares and dollars, a buy↔sell ratio bar, and who
+traded (name, role, individual/institution/buyback badge).
 
 ```bash
-uv sync --group dev            # install dev tools (pytest, ruff, mypy, …)
-uv run pytest                  # tests
-uv run ruff check insight tests
-uv run mypy insight            # strict on the pure core; glue modules relaxed
+insight              # serve on http://127.0.0.1:8765 + open a browser
+insight --window     # chromeless desktop window
+insight --port 9000
+insight --no-browser # headless box: open the URL yourself
 ```
 
-The network/browser parts (live MarketBeat fetch, discovery, delisting redirect)
-are intentionally isolated behind pure helpers (`_extract_tickers`,
-`_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
-inputs rather than live HTTP.
+`--window` uses Chrome's `--app=` mode, and the window's lifetime owns the server —
+close it and the server stops. It runs in a dedicated profile so it never disturbs
+your main browser, and finds Chrome, Edge, Chromium or Brave automatically (falling
+back to Playwright's Chromium) on all three platforms.
 
-`tests/test_app_http.py` covers the HTTP layer by binding a real
-`ThreadingHTTPServer` on an ephemeral port and talking to it over loopback —
-routing, status codes and the JSON shapes the UI depends on. Every path the
-handler touches (`DATA_DIR`, `CONFIG`, and the `paths.*_file()` helpers) is
-monkeypatched into `tmp_path`, so a test can never read or write the developer's
-own app folder, and `_do_refresh` is stubbed because the real job launches a
-browser.
+**Linux desktop entry:**
 
-## Open at login
+```bash
+./install-desktop.sh              # add InSight to the application menu
+./install-desktop.sh --uninstall
+```
 
-`autostart.py` writes the file the platform already looks for, rather than
-inventing a mechanism:
+**macOS / Windows** — run `insight --window`, or pin it: a one-line `.command` file
+or Automator app on macOS; a Start-Menu shortcut on Windows (the `insight.exe` shim
+lives in the uv tools bin, `uv tool dir`).
+
+Watchlist companies with no data appear as empty cards, so coverage gaps stay
+visible.
+
+### API
+
+| Route | Purpose |
+|---|---|
+| `GET /api/data?months=N` | Companies view, filtered to the window |
+| `GET /api/insiders` | Insiders view (`/api/people` is the pre-rename alias) |
+| `GET /api/search?q=` | Issuer-name candidates |
+| `GET /api/sedi-page?exchange=&ticker=` | A saved SEDI report page |
+| `GET,POST /api/notes` | Per-company notes |
+| `GET,POST /api/settings` | Theme preferences |
+| `GET,POST /api/autostart` | Open-at-login toggle |
+| `GET /api/notify/config` | Alarms + channel settings (a projection, see below) |
+| `POST /api/notify/settings`, `/api/notify/test` | Channel setup, test send |
+| `POST,DELETE /api/watchlist`, `/api/alarms` | Add / remove |
+| `POST /api/refresh`, `GET /api/refresh/status` | Trigger and poll a scrape |
+
+---
+
+## Alarms & notifications (`notify.py`)
+
+Set an alarm on a **company** ("any insider trade in ATH") or a **person**
+("whenever Eric Sprott trades, anywhere") via the 🔔 button.
+
+The two halves live apart on purpose: the **Alarms tab** lists what you watch
+(split Companies / Insiders), while delivery setup sits behind **Settings ⚙ ▸
+Notifications** — configured once, so it shouldn't sit in front of the list you
+actually check. Both read the same `notify.json`; the tab warns when alarms exist
+but no channel is enabled.
+
+After every scrape, `evaluate_and_notify` fires any alarm whose target has a
+transaction newer than when the alarm was set:
+
+- **Email** — SMTP (e.g. a Gmail app password), HTML with the logo CID-embedded.
+- **ntfy** — a free push topic, no credentials.
+- No SMS: carrier email gateways are deprecated and unreliable.
+
+State lives in `notify.json` **in the app folder, never the repo** — it holds the
+SMTP password (masked in API responses). Sends are best-effort and wrapped, so a
+notification failure never breaks a scrape, and an alarm's `seen` baseline only
+advances once a channel actually delivered — a transient outage retries.
+
+### Three bounded things
+
+- **Alarms only look back `ALERT_HORIZON_DAYS` (90).** `seen` used to re-baseline
+  to an alarm's *entire* history on every fire, so it grew forever — 103 alarms
+  reached 28,604 keys and 3.1 MB, re-read and re-written every scrape. Bounding
+  the scan makes older keys safe to forget (→ 1,731 keys, 0.2 MB); stale ones drop
+  on the next scrape, so upgrades self-migrate. Trade-off accepted: a backfilled
+  old filing won't alert, and an alert about last year's trade is noise, not news.
+- **`/api/notify/config` publishes a projection.** Returning alarms verbatim
+  shipped those `seen` keys to a browser that never reads them — 2.8 MB against
+  56 KB of actual data, the app's largest payload. `public_config` whitelists what
+  the UI renders (id, type, label, name, exchange, ticker, created) → ~16 KB. A
+  whitelist, not a `seen`-shaped blocklist, so a new bookkeeping field can't
+  silently start being published.
+- **Every notification is traceable.** Title is always `InSight: <target>` —
+  naming *what* fired, never a bare count. Each carries a monotonic index in the
+  body (`#N`) and is appended to `notifications.log` (JSONL, append-only): index,
+  timestamp, target, message lines, per-channel outcome. The next index derives
+  from the log itself, and logging is best-effort.
+
+---
+
+## Open at login (`autostart.py`)
+
+Writes the file the platform already looks for, rather than inventing a mechanism:
 
 ```
 Linux    ~/.config/autostart/insight.desktop      XDG Desktop Entry
 macOS    ~/Library/LaunchAgents/<label>.plist     launchd, RunAtLoad
-Windows  %APPDATA%\...\Startup\InSight.cmd        Startup folder
+Windows  %APPDATA%\…\Startup\InSight.cmd          Startup folder
 ```
 
-All three are per-user files under the user's own home: no admin rights, no
+All three are per-user files in the user's own home: no admin rights, no
 system-wide daemon, and deleting the file is a complete uninstall — deliberate,
 because something that starts itself at login should be switchable off even by
-someone who no longer has the app to switch it off with. The Startup page shows
-the exact path for that reason.
+someone who no longer has the app to switch it off with. The Startup page shows the
+exact path for that reason.
 
-The absolute path to `insight` is resolved at install time and written into the
-entry. A login session often has a different PATH than the terminal the user
-enabled it from, and a bare command name is the classic way an autostart entry
-silently does nothing. If the console script isn't on PATH at all (a source
-checkout), it falls back to `python -m insight.app`.
+- **Absolute path, resolved at enable time.** A login session often has a different
+  PATH than the terminal, and a bare command name is the classic way an autostart
+  entry silently does nothing. Falls back to `python -m insight.app` in a source
+  checkout.
+- **The command is a list of arguments, never a joined string.** A home directory
+  with a space is ordinary on macOS and Windows, and all three formats treat a bare
+  space as an argument separator — joining then splitting turned
+  `/Users/Jo Smith/.local/bin/insight` into two broken arguments and the entry
+  silently never launched. Each format quotes its own way: the Desktop Entry
+  `Exec=` key per spec, `start ""` with the path quoted on Windows, and the plist
+  built with `plistlib` so `&`, `<` and `>` are escaped properly.
+- **`RunAtLoad` but deliberately not `KeepAlive`** — this is an app the user may
+  close, not a daemon to resurrect.
+- **Windows uses `start ""`** so no console window lingers, and is written with
+  `newline=""`: the content already carries CRLF, and Python's translation would
+  otherwise produce `\r\r\n`.
 
-The command is carried as a **list of arguments**, never a joined string. A home
-directory with a space is ordinary on macOS and Windows, and all three formats
-treat a bare space as an argument separator — joining first and splitting later
-turned `/Users/Jo Smith/.local/bin/insight` into two broken arguments and the
-entry silently never launched. Each format quotes it its own way: the Desktop
-Entry `Exec=` key per its spec, `start ""` with the path quoted on Windows, and
-the macOS plist built with `plistlib` so `&`, `<` and `>` in a path are escaped
-correctly rather than by hand.
+Tests fake `sys.platform` and `Path.home()`, so all three platforms are covered
+wherever they run, and the plist is parsed with `plistlib` rather than
+string-matched.
 
-The macOS agent sets `RunAtLoad` but deliberately not `KeepAlive`: this is an app
-the user may close, not a daemon to resurrect. The Windows entry uses
-`start ""` so no console window lingers, and is written with `newline=""` — the
-content already carries CRLF, and Python's default translation would otherwise
-turn each `\n` into a second `\r` and produce `\r\r\n`.
-
-The tests fake `sys.platform` and `Path.home()`, so all three platforms are
-covered wherever they run, and the macOS plist is parsed with `plistlib` rather
-than string-matched.
+---
 
 ## Themes
 
-Every colour in the stylesheet comes from a CSS variable, so a theme is nothing
-but a re-declaration of the same set under `[data-theme="id"]`. Ten ship, split
-across two shelves in the picker by their `mode`: **dark** (Dark — the `:root`
-default — Midnight, Terminal, Caramel, Chic) and **light** (Light, Newsprint,
-Sage, Lemon, Canadian). Terminal is the only one that also swaps `--font`, to a
-monospace stack.
+Every colour comes from a CSS variable, so a theme is just a re-declaration of the
+same set under `[data-theme="id"]`. Ten ship, shelved by `mode`:
 
-Adding one means three edits that must agree, and the tests enforce all three:
+- **Dark** — Dark (the `:root` default), Midnight, Terminal, Caramel, Chic
+- **Light** — Light, Newsprint, Sage, Lemon, Canadian
 
-1. a `[data-theme="id"] { … }` block declaring **every** variable — a missing one
-   silently inherits the Dark value, which is how a light theme grows a single
+Terminal is the only one that also swaps `--font`, to a monospace stack.
+
+Adding one means **three edits that must agree**, all test-enforced:
+
+1. a `[data-theme="id"]` block declaring **every** variable — a missing one
+   silently inherits the Dark value, which is how a light theme grows one
    unreadable dark patch;
 2. an entry in the `THEMES` array in `webui/index.html` (id, name, description);
-3. the id in `THEMES` in `insight/settings.py`, which validates what gets saved.
+3. the id in `THEMES` in `settings.py`, which validates what gets saved.
 
-`tests/webui/theme.test.mjs` checks the stylesheet and the picker agree, that
-every theme declares the full variable set, that no colour is hardcoded outside
-a theme block, that every value parses as a colour, that a theme's declared
-`mode` matches its actual background luminance, and that the accent never
-doubles as buy or sell.
+`tests/webui/theme.test.mjs` enforces: stylesheet and picker agree; every theme
+declares the full variable set; no colour is hardcoded outside a theme block;
+every value parses as a colour; a declared `mode` matches its actual background
+luminance; the accent never doubles as buy or sell.
 
-It also enforces **WCAG contrast**: body text ≥ 7:1 (AAA), and secondary text,
-accents, button ink and buy/sell all ≥ 4.5:1 (AA) against what they sit on.
-This is not decoration — Sage originally shipped a mid-green `--buy` that hit
-only 3.16:1 on green paper. Buy and sell carry the meaning of the whole app, so
-a colourful theme that washes them out is a broken theme.
+Plus **WCAG contrast** — body text ≥ 7:1 (AAA); secondary text, accents, button
+ink and buy/sell ≥ 4.5:1 (AA). Not decoration: Sage originally shipped a mid-green
+`--buy` at 3.16:1 on green paper, and buy/sell carry the meaning of the whole app.
 
-`tests/test_settings.py` checks the Python and JS lists haven't drifted apart.
+### Following the system
 
-**Following the system.** `settings.json` holds four fields, not one:
+`settings.json` holds four fields, not one:
 
 ```json
 {"theme": "dark", "auto": false, "auto_dark": "dark", "auto_light": "light"}
 ```
 
-With `auto` off the app paints `theme`. With it on, the browser asks the OS via
-`prefers-color-scheme` and paints `auto_dark` or `auto_light` — which is why the
-picker's two shelves earn their keep: while following, a click sets that shelf's
-pick rather than the theme, so you can have Chic at night and Sage by day.
-`theme` is left untouched throughout, so turning the toggle back off restores the
-theme picked by hand. The backend validates each field against its own shelf: a
-light theme stored as `auto_dark` would make the app get *brighter* when the OS
-goes dark.
-
-The choice is stored server-side (see `paths.settings_file()`) so it survives a
-cleared cache and follows the user between a browser tab and the `--window` app,
-which use different profiles. It is *also* mirrored into localStorage and applied
-by a tiny `<script id="theme-boot">` in `<head>` — the server copy can't be read
-before first paint, so without that cache every load would flash the default
-theme first. The cache holds the *preference*, not the resolved theme: the OS may
-have changed since the app was last open, so the boot script re-resolves rather
-than replaying a stale answer.
+- `auto` off → paint `theme`. On → ask the OS via `prefers-color-scheme` and paint
+  `auto_dark` or `auto_light`. That's why the two shelves earn their keep: while
+  following, a click sets that shelf's pick, so Chic at night and Sage by day.
+- `theme` is untouched throughout, so turning the toggle off restores the
+  hand-picked theme.
+- The backend validates each field against its own shelf — a light theme stored as
+  `auto_dark` would make the app get *brighter* when the OS goes dark.
+- Stored server-side, so it survives a cleared cache and follows the user between
+  a browser tab and the `--window` app (different profiles).
+- Also mirrored to localStorage and applied by `<script id="theme-boot">` in
+  `<head>`: the server copy can't be read before first paint, so without that
+  cache every load flashes the default. It caches the *preference*, not the
+  resolved theme — the OS may have changed since, so the boot script re-resolves.
 
 Two subtleties in the live-update path, both of which bit during development:
-the `MediaQueryList` is held in a module-level binding because an unreferenced
-one can be collected and take its listener with it; and because not every
-environment delivers the `change` event (Chromium under devtools colour-scheme
-emulation does not), the theme is also re-resolved on `visibilitychange`. An OS
-that switches on a schedule usually does it while the app is in the background
-anyway.
 
-### Browser-UI tests (`tests/webui/`)
+- the `MediaQueryList` is held in a module-level binding — an unreferenced one can
+  be collected and take its listener with it;
+- the theme is re-resolved on `visibilitychange`, because not every environment
+  delivers `change` (Chromium under devtools colour-scheme emulation doesn't).
 
-All of the app's interaction logic lives in `insight/webui/index.html`, so it
-gets its own suite — on **Node's built-in test runner**, so there is still no
-npm install, no `package.json` dependencies and no build step:
+---
 
-```bash
-node --test tests/webui/       # directly
-uv run pytest                  # …or via the bridge in tests/test_webui_js.py
+## Layout
+
+```
+pyproject.toml        packaging + the `insight` / `insight-scrape` commands
+install-desktop.sh    Linux app-menu launcher installer
+insight/
+  app.py              local HTTP server + API + the --window launcher
+  scrape.py           insight-scrape CLI (targets, output, prune commands)
+  marketbeat.py       MarketBeat scraper (Playwright + stealth) + discovery
+  sedi.py             SEDI scraper (headful, persistent profile, bot-walled)
+  store.py            dated snapshots -> one deduplicated, incrementally folded store
+  aggregate.py        records -> company / insider views (+ in-memory access cache)
+  models.py           InsiderTransaction schema + parsing helpers
+  notify.py           alarms + notifications (email / ntfy)
+  notes.py            per-company user notes
+  settings.py         theme preferences; kept apart from notify.json
+  profiles.py         Chromium cache caps + pruning (keeps cookies / CAPTCHA)
+  autostart.py        per-user 'open at login' entry, per OS convention
+  issuers.py          name -> issuer-candidate resolver (+ watchlist add)
+  paths.py            per-user data / config / profile dirs (cross-platform)
+  companies.default.json  seed watchlist, copied to the app folder on first run
+  webui/index.html    the single-page UI
 ```
 
-`tests/webui/harness.mjs` reads the real `index.html`, extracts its `<script>`,
-and evaluates it in a `node:vm` context against a small DOM stub — so the tests
-exercise shipped code rather than a copy. Two things to know when writing them:
+The editable watchlist and all output live in the per-user app folder, not the repo.
+
+---
+
+## Tests
+
+```bash
+uv sync --group dev            # pytest, ruff, mypy, …
+uv run pytest                  # everything, incl. the Node UI suite via a bridge
+node --test tests/webui/       # the browser-UI suite alone
+uv run ruff check insight tests
+uv run mypy insight            # strict on the pure core; glue modules relaxed
+```
+
+Three layers, each covering what the one below it can't:
+
+### 1. `tests/*.py` — pure logic (pytest)
+
+Parsing, classification, aggregation math, average cost, history merge/dedup,
+delisted filtering, watchlist add/remove, store folding, notes, settings, profile
+pruning, autostart, path handling. No network, no browser.
+
+Network/browser code is isolated behind pure helpers (`_extract_tickers`,
+`_no_insider_page_kind`, `_row_to_record`, …) so it's tested with sample inputs
+rather than live HTTP. Don't unit-test the live fetch.
+
+`tests/test_app_http.py` covers the HTTP layer for real: it binds a
+`ThreadingHTTPServer` on an ephemeral port and talks to it over loopback —
+routing, status codes, and the JSON shapes the UI depends on. Every path the
+handler touches (`DATA_DIR`, `CONFIG`, the `paths.*_file()` helpers) is
+monkeypatched into `tmp_path`, so a test can never touch the developer's own app
+folder, and `_do_refresh` is stubbed because the real job launches a browser.
+
+### 2. `tests/webui/` — UI logic (Node's built-in runner)
+
+All the app's interaction logic lives in `index.html`, so it gets its own suite —
+on `node --test`, so there is still **no npm install, no `package.json`, no build
+step**.
+
+`harness.mjs` reads the real `index.html`, extracts its `<script>`, and evaluates
+it in a `node:vm` against a small DOM stub, so the tests exercise shipped code
+rather than a copy. Two gotchas when writing them:
 
 - Top-level `function` declarations land on the vm context (`ctx`); `let`/`const`
-  bindings (`STATE`, `BULLET`, `NAV_MAX`, the arrow-function helpers) are
-  lexically scoped and are reached through `lex`, which the harness exposes via
-  live getters.
-- Arrays returned from the vm carry that realm's prototype, so wrap them in
-  `Array.from()` before `assert.deepEqual`.
+  bindings (`STATE`, `BULLET`, `NAV_MAX`, arrow-function helpers) are lexically
+  scoped and reached through `lex`, which the harness exposes via live getters.
+- Arrays returned from the vm carry that realm's prototype — wrap in `Array.from()`
+  before `assert.deepEqual`.
 
-The suite covers bullet normalization and note escaping, timeline geometry
-(nothing clipped, radii ordered by share count), the back-stack state machine
-(typing collapses to one step, the cap drops the oldest), the cross-link markup,
-the theme palette contract, the alarm grouping, and markup invariants —
-including that the preselected `<option>` and `STATE.range` still agree, which is
-the same fact stated in two places.
+Covers bullet normalization and note escaping, timeline geometry (nothing clipped,
+radii ordered by share count), the back-stack state machine (typing collapses to
+one step, the cap drops the oldest), cross-link markup, the theme palette contract,
+alarm grouping, and markup invariants — including that the preselected `<option>`
+and `STATE.range` still agree, the same fact stated in two places.
 
-### End-to-end tests (`tests/test_e2e_browser.py`)
+### 3. `tests/test_e2e_browser.py` — real browser (Playwright)
 
 The vm harness has no renderer, no focus model and no keyboard, so a keydown
-handler can look perfect and never fire, and a layout can overflow a phone
-screen with every unit test green. That gap is covered by driving the real page
-in Chromium via Playwright — already a dependency for the scraper, so nothing new
-is installed. The tests skip (rather than fail) when the browser binary is
-missing; CI installs it explicitly, cached on the resolved Playwright version so
-the ~150 MB download happens once.
+handler can look perfect and never fire, and a layout can overflow a phone screen
+with every unit test green. That gap is covered by driving the real page in
+Chromium — already a scraper dependency, so nothing new is installed. Tests *skip*
+rather than fail when the browser binary is missing; CI installs it explicitly.
 
 Scope is deliberately narrow — only what needs a browser:
 
-* real key presses: Enter opening the next bullet, Backspace removing an empty
-  one, Ctrl+Enter saving, Escape discarding;
-* real focus: Tab and Shift+Tab cycling inside the settings dialog, focus
-  returning to the ⚙ on close, Alt+Left staying inert while the dialog is up;
-* computed styles: a theme actually repainting the body, Terminal actually
-  switching to a monospace stack;
-* geometry: no horizontal overflow at 375 px, the dialog fitting a phone screen,
-  the timeline staying one thin row, the transaction table scrolling inside its
-  card.
+- **real keys** — Enter opening the next bullet, Backspace removing an empty one,
+  Ctrl+Enter saving, Escape discarding;
+- **real focus** — Tab / Shift+Tab cycling inside the settings dialog, focus
+  returning to the ⚙ on close, Alt+← inert while the dialog is up;
+- **computed styles** — a theme actually repainting the body, Terminal actually
+  switching to monospace;
+- **geometry** — no horizontal overflow at 375 px, the dialog fitting a phone
+  screen, the timeline staying one thin row, the table scrolling inside its card.
 
-Every page is also watched for uncaught JS errors, which fails the test on
-teardown. Anything provable without a browser belongs in `tests/webui/` instead —
-these are ~6 s against ~1 s for everything else.
+Every page is watched for uncaught JS errors, failing the test on teardown.
+Anything provable without a browser belongs in `tests/webui/` — these are ~6 s
+against ~1 s for everything else.
 
-Anything needing real layout or real events (focus, key handling, paint cost) is
-verified against a live browser instead, not here.
+### Concurrency
 
-CI (`.github/workflows/`) runs the same ruff/mypy/pytest checks on every push and
-PR, plus the Node UI suite, plus a `gitleaks` secret scan over the full history as
-a server-side backstop to the local pre-commit hook. Node is installed explicitly
-in CI because the pytest bridge *skips* when node is missing — without that step
-the UI tests would quietly stop running instead of failing.
+The server is a `ThreadingHTTPServer`, so any read-modify-write of a JSON file
+needs a lock **plus a unique temp name** + `os.replace` (see `notes.py`,
+`store.py`). A fixed temp name lets two writers interleave.
+`tests/test_concurrency.py` proves it by racing overlapping writers — before the
+fix, 30 concurrent note saves left 2 notes.
+
+---
+
+## CI
+
+`.github/workflows/` runs on every push and PR:
+
+- ruff (check + format), mypy, pytest;
+- the Node UI suite — Node is installed explicitly, because the pytest bridge
+  *skips* when node is missing, and without that step the UI tests would quietly
+  stop running instead of failing;
+- Chromium for the e2e tests, cached on the resolved Playwright version so the
+  ~150 MB download happens once;
+- `gitleaks` over the full history, a server-side backstop to the pre-commit hook.

@@ -358,3 +358,71 @@ class TestSediPage:
         status, body = client.get("/api/sedi-page?exchange=TSE&ticker=ABC")
         assert status == 404
         assert b"No saved SEDI page" in body
+
+
+class TestSediRefreshWiring:
+    """The in-app '⛏ Fetch from SEDI' button must configure the scraper the way
+    the CLI does.
+
+    The two call sites build `SediScraper` separately, and they drifted: the
+    button omitted `pages_dir`, so it scraped the data but saved no report pages.
+    `_sedi_page_keys()` then stayed empty forever and the '⛏ SEDI report' link
+    never appeared — a whole UI feature dead for anyone who never runs the CLI,
+    which is most people. Nothing failed; the link simply was not there.
+    """
+
+    @pytest.fixture
+    def spy(self, tmp_path: Path, monkeypatch) -> dict:
+        """Run _do_refresh(source="sedi") against stubs, capturing the scraper's
+        kwargs. No browser, no network, nothing written outside tmp_path."""
+        from insight import marketbeat, scrape, sedi
+
+        config = tmp_path / "companies.json"
+        config.write_text(
+            json.dumps({"companies": [{"name": "ABC Corp", "exchange": "TSE", "ticker": "ABC"}]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(app, "CONFIG", config)
+        monkeypatch.setattr(app, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
+        monkeypatch.setattr(paths, "sedi_profile_dir", lambda: tmp_path / "sedi-profile")
+        monkeypatch.setattr(paths, "cache_dir", lambda: tmp_path / "cache")
+        monkeypatch.setattr(paths, "app_dir", lambda: tmp_path)
+
+        seen: dict = {}
+
+        class FakeScraper:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+        monkeypatch.setattr(sedi, "SediScraper", FakeScraper)
+        # scrape_many is what actually calls the factory, so invoke it — a
+        # factory that is built but never called would prove nothing.
+        monkeypatch.setattr(
+            marketbeat, "scrape_many", lambda targets, **kw: (kw["scraper_factory"](), {})[1]
+        )
+        monkeypatch.setattr(scrape, "write_outputs", lambda *a, **k: None)
+        monkeypatch.setattr(app, "_finish_refresh", lambda *a, **k: None)
+
+        with app._refresh_lock:
+            app._refresh["message"] = ""
+        app._do_refresh(source="sedi")
+        # _do_refresh swallows exceptions into job state, so an exploding stub
+        # would otherwise look exactly like a pass. ("ok" is no use here —
+        # _finish_refresh is what sets it, and it is stubbed.)
+        assert not app._refresh["message"].startswith("Refresh failed"), app._refresh["message"]
+        assert seen, "the scraper factory was never called"
+        return seen
+
+    def test_it_snapshots_the_report_pages(self, spy: dict, tmp_path: Path):
+        assert spy.get("pages_dir") == tmp_path / "sedi-pages"
+
+    def test_it_uses_the_persistent_profile(self, spy: dict, tmp_path: Path):
+        # That cookie jar IS the solved CAPTCHA; a fresh profile would mean
+        # solving the bot wall on every fetch.
+        assert spy.get("profile_dir") == tmp_path / "sedi-profile"
+
+    def test_it_opens_a_visible_browser(self, spy: dict):
+        # Headless cannot get past the wall, and nobody can solve a challenge
+        # they cannot see.
+        assert spy.get("headless") is False

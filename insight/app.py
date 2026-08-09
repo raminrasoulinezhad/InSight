@@ -152,6 +152,11 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                 scraper_factory=lambda: SediScraper(
                     headless=False,
                     profile_dir=paths.sedi_profile_dir(),
+                    # Snapshot each company's report page. Without this the
+                    # button scrapes the data but saves no pages, so the
+                    # "⛏ SEDI report" link never appears for anyone who never
+                    # runs the CLI — which is most people.
+                    pages_dir=paths.sedi_pages_dir(),
                     # dump HTML for any company that yields no rows, so an empty
                     # result can be diagnosed rather than being silent.
                     capture_dir=paths.app_dir() / "sedi-debug",

@@ -6,14 +6,15 @@
 
 See what **company insiders** — directors, officers, big shareholders, and the
 companies themselves — are **buying and selling** across a watchlist of Canadian
-and US stocks. InSight collects the trades and shows them in a clean desktop app.
+and US stocks.
+
+Everything runs on your own machine. No account, no cloud, no subscription.
 
 ---
 
 ## 1. Install
 
-**Step 1 — install `uv`** (a small, free tool that sets everything up for you).
-Copy‑paste one line into your terminal:
+**Step 1 — install `uv`**, a small free tool that sets everything up. One line:
 
 - **macOS / Linux**
   ```bash
@@ -26,193 +27,170 @@ Copy‑paste one line into your terminal:
 
 Close and reopen your terminal afterwards.
 
-**Step 2 — install InSight** (same command on every OS):
+**Step 2 — install InSight.** Same command on every OS:
 
 ```bash
 uv tool install git+https://github.com/raminrasoulinezhad/InSight
 ```
 
-**Step 3 — one‑time browser download** (needed to fetch fresh data):
+**Step 3 — download the browser** it uses to fetch data (once):
 
 ```bash
 uv tool run --from playwright playwright install chromium
 ```
 
-That's it. You now have two commands: **`insight`** (the app) and
-**`insight-scrape`** (the data collector).
+You now have two commands:
 
-> **Updating later:** `uv tool upgrade insight`
-> **Uninstalling:** `uv tool uninstall insight`
+- **`insight`** — the app
+- **`insight-scrape`** — the data collector
+
+Later: `uv tool upgrade insight` to update, `uv tool uninstall insight` to remove.
 
 ---
 
 ## 2. Use it
 
-**Open the app:**
-
 ```bash
-insight
+insight            # opens in your browser
+insight --window   # opens as its own app window
 ```
 
-Your browser opens to InSight. Prefer a real app window? Use:
+To get fresh numbers, click **↻ Refresh data** in the app (or run
+`insight-scrape`, then reload).
 
-```bash
-insight --window
-```
-
-**Get the latest data.** The first time (and whenever you want fresh numbers),
-either click **↻ Refresh data** in the app, or run:
-
-```bash
-insight-scrape
-```
-
-Then reload the app to see the update.
-
-### What you can do in the app
+### What you can do
 
 - **Search** — filter by company, ticker, or insider name.
 - **Filter** — show only net buyers, net sellers, or institutions.
-- **Time range** — opens on the **last 2 weeks**; widen it to a month, 3 months,
-  6 months, a year or 2 years whenever you want the longer view (the totals
-  update to match). The short default is what keeps the app quick — a 2‑year
-  window has to draw tens of thousands of rows at once.
-- **Notes** — click **📝** on any company to open a note above its activity. It
-  writes as a bullet list: **Enter** starts the next bullet, **Ctrl+Enter** saves,
-  **Esc** discards. Notes are yours, kept per company, and survive every refresh.
-- **Follow a name** — click an insider in a company's table to see everything
-  *they* traded; click a company on an insider's card to open that company. The
-  **← Back** button (or **Alt+←**) retraces up to 10 steps.
-- **Settings ⚙** — top right, three pages. **Startup** can open InSight
-  automatically when you log in (and untick it to stop). **Appearance** picks
-  from ten themes,
-  shelved as **Dark** (Dark, Midnight, Terminal, ☕ Caramel, ✦ Chic) and
-  **Light** (Light, Newsprint, 🌿 Sage, 🍋 Lemon, 🍁 Canadian) — it applies
-  instantly and is remembered. Tick **Match my system** and InSight follows your
-  computer's light/dark setting, switching by itself; pick which theme it uses
-  for each by choosing one from the Dark shelf and one from the Light shelf.
-  **Notifications** holds the email/push setup.
-- **Add a company** — type a name in the *“Add a company…”* box, pick the right
-  match, and it joins your watchlist.
-- **Remove a company** — click **✕ Remove** on any company.
-- **Refresh** — click **↻ Refresh data** to re‑fetch the newest trades.
+- **Time range** — opens on the **last 2 weeks**; widen it up to 2 years. Short
+  is the default because it keeps the app instant.
+- **Notes 📝** — keep your own notes on any company, shown above its activity.
+  Writes as a bullet list: **Enter** for the next bullet, **Ctrl+Enter** to save,
+  **Esc** to discard.
+- **Follow a name** — click an insider to see everything *they* traded; click a
+  company on their card to jump there. **← Back** (or **Alt+←**) retraces up to
+  10 steps.
+- **Add a company** — type a name in *“Add a company…”* and pick the right match.
+- **Remove a company** — **✕ Remove** on any company.
 
-Each company shows one card per insider: how much they bought vs. sold, share
-counts, dollar amounts, and the latest trade date. A purple **Buyback** badge
-means the company is buying its own shares.
+Each company shows one card per insider: buys vs. sells, share counts, dollar
+amounts, and the latest trade date. A purple **Buyback** badge means the company
+is buying its own shares.
+
+### Settings ⚙ (top right)
+
+| Page | What's there |
+|---|---|
+| **Startup** | Open InSight automatically when you log in. |
+| **Appearance** | Ten themes, plus **Match my system** to follow your computer's light/dark setting. |
+| **Notifications** | Email / phone-push setup for alerts (see §4). |
+
+Themes are shelved **Dark** (Dark, Midnight, Terminal, ☕ Caramel, ✦ Chic) and
+**Light** (Light, Newsprint, 🌿 Sage, 🍋 Lemon, 🍁 Canadian). With **Match my
+system** ticked, pick one from each shelf and InSight switches between them by
+itself.
 
 ---
 
-## 3. Alerts (optional)
+## 3. Where the data comes from
 
-InSight can **notify you when a new insider trade appears** for a company or
-person you care about. You set an **alarm**, and after each data refresh InSight
-checks for anything new and pushes you a message. Two free channels are
-supported — use either or both:
+InSight has two sources. **MarketBeat** is the everyday one; **SEDI** is there
+for the names MarketBeat misses.
 
-- **Email** — via Gmail (or any SMTP provider).
-- **Phone push** — via **ntfy**, a free push app; alerts pop up on your phone.
+| | MarketBeat (default) | SEDI |
+|---|---|---|
+| **Covers** | Large and mid-cap TSX / US names | *Every* Canadian filing, incl. TSX-V and CSE micro-caps |
+| **Speed** | Automatic, unattended | Opens a visible browser; may ask you to solve a CAPTCHA once |
+| **Use it** | **↻ Refresh data**, or `insight-scrape` | **⛏ Fetch from SEDI**, or `insight-scrape --source sedi` |
 
-### Set an alarm
+SEDI is Canada's official insider-filing system — the authoritative source, and
+the only one that sees small venture names. It is bot-protected, so it can't run
+unattended:
 
-In the app, click the **🔔** button on any company card or insider, then open the
-**Alarms** tab to manage them — it lists what you're watching, split into
-**Companies** and **Insiders**. Only trades that arrive *after* you set the alarm
-will fire — your existing history won't spam you.
+- A real browser window opens. If a CAPTCHA appears, solve it — **once**. The
+  login is remembered for later runs.
+- Only Canadian companies on your watchlist are fetched.
+- Where a company has a saved SEDI report, a **⛏ SEDI report** link appears on
+  its card and opens the official page.
 
-Setting up *how* you get told (email or push) lives in **Settings ⚙ →
-Notifications** — you do that once, then forget about it.
-
-Alarms are checked after each scrape (the daily timer, or when you click
-**↻ Refresh data**).
-
-### Option A — Email (free, via Gmail)
-
-Email is sent over **SMTP** — the internet's standard for sending mail. You just
-tell InSight which mail server to use and give it a login. With Gmail this is
-free, but there's one catch: **you can't use your normal Gmail password.** Google
-requires a one-time **App Password** instead.
-
-**1. Turn on 2-Step Verification.** Go to
-[myaccount.google.com](https://myaccount.google.com) → **Security** → enable
-**2-Step Verification** (App Passwords aren't available without it).
-
-**2. Create an App Password.** Go straight to
-[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-(the menu link is often hidden — the direct URL is easiest). Name it `InSight`
-and click **Create**. Google shows a **16-character password** in a popup —
-**copy it now**, you can't see it again (but you can always delete it and make a
-new one).
-
-**3. Fill in Settings ⚙ → Notifications → 📧 Email (SMTP)** panel:
-
-| Field | Value |
-|---|---|
-| **Enabled** | ✅ checked |
-| **SMTP host** | `smtp.gmail.com` |
-| **SMTP port** | `587` |
-| **Username** | your full Gmail address (e.g. `you@gmail.com`) |
-| **App password** | the 16-character password from step 2 |
-| **From** | your Gmail address (Gmail rewrites anything else anyway) |
-| **Send to** | where you want alerts — usually the same Gmail address |
-
-**From and Send to can be the same address** — InSight simply emails you, and it
-lands in your inbox.
-
-**4. Click Save settings, then Send test** to confirm it works.
-
-> **Note:** free Gmail allows up to ~500 emails/day — far more than personal
-> alerts will ever use. For higher volume, a provider like Brevo or Mailgun has a
-> free tier, but for one person watching a watchlist, Gmail is plenty.
-
-### Option B — Phone push (free, via ntfy)
-
-**ntfy** delivers instant push notifications to your phone with **no account and
-no credentials** — you just pick a private *topic* name and subscribe to it.
-
-**1. Install the app.** Get **ntfy** from the
-[App Store](https://apps.apple.com/us/app/ntfy/id1625396347) or
-[Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy).
-
-**2. Pick a private topic and subscribe.** In the app tap **+**, and enter a
-**long, hard-to-guess** topic name — anyone who knows it can send you
-notifications, so treat it like a password. For example: `insight-alerts-pick-your-own`.
-
-**3. Fill in Settings ⚙ → Notifications → 🔔 Push (ntfy.sh)** panel:
-
-| Field | Value |
-|---|---|
-| **Enabled** | ✅ checked |
-| **Server** | `https://ntfy.sh` (the host only — **not** the topic) |
-| **Topic** | the topic you chose, e.g. `insight-alerts-pick-your-own` |
-
-The full push URL is just *Server* + `/` + *Topic* — so if you can push to
-`ntfy.sh/insight-alerts-pick-your-own` from a browser or `curl`, put `https://ntfy.sh` in
-**Server** and `insight-alerts-pick-your-own` in **Topic**. Don't paste the topic into the
-Server field.
-
-**4. Click Save settings, then Send test** — a notification should appear on your
-phone within a second or two.
+Both sources merge into the same view, so you can use either or both. Keep
+MarketBeat for the daily habit and reach for SEDI when a company shows up empty.
 
 ---
 
-## 4. Desktop shortcut (optional)
+## 4. Alerts (optional)
 
-Want InSight in your applications menu with an icon?
+Get told when a **new** insider trade appears for a company or person you care
+about.
 
-- **Linux** — from a clone of this project, run:
-  ```bash
-  ./install-desktop.sh
-  ```
-- **macOS / Windows** — just run `insight --window`, or create a shortcut that
-  points to it.
+1. Click **🔔** on any company card or insider to set an alarm.
+2. Manage them on the **Alarms** tab, split into **Companies** and **Insiders**.
+3. Set up *how* you're told — once — in **Settings ⚙ → Notifications**.
+
+Only trades that arrive *after* you set the alarm will fire, so your existing
+history won't spam you. Alarms are checked after each refresh.
+
+Two free channels, use either or both:
+
+### Email (via Gmail)
+
+Gmail won't accept your normal password — it needs a one-time **App Password**.
+
+1. Turn on **2-Step Verification** at
+   [myaccount.google.com](https://myaccount.google.com) → **Security**.
+   (App Passwords don't exist without it.)
+2. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
+   name it `InSight`, click **Create**. **Copy the 16-character password now** —
+   it's shown once.
+3. Fill in **Settings ⚙ → Notifications → 📧 Email (SMTP)**:
+
+   | Field | Value |
+   |---|---|
+   | **Enabled** | ✅ |
+   | **SMTP host** | `smtp.gmail.com` |
+   | **SMTP port** | `587` |
+   | **Username** | your Gmail address |
+   | **App password** | the 16 characters from step 2 |
+   | **From** | your Gmail address |
+   | **Send to** | usually the same address |
+
+4. Click **Save settings**, then **Send test**.
+
+> Free Gmail allows ~500 emails/day — far beyond what personal alerts need.
+
+### Phone push (via ntfy)
+
+No account, no credentials — just a topic name you pick.
+
+1. Install **ntfy** from the
+   [App Store](https://apps.apple.com/us/app/ntfy/id1625396347) or
+   [Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy).
+2. Tap **+** and enter a **long, hard-to-guess** topic — anyone who knows it can
+   push to you, so treat it like a password.
+3. Fill in **Settings ⚙ → Notifications → 🔔 Push (ntfy.sh)**:
+
+   | Field | Value |
+   |---|---|
+   | **Enabled** | ✅ |
+   | **Server** | `https://ntfy.sh` — the host only |
+   | **Topic** | your topic, e.g. `insight-alerts-pick-your-own` |
+
+4. Click **Save settings**, then **Send test**.
+
+> The push URL is *Server* + `/` + *Topic*. Don't paste the topic into Server.
+
+---
+
+## 5. Desktop shortcut (optional)
+
+- **Linux** — from a clone of this project: `./install-desktop.sh`
+- **macOS / Windows** — run `insight --window`, or make a shortcut to it.
 
 ---
 
 ## Where is my data?
 
-Your watchlist and the collected trades are stored in a personal folder, so
-nothing is lost if you move or delete the project:
+In a personal folder, so nothing is lost if you move or delete the project:
 
 | OS | Folder |
 |---|---|
@@ -220,44 +198,32 @@ nothing is lost if you move or delete the project:
 | macOS | `~/Library/Application Support/InSight` |
 | Windows | `%LOCALAPPDATA%\InSight` |
 
-Every refresh saves a dated file, and those files repeat each other heavily, so
-the folder grows much faster than the actual data does. InSight keeps a single
-combined copy (`data/store.json`) of everything it has ever collected, so if the
-folder gets large you can safely reclaim the space:
+**If the folder gets big**, it's safe to reclaim. Nothing below loses any trades.
 
 ```bash
-insight-scrape --prune-snapshots
+insight-scrape --prune-snapshots      # delete dated files already merged
+insight-scrape --prune-browser-cache  # clear the browser caches
 ```
 
-That deletes only the dated files already merged into the combined copy — no
-trades are lost, and the app looks exactly the same afterwards.
-
-If you used a version before this one, the folder may also hold `.csv` files and
-a `by_ticker` folder. InSight no longer writes those and never reads them, so
-they are safe to delete.
-
-InSight also keeps two browser profiles (it drives a real browser to fetch data
-and, optionally, to show the app window). Browsers cache a *lot* — these had
-grown to 526 MB on one machine. They now stay small on their own and tidy
-themselves when you close the app, but to clear them right away:
-
-```bash
-insight-scrape --prune-browser-cache
-```
-
-Close InSight first, or it will skip the profile still in use. Your SEDI login is
-kept, so you will not have to solve the CAPTCHA again.
+- Every refresh saves a dated file, and those files repeat each other heavily.
+  InSight keeps one combined copy (`data/store.json`) of everything ever
+  collected, so the dated ones are safe to drop — the app looks identical after.
+- InSight drives a real browser (to fetch data, and for `--window`), and browsers
+  cache a *lot* — 526 MB on one machine. Close InSight first, or the profile
+  still in use is skipped. Your SEDI login is kept, so no CAPTCHA to redo.
+- Upgrading from an older version? Any leftover `.csv` files and `by_ticker`
+  folder are no longer written or read. Delete them.
 
 ---
 
 ## Good to know
 
-- Data comes from **MarketBeat**; large caps are well covered, but some very
-  small TSX‑Venture names may not be. Coverage gaps show as empty cards.
-- Numbers may lag the official source by a day or two — fine for spotting trends,
-  not for split‑second decisions.
+- **Coverage** — MarketBeat covers large caps well; small TSX-V names may show as
+  empty cards. Use **⛏ Fetch from SEDI** for those.
+- **Freshness** — numbers may lag the official source by a day or two. Good for
+  spotting trends, not for split-second decisions.
 
 ---
 
-*Developers:* build, architecture, data sources, and internals are in
+*Developers:* build, architecture, and internals are in
 **[DEVELOPER_README.md](DEVELOPER_README.md)**.

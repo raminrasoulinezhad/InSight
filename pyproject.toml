@@ -43,7 +43,7 @@ include = [
     "README.md",
     "DEVELOPER_README.md",
     "CLAUDE.md",
-    "REPORT.md",
+    "docs",
     "LICENSE",
     "assets",
     "install-desktop.sh",
