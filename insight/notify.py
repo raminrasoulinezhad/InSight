@@ -21,6 +21,9 @@ Channels:
 State lives in a single JSON file (see paths.notify_file()): {email, ntfy, alarms}.
 Each alarm carries a `seen` set of transaction keys so only genuinely new trades
 fire; the baseline is captured at creation so pre-existing history never alerts.
+Both the baseline and the alerting scan are bounded to ALERT_HORIZON_DAYS, which
+keeps `seen` proportional to recent activity instead of to all history, and the
+UI is served a projection without it (see public_config).
 Sends are best-effort — a failure is reported but never breaks a scrape, and an
 alarm's `seen` set is only advanced once at least one channel delivered, so a
 transient outage retries on the next scrape.
@@ -39,7 +42,7 @@ import smtplib
 import ssl
 import urllib.request
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -156,6 +159,30 @@ def _key(rec: dict[str, Any]) -> str:
     return "|".join(str(x) for x in _txn_key(rec))
 
 
+# How far back a transaction can be and still be worth an alert.
+#
+# This bounds the `seen` set, which is the whole point. `seen` exists to answer
+# "did I already alert on this trade?", and it used to be re-baselined to an
+# alarm's *entire* matching history on every fire — so it grew forever. Across
+# 103 alarms that reached 28,604 keys and a 3.1 MB notify.json, re-read and
+# re-written on every scrape.
+#
+# Restricting the records considered for alerting to this window means a key
+# older than the window can never fire again, so it is safe to forget: the set
+# now stays proportional to recent activity rather than to all history.
+#
+# The trade-off is real: a scrape that backfills a genuinely old filing (SEDI
+# serves up to 24 months) will not alert on it. That is the intended behaviour —
+# an alert about a trade from last year is noise, not news.
+ALERT_HORIZON_DAYS = 90
+
+
+def _recent(records: list[dict[str, Any]], today: date | None = None) -> list[dict[str, Any]]:
+    """Records inside the alerting horizon (see ALERT_HORIZON_DAYS)."""
+    cutoff = ((today or date.today()) - timedelta(days=ALERT_HORIZON_DAYS)).isoformat()
+    return [r for r in records if (r.get("transaction_date") or "") >= cutoff]
+
+
 def add_alarm(path: Path, spec: dict[str, Any], data_dir: Path) -> tuple[bool, str]:
     """Create an alarm, baselining `seen` to current transactions so only trades
     that arrive *after* now will fire. De-dupes on alarm_key."""
@@ -183,7 +210,10 @@ def add_alarm(path: Path, spec: dict[str, Any], data_dir: Path) -> tuple[bool, s
     if any(alarm_key(a) == alarm_key(alarm) for a in cfg["alarms"]):
         return False, f"Alarm for {alarm['label']} already exists"
 
-    records = load_all_records(data_dir)
+    # Baseline against the alerting horizon only: trades older than that can
+    # never fire anyway (see ALERT_HORIZON_DAYS), so recording them would just
+    # bloat the alarm from birth.
+    records = _recent(load_all_records(data_dir))
     alarm["id"] = uuid.uuid4().hex[:12]
     alarm["created"] = datetime.now(UTC).isoformat(timespec="seconds")
     alarm["seen"] = sorted(_matching_keys(alarm, records))  # baseline: existing trades
@@ -406,7 +436,7 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
     if not alarms:
         return {"sent": 0, "checked": 0}
 
-    records = load_all_records(data_dir)
+    records = _recent(load_all_records(data_dir))
     by_key = {_key(r): r for r in records}
     log_path = _log_file(path)
     index = _next_index(log_path)
@@ -417,6 +447,15 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
     for alarm in alarms:
         current = _matching_keys(alarm, records)
         seen = set(alarm.get("seen", []))
+        # Forget keys that have aged out of the horizon (or vanished from the
+        # data). They can no longer appear in `current`, so they can no longer
+        # fire — keeping them only grows the file. This also migrates alarms
+        # created before the horizon existed, whose `seen` holds all history.
+        trimmed = seen & current
+        if len(trimmed) != len(seen):
+            alarm["seen"] = sorted(trimmed)
+            seen = trimmed
+            changed = True
         new = current - seen
         if not new:
             continue
@@ -467,12 +506,32 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
 # ---- API helpers --------------------------------------------------------------
 
 
+# What the UI actually needs about an alarm: enough to list it and to light up
+# the right 🔔. Everything else — notably the `seen` key set — is bookkeeping.
+_PUBLIC_ALARM_FIELDS = ("id", "type", "label", "name", "exchange", "ticker", "created")
+
+
+def _public_alarm(alarm: dict[str, Any]) -> dict[str, Any]:
+    return {k: alarm[k] for k in _PUBLIC_ALARM_FIELDS if k in alarm}
+
+
 def public_config(path: Path) -> dict[str, Any]:
-    """Config for the settings UI, with the SMTP password masked."""
+    """Config for the settings UI, with the SMTP password masked.
+
+    Alarms are projected down to the fields the UI renders. They used to be sent
+    verbatim, which meant every page load shipped each alarm's `seen` set — 2.8 MB
+    of transaction keys the browser never looks at, against 56 KB for the actual
+    insider data. A whitelist rather than dropping `seen` by name, so a future
+    bookkeeping field doesn't silently start being published too.
+    """
     cfg = load_config(path)
     email = dict(cfg["email"])
     email["password"] = _MASK if email.get("password") else ""
-    return {"email": email, "ntfy": cfg["ntfy"], "alarms": cfg["alarms"]}
+    return {
+        "email": email,
+        "ntfy": cfg["ntfy"],
+        "alarms": [_public_alarm(a) for a in cfg["alarms"]],
+    }
 
 
 def save_settings(path: Path, incoming: dict[str, Any]) -> None:

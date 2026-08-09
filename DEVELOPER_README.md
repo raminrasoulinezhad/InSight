@@ -406,6 +406,27 @@ over the enabled free channels:
   with the InSight logo (CID-embedded) and a sentence per transaction.
 - **ntfy** — a free push topic (`https://ntfy.sh/<topic>`), no credentials.
 
+**Alarms only look back `ALERT_HORIZON_DAYS` (90).** Each alarm remembers a `seen`
+set of transaction keys so a trade alerts once; that set used to be re-baselined
+to the alarm's *entire* matching history on every fire, so it grew forever — 103
+alarms reached 28,604 keys and a 3.1 MB `notify.json`, re-read and re-written on
+every scrape. Bounding the scan to the horizon means a key older than that can
+never fire again and is therefore safe to forget, so `seen` now tracks recent
+activity instead of all time (28,604 → 1,731 keys, 2.8 MB → 0.2 MB on a real
+config; stale keys are dropped on the next scrape, so upgrades self-migrate).
+
+The trade-off is deliberate: a scrape that backfills a genuinely old filing
+(SEDI serves up to 24 months) will not alert on it. An alert about a trade from
+last year is noise, not news.
+
+**`/api/notify/config` publishes a projection, not the stored alarm.** It used to
+return alarms verbatim, so every page load shipped all those `seen` keys to a
+browser that never reads them — 2.8 MB against 56 KB for the actual insider data,
+making it the single largest payload in the app. `public_config` now whitelists
+the fields the UI renders (id, type, label, name, exchange, ticker, created),
+taking that to ~16 KB. A whitelist rather than dropping `seen` by name, so a new
+bookkeeping field doesn't silently start being published.
+
 Every notification's **title** (email subject + ntfy title) is `InSight:
 <target>` — it always leads with InSight and names *what* fired (the company name
 or the person), never a bare count of trades. Each generated notification is
