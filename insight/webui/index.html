@@ -40,7 +40,12 @@
     padding:8px 16px; font-size:14px; cursor:pointer; margin-bottom:-1px;
   }
   .tabs button:hover { color:var(--text); }
-  .tabs button.active { color:var(--text); border-bottom-color:var(--accent); }
+  .tabs button[data-view].active { color:var(--text); border-bottom-color:var(--accent); }
+  .back-btn { margin-left:auto; align-self:center; margin-bottom:4px;
+    border:1px solid var(--line) !important; border-radius:7px; padding:4px 12px !important;
+    font-size:12px !important; color:var(--muted); }
+  .back-btn:hover:not(:disabled) { border-color:var(--accent) !important; color:var(--accent); }
+  .back-btn:disabled { opacity:.35; cursor:default; }
   .stats { display:flex; gap:18px; margin-top:12px; flex-wrap:wrap; }
   .stat b { color:var(--text); font-size:16px; }
   .stat span { color:var(--muted); font-size:12px; margin-left:4px; }
@@ -87,6 +92,33 @@
   .sedi-link:hover { border-color:var(--accent); color:var(--accent); }
   .company-head .bell { margin-left:6px; }
   .company-head .del-co { margin-left:8px; }
+  /* cross-links between the Companies and Insiders tabs */
+  .xnav { background:none; border:0; padding:0; font:inherit; color:inherit;
+    cursor:pointer; text-align:left; border-bottom:1px dotted var(--line); }
+  .xnav:hover { color:var(--accent); border-bottom-color:var(--accent); }
+  .xnav-co { display:block; width:100%; border-bottom:0; }
+  .xnav-co:hover .nm { color:var(--accent); }
+  /* per-company notes */
+  .note-btn { background:transparent; border:1px solid var(--line); border-radius:6px;
+    padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer; margin-left:6px;
+    filter:grayscale(1) opacity(.6); }
+  .note-btn:hover { border-color:var(--accent); filter:none; }
+  .note-btn.on { border-color:var(--accent); filter:none; background:var(--panel2); }
+  .note-bar { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:10px; padding:8px 12px; margin-bottom:12px; }
+  .note-bar.editing { border-left-color:var(--accent); }
+  .note-view { margin:0; padding-left:18px; font-size:13px; line-height:1.55; }
+  .note-view li { margin:1px 0; }
+  .note-ta { width:100%; box-sizing:border-box; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:7px; padding:8px 10px; font-size:13px;
+    line-height:1.55; font-family:inherit; resize:vertical; }
+  .note-ta:focus { outline:none; border-color:var(--accent); }
+  .note-actions { display:flex; align-items:center; gap:8px; margin-top:6px; }
+  .note-hint { color:var(--muted); font-size:11px; margin-right:auto; }
+  .note-actions button { background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; padding:4px 12px; font-size:12px; cursor:pointer; }
+  .note-actions .note-save { border-color:var(--accent); color:var(--accent); }
+  .note-actions button:hover { border-color:var(--accent); }
   /* alarms / settings */
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:16px 18px; margin-bottom:20px; max-width:620px; }
@@ -116,8 +148,8 @@
   }
   .card.buyback { border-color:var(--buyback); }
   .who { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
-  .who .nm { font-weight:600; }
-  .who .role { color:var(--muted); font-size:12px; }
+  .who .nm { font-weight:600; display:block; }
+  .who .role { color:var(--muted); font-size:12px; display:block; }
   .badge { font-size:10px; text-transform:uppercase; letter-spacing:.4px;
     padding:2px 6px; border-radius:5px; white-space:nowrap; }
   .badge.individual { background:#1b2733; color:var(--accent); }
@@ -143,15 +175,15 @@
   /* per-company charts + transaction table */
   .charts { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
   .chart { flex:1 1 320px; min-width:280px; background:var(--panel);
-    border:1px solid var(--line); border-radius:10px; padding:10px 12px 6px; }
-  .chart-h { color:var(--muted); font-size:11px; margin-bottom:4px; }
+    border:1px solid var(--line); border-radius:10px; padding:7px 10px 5px; }
+  .chart-h { color:var(--muted); font-size:11px; margin-bottom:2px; }
   .svg-chart { width:100%; height:auto; display:block; }
   .svg-chart .axis { stroke:var(--line); stroke-width:1; }
-  .svg-chart line.tl-buy, .svg-chart line.tl-sell { stroke-width:2; }
-  .svg-chart .tl-buy, .svg-chart circle.tl-buy { stroke:var(--buy); fill:var(--buy); }
-  .svg-chart .tl-sell, .svg-chart circle.tl-sell { stroke:var(--sell); fill:var(--sell); }
-  .svg-chart circle { stroke:none; }
-  .svg-chart text { fill:var(--muted); font-size:8px; }
+  /* dots sit on the axis and overlap when trades cluster — translucent fill so
+     a busy stretch reads as denser colour instead of one flat blob */
+  .svg-chart circle { stroke:none; fill-opacity:.75; }
+  .svg-chart circle.tl-buy { fill:var(--buy); }
+  .svg-chart circle.tl-sell { fill:var(--sell); }
   .txn-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
   .txn-table { width:100%; border-collapse:collapse; font-size:13px; }
   .txn-table th, .txn-table td { padding:7px 10px; text-align:left; white-space:nowrap;
@@ -215,8 +247,10 @@
   </div>
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
-    <button data-view="people">People</button>
+    <button data-view="people">Insiders</button>
     <button data-view="alarms">Alarms</button>
+    <button id="back" class="back-btn" disabled
+      title="Go back to where you were (Alt+←)">← Back</button>
   </div>
   <div class="stats">
     <div class="stat"><b id="s-cov">–</b><span id="l-cov">companies with activity</span></div>
@@ -233,13 +267,13 @@
     </div>
     <select id="range" title="Show transactions from this period">
       <option value="d7">Last week</option>
-      <option value="d14">Last 2 weeks</option>
+      <option value="d14" selected>Last 2 weeks</option>
       <option value="d21">Last 3 weeks</option>
       <option value="1">Last month</option>
       <option value="3">Last 3 months</option>
       <option value="6">Last 6 months</option>
       <option value="12">Last year</option>
-      <option value="24" selected>Last 2 years</option>
+      <option value="24">Last 2 years</option>
     </select>
   </div>
   <div class="controls adder">
@@ -271,8 +305,15 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"24",
-              notify:null, alarmKeys:new Set(), alarmById:{}, sediPages:new Set() };
+let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"d14",
+              notify:null, alarmKeys:new Set(), alarmById:{}, sediPages:new Set(),
+              // per-company notes: saved text, which editors are open, and any
+              // unsaved draft (kept so a re-render — filter/search — never eats
+              // what you were typing)
+              notes:{}, notesOpen:new Set(), noteDraft:{},
+              // back-stack of previous {view,q,filter,range}, plus the kind of
+              // the last step (so typing bursts collapse) and any pending jump
+              nav:[], navKind:null, jump:null };
 
 // Alarm identity — must match notify.alarm_key on the backend.
 const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -285,6 +326,83 @@ function bellBtn(type, d){
     : `data-atype="company" data-exch="${esc(d.exch)}" data-ticker="${esc(d.ticker)}"`;
   return `<button class="bell${on?' on':''}" ${attrs} data-label="${esc(d.label)}"
     title="${on?'Remove alarm — you are notified of new transactions':'Set an alarm for new transactions'}">🔔</button>`;
+}
+
+/* ---- per-company notes -------------------------------------------------- */
+// Your own research, kept above the company's activity. Stored server-side as
+// plain text (see insight/notes.py); the bullets are purely a UI convention —
+// one "• " per line — so the note stays readable if ever opened by hand.
+const BULLET = "• ";
+const noteKey = (ex, tk) => `${(ex||"").toUpperCase()}:${(tk||"").toUpperCase()}`;
+
+async function loadNotes(){
+  try {
+    const d = await (await fetch("/api/notes")).json();
+    STATE.notes = d.notes || {};
+  } catch(e){ STATE.notes = {}; }   // notes are optional — never block the feed
+}
+
+// Every non-blank line gets exactly one bullet, so pasted text and hand-typed
+// text end up looking the same.
+function bulletize(text){
+  return (text||"").split("\n")
+    .map(stripBullet)
+    .filter(l => l !== "")
+    .map(l => BULLET + l).join("\n");
+}
+
+// Drop indentation and any bullet marker the line already carries, so a line
+// is never double-bulleted and pasted text lands flush.
+const stripBullet = l => l.replace(/^\s*(?:[•\-*]\s*)?/, "").trim();
+
+const noteLines = text => (text||"").split("\n").map(stripBullet).filter(Boolean);
+
+function noteBtn(c){
+  const k = noteKey(c.exchange, c.ticker);
+  const has = !!STATE.notes[k], open = STATE.notesOpen.has(k);
+  return `<button class="note-btn${has?' on':''}" data-nk="${esc(k)}"
+    data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}"
+    title="${open ? 'Close the note' : (has ? 'Edit your note' : 'Add a note about this company')}">📝</button>`;
+}
+
+function renderNote(c){
+  const k = noteKey(c.exchange, c.ticker);
+  const saved = STATE.notes[k] || "";
+  if (!STATE.notesOpen.has(k)){
+    if (!saved) return "";
+    return `<div class="note-bar"><ul class="note-view">${
+      noteLines(saved).map(l => `<li>${esc(l)}</li>`).join("")}</ul></div>`;
+  }
+  const draft = STATE.noteDraft[k] !== undefined ? STATE.noteDraft[k] : (saved || BULLET);
+  return `<div class="note-bar editing">
+    <textarea class="note-ta" rows="4" data-nk="${esc(k)}"
+      placeholder="What matters about this company…"
+      aria-label="Note for ${esc(c.issuer_name)}">${esc(draft)}</textarea>
+    <div class="note-actions">
+      <span class="note-hint">Enter starts a new bullet · Ctrl+Enter saves</span>
+      <button class="note-cancel" data-nk="${esc(k)}">Cancel</button>
+      <button class="note-save" data-nk="${esc(k)}"
+        data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}">Save</button>
+    </div>
+  </div>`;
+}
+
+async function saveNote(ds){
+  const k = ds.nk;
+  const ta = document.querySelector(`.note-ta[data-nk="${CSS.escape(k)}"]`);
+  const text = bulletize(ta ? ta.value : (STATE.noteDraft[k] || ""));
+  try {
+    const r = await fetch("/api/notes", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({exchange: ds.exch, ticker: ds.ticker, text})
+    });
+    const d = await r.json();
+    if (!d.saved){ toast(d.msg || "Note not saved."); return; }
+    if (text) STATE.notes[k] = text; else delete STATE.notes[k];
+    delete STATE.noteDraft[k];
+    STATE.notesOpen.delete(k);
+    render();
+  } catch(e){ toast("Note save failed: " + e.message); }
 }
 
 // Precompute a lowercased search string per company/box/person once when data
@@ -325,30 +443,30 @@ function txnMatchesFilter(t){
   return true;
 }
 
-const dayLbl = ms => new Date(ms).toISOString().slice(0,10);
-
-// Graph 1 — every buy/sell plotted on a date axis: buys as green lollipops above
-// the baseline, sells as red below, stem height proportional to share count.
+// Graph 1 — every buy/sell as a dot sitting ON a single date axis: a compact
+// "note bar" rather than a lollipop chart. Position = when, colour = side,
+// radius = share count (so magnitude survives losing the stems). Kept to one
+// thin strip so a company card stays scannable at a glance.
 function svgTimeline(txns){
-  const W = 600, H = 57, padX = 40, padTop = 8, padBot = 13;
-  const half = (H - padTop - padBot) / 2, mid = padTop + half;
+  // No axis labels at all — the strip is a shape to glance at, and the table
+  // below carries every exact date and share count. So the dots get the full
+  // width, inset only enough that the widest one can't clip.
+  const W = 600, H = 20, mid = H / 2, rMin = 1.6, rMax = 6, padX = rMax + 1;
   const times = txns.map(t => Date.parse(t.date));
   let minT = Math.min(...times), maxT = Math.max(...times);
   if (minT === maxT){ minT -= 864e5; maxT += 864e5; }   // single date → pad ±1d
   const maxSh = Math.max(...txns.map(t => t.shares||0)) || 1;
+  // sqrt so a dot's *area* tracks share count — linear radius over-weights the
+  // big trades and makes everything else vanish.
   const marks = txns.map(t => {
-    const x = padX + (Date.parse(t.date)-minT)/(maxT-minT)*(W-padX-10);
-    const h = (t.shares/maxSh) * (half - 4);
-    const up = t.side === "buy", y2 = up ? mid-h : mid+h, cls = up ? "buy" : "sell";
-    return `<line class="tl-${cls}" x1="${x.toFixed(1)}" y1="${mid}" x2="${x.toFixed(1)}" y2="${y2.toFixed(1)}"/>`
-         + `<circle class="tl-${cls}" cx="${x.toFixed(1)}" cy="${y2.toFixed(1)}" r="2"/>`;
+    const x = padX + (Date.parse(t.date)-minT)/(maxT-minT)*(W-padX*2);
+    const r = rMin + Math.sqrt((t.shares||0)/maxSh) * (rMax - rMin);
+    const cls = t.side === "buy" ? "buy" : "sell";
+    return `<circle class="tl-${cls}" cx="${x.toFixed(1)}" cy="${mid}" r="${r.toFixed(1)}"/>`;
   }).join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="svg-chart">
-    <line class="axis" x1="${padX}" y1="${mid}" x2="${W-6}" y2="${mid}"/>
+    <line class="axis" x1="0" y1="${mid}" x2="${W}" y2="${mid}"/>
     ${marks}
-    <text x="4" y="${padTop+4}">${fmtShares(maxSh)} sh</text>
-    <text x="${padX}" y="${H-8}">${dayLbl(minT)}</text>
-    <text x="${W-6}" y="${H-8}" text-anchor="end">${dayLbl(maxT)}</text>
   </svg>`;
 }
 
@@ -357,7 +475,7 @@ function renderCharts(rows){
   if (!bs.length) return `<div class="empty">No dated buy/sell share activity to chart.</div>`;
   return `<div class="charts">
     <div class="chart">
-      <div class="chart-h">Transactions over time — buys (green) above, sells (red) below · by shares</div>
+      <div class="chart-h">Transactions over time — buys (green), sells (red) · dot size = shares</div>
       ${svgTimeline(bs)}
     </div>
   </div>`;
@@ -370,9 +488,15 @@ function renderTxnTable(rows){
     const kind = t.is_issuer_buyback ? "buyback"
       : (t.entity_type === "institution" ? "institution" : "");
     const badge = kind ? `<span class="t-badge ${kind}">${kind}</span>` : "";
+    // A buyback's "insider" is the issuer itself, and the Insiders tab excludes
+    // those by design — so it stays plain text rather than a link to nowhere.
+    const who = t.is_issuer_buyback
+      ? esc(t.insider_name)
+      : `<button class="xnav" data-person="${esc(t.insider_name)}"
+           title="See every company ${esc(t.insider_name)} traded">${esc(t.insider_name)}</button>`;
     return `<tr>
       <td class="t-date">${esc(t.date||"—")}</td>
-      <td>${esc(t.insider_name)}${badge}</td>
+      <td>${who}${badge}</td>
       <td class="t-role">${esc(t.insider_role||"—")}</td>
       <td class="${sideCls}">${esc(t.type||t.side)}</td>
       <td class="t-num">${fmtShares(t.shares)}</td>
@@ -421,10 +545,12 @@ function renderCompany(c){
       <span class="sub">${nIns} · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
       ${warn}
       ${sediBtn}
+      ${noteBtn(c)}
       ${bellBtn("company", {exch:c.exchange, ticker:c.ticker, label:c.issuer_name})}
       <button class="del-co" title="Remove from watchlist"
         data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}" data-name="${esc(c.issuer_name)}">✕ Remove</button>
     </div>
+    ${renderNote(c)}
     ${body}
   </section>`;
 }
@@ -477,10 +603,11 @@ function renderPersonCompany(c){
   return `
   <div class="card">
     <div class="who">
-      <div>
-        <div class="nm">${esc(c.issuer_name)}</div>
-        <div class="role">${esc(c.exchange)}:${esc(c.ticker)}</div>
-      </div>
+      <button class="xnav xnav-co" data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}"
+        data-name="${esc(c.issuer_name)}" title="Open ${esc(c.issuer_name)} on the Companies tab">
+        <span class="nm">${esc(c.issuer_name)}</span>
+        <span class="role">${esc(c.exchange)}:${esc(c.ticker)}</span>
+      </button>
     </div>
     <div class="bar">
       <div class="b" style="width:${buyPct}%"></div>
@@ -678,10 +805,113 @@ async function load(){
     if (STATE.view === "people"){ indexPeople(d); STATE.people = d; }
     else { indexCompanies(d); STATE.data = d; }
     render();
+    reportJump();
   } catch(e){
     document.getElementById("feed").innerHTML =
       `<div class="nodata">Failed to load data: ${esc(e.message)}</div>`;
   }
+}
+
+/* ---- cross-navigation + a short back-stack ------------------------------- */
+// The two tabs are the same trades sliced differently, so following a name from
+// one to the other is the natural move: an insider's company card opens that
+// company, a company's transaction row opens that insider. Each jump just sets
+// the tab + search box — no new endpoint, and the target is filtered to exactly
+// what you clicked.
+const NAV_MAX = 10;
+
+const navSnapshot = () =>
+  ({view:STATE.view, q:STATE.q, filter:STATE.filter, range:STATE.range});
+const sameNav = (a, b) =>
+  a.view === b.view && a.q === b.q && a.filter === b.filter && a.range === b.range;
+const sameButQuery = (a, b) =>
+  a.view === b.view && a.filter === b.filter && a.range === b.range;
+
+// Called *before* a state change, so it records where you're leaving from.
+function pushNav(kind){
+  const snap = navSnapshot();
+  const last = STATE.nav[STATE.nav.length - 1];
+  if (last && sameNav(last, snap)){ STATE.navKind = kind; return; }
+  // A burst of typing is one step, not one per keystroke — otherwise a search
+  // would flush the whole stack before you could go back anywhere useful.
+  if (kind === "search" && STATE.navKind === "search" && last && sameButQuery(last, snap)){
+    return;
+  }
+  STATE.nav.push(snap);
+  if (STATE.nav.length > NAV_MAX) STATE.nav.shift();   // keep the newest NAV_MAX
+  STATE.navKind = kind;
+  syncBackBtn();
+}
+
+function syncBackBtn(){
+  const b = document.getElementById("back");
+  b.disabled = STATE.nav.length === 0;
+  b.textContent = STATE.nav.length ? `← Back (${STATE.nav.length})` : "← Back";
+}
+
+// Push the DOM controls back into agreement with STATE after a jump or a back.
+function syncControls(){
+  document.querySelectorAll("#tabs button[data-view]").forEach(x =>
+    x.classList.toggle("active", x.dataset.view === STATE.view));
+  document.querySelectorAll("#filter button").forEach(x =>
+    x.classList.toggle("active", x.dataset.f === STATE.filter));
+  document.getElementById("q").value = STATE.q;
+  document.getElementById("range").value = STATE.range;
+  applyViewChrome();
+}
+
+function setQuery(q){ STATE.q = q; STATE.qnorm = q.trim().toLowerCase(); }
+
+function goToCompany(exch, ticker, name){
+  pushNav("jump");
+  STATE.view = "companies";
+  setQuery(`${exch}:${ticker}`);
+  STATE.filter = "all";           // a stale buy/sell filter could hide the target
+  STATE.jump = {kind:"company", key:`${exch}:${ticker}`.toUpperCase(), label:name};
+  syncControls();
+  load();
+}
+
+function goToPerson(name){
+  pushNav("jump");
+  STATE.view = "people";
+  setQuery(name);
+  STATE.filter = "all";
+  STATE.jump = {kind:"person", label:name};
+  syncControls();
+  load();
+}
+
+// The Companies tab is watchlist-gated while the Insiders tab spans everything
+// scraped, so a jump can legitimately land on nothing. Say why instead of
+// showing an empty feed.
+function reportJump(){
+  const j = STATE.jump;
+  if (!j) return;
+  STATE.jump = null;
+  if (j.kind === "company"){
+    const found = (STATE.data?.companies || []).some(
+      c => `${c.exchange}:${c.ticker}`.toUpperCase() === j.key);
+    if (!found) toast(`${j.label} isn't on your watchlist — add it to open its page.`);
+  } else {
+    const want = j.label.trim().toLowerCase();
+    const found = (STATE.people?.people || []).some(
+      p => (p.insider_name||"").trim().toLowerCase() === want);
+    if (!found) toast(`No trades by ${j.label} in this period — try a wider time range.`);
+  }
+}
+
+async function goBack(){
+  if (!STATE.nav.length) return;
+  const snap = STATE.nav.pop();
+  STATE.navKind = "back";
+  STATE.view = snap.view;
+  setQuery(snap.q);
+  STATE.filter = snap.filter;
+  STATE.range = snap.range;
+  syncControls();
+  syncBackBtn();
+  await load();
 }
 
 /* ---- add-company-by-name flow with disambiguation picker ---- */
@@ -769,12 +999,87 @@ async function removeCompany(exchange, ticker, name){
   } catch(e){ toast("Remove failed: " + e.message); }
 }
 
-document.getElementById("feed").addEventListener("click", e => {
+const feed = document.getElementById("feed");
+
+feed.addEventListener("click", e => {
   const bell = e.target.closest(".bell");
   if (bell){ toggleAlarm(bell.dataset); return; }
+  const xnav = e.target.closest(".xnav");
+  if (xnav){
+    if (xnav.dataset.person) goToPerson(xnav.dataset.person);
+    else goToCompany(xnav.dataset.exch, xnav.dataset.ticker, xnav.dataset.name);
+    return;
+  }
+  const note = e.target.closest(".note-btn");
+  if (note){
+    const k = note.dataset.nk;
+    if (STATE.notesOpen.has(k)){ STATE.notesOpen.delete(k); delete STATE.noteDraft[k]; }
+    else STATE.notesOpen.add(k);
+    render();
+    // focus the editor and park the caret at the end of the last bullet
+    const ta = document.querySelector(`.note-ta[data-nk="${CSS.escape(k)}"]`);
+    if (ta){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    return;
+  }
+  const save = e.target.closest(".note-save");
+  if (save){ saveNote(save.dataset); return; }
+  const cancel = e.target.closest(".note-cancel");
+  if (cancel){
+    STATE.notesOpen.delete(cancel.dataset.nk);
+    delete STATE.noteDraft[cancel.dataset.nk];
+    render();
+    return;
+  }
   const btn = e.target.closest(".del-co");
   if (btn && btn.dataset.ticker && !btn.classList.contains("del-alarm"))
     removeCompany(btn.dataset.exch, btn.dataset.ticker, btn.dataset.name);
+});
+
+// Notes are a bullet list by default: Enter opens the next bullet, and
+// backspacing into an empty bullet removes it rather than stranding a "• ".
+feed.addEventListener("keydown", e => {
+  const ta = e.target.closest(".note-ta");
+  if (!ta) return;
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)){
+    e.preventDefault();
+    const btn = ta.parentElement.querySelector(".note-save");
+    if (btn) saveNote(btn.dataset);
+    return;
+  }
+  if (e.key === "Enter"){
+    e.preventDefault();
+    const s = ta.selectionStart, t = ta.value;
+    ta.value = t.slice(0, s) + "\n" + BULLET + t.slice(ta.selectionEnd);
+    ta.setSelectionRange(s + 1 + BULLET.length, s + 1 + BULLET.length);
+    STATE.noteDraft[ta.dataset.nk] = ta.value;
+    return;
+  }
+  if (e.key === "Escape"){
+    STATE.notesOpen.delete(ta.dataset.nk);
+    delete STATE.noteDraft[ta.dataset.nk];
+    render();
+    return;
+  }
+  if (e.key === "Backspace" && ta.selectionStart === ta.selectionEnd){
+    const s = ta.selectionStart, t = ta.value;
+    const lineStart = t.lastIndexOf("\n", s - 1) + 1;
+    // caret sits just past a bullet marker with nothing typed after it
+    if (s === lineStart + BULLET.length && t.slice(lineStart, s) === BULLET){
+      e.preventDefault();
+      const cut = lineStart === 0 ? 0 : lineStart - 1;   // also eat the newline
+      ta.value = t.slice(0, cut) + t.slice(s);
+      ta.setSelectionRange(cut, cut);
+      STATE.noteDraft[ta.dataset.nk] = ta.value;
+    }
+  }
+});
+
+feed.addEventListener("input", e => {
+  const ta = e.target.closest(".note-ta");
+  if (!ta) return;
+  // an emptied box still offers a bullet to type on
+  if (ta.value === "") ta.value = BULLET;
+  STATE.noteDraft[ta.dataset.nk] = ta.value;
 });
 
 addToggle.addEventListener("click", showAdder);
@@ -847,31 +1152,44 @@ sediBtn.addEventListener("click", () => {
 
 let qTimer = null;
 document.getElementById("q").addEventListener("input", e => {
+  pushNav("search");               // records the query you're leaving, not each letter
   STATE.q = e.target.value;
   STATE.qnorm = STATE.q.trim().toLowerCase();
   clearTimeout(qTimer);            // debounce so huge lists don't re-render per keystroke
   qTimer = setTimeout(render, 90);
 });
 document.getElementById("range").addEventListener("change", e => {
+  pushNav("range");
   STATE.range = e.target.value; load();
 });
 document.querySelectorAll("#filter button").forEach(b => {
   b.addEventListener("click", () => {
+    if (b.classList.contains("active")) return;
+    pushNav("filter");
     document.querySelectorAll("#filter button").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     STATE.filter = b.dataset.f; render();
   });
 });
-document.querySelectorAll("#tabs button").forEach(b => {
+// [data-view] so the Back button sharing this row isn't mistaken for a tab.
+document.querySelectorAll("#tabs button[data-view]").forEach(b => {
   b.addEventListener("click", () => {
     if (b.classList.contains("active")) return;
-    document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("active"));
+    pushNav("tab");
+    document.querySelectorAll("#tabs button[data-view]").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     STATE.view = b.dataset.view;
     applyViewChrome();
     document.getElementById("feed").innerHTML = `<div class="nodata">Loading…</div>`;
     load();
   });
+});
+
+document.getElementById("back").addEventListener("click", goBack);
+document.addEventListener("keydown", e => {
+  // Alt+← matches the browser's own back gesture; the app owns it because the
+  // page never navigates, so the browser's history is empty.
+  if (e.altKey && e.key === "ArrowLeft"){ e.preventDefault(); goBack(); }
 });
 
 // The search/filter/add-company controls only apply to the data tabs; hide them
@@ -883,9 +1201,12 @@ function applyViewChrome(){
   document.getElementById("q").placeholder = STATE.view === "people"
     ? "Filter by insider name, company, or ticker…"
     : "Filter by company, ticker, or insider name…";
+  syncBackBtn();
 }
 
-loadAlarms().then(load);   // load alarms first so 🔔 buttons render their state
+// Alarms and notes first, so the 🔔 and 📝 buttons render their state on the
+// very first paint instead of flipping on a second pass.
+Promise.all([loadAlarms(), loadNotes()]).then(load);
 </script>
 </body>
 </html>
