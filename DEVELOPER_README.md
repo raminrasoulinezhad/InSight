@@ -543,6 +543,14 @@ are intentionally isolated behind pure helpers (`_extract_tickers`,
 `_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
 inputs rather than live HTTP.
 
+`tests/test_app_http.py` covers the HTTP layer by binding a real
+`ThreadingHTTPServer` on an ephemeral port and talking to it over loopback —
+routing, status codes and the JSON shapes the UI depends on. Every path the
+handler touches (`DATA_DIR`, `CONFIG`, and the `paths.*_file()` helpers) is
+monkeypatched into `tmp_path`, so a test can never read or write the developer's
+own app folder, and `_do_refresh` is stubbed because the real job launches a
+browser.
+
 ## Themes
 
 Every colour in the stylesheet comes from a CSS variable, so a theme is nothing
