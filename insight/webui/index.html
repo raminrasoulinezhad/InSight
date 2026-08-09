@@ -5,18 +5,99 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>InSight — Insider Transactions</title>
 <link rel="icon" type="image/png" href="/icon.png" />
+<script id="theme-boot">
+  // Runs before the stylesheet paints anything, so a non-default theme doesn't
+  // flash the dark palette first. The server copy is authoritative and is
+  // reconciled once the app loads; this is only the cached last-known value.
+  try {
+    var t = localStorage.getItem("insight.theme");
+    if (t) document.documentElement.setAttribute("data-theme", t);
+  } catch (e) { /* private mode — fall back to the :root default */ }
+</script>
 <style>
-  :root {
+  /* ---- themes -----------------------------------------------------------
+     Every colour in the app comes from one of these variables, so a theme is
+     purely a re-declaration of the same set — nothing else in the stylesheet
+     needs to know which one is active. A theme MUST define all of them: a
+     missing variable silently falls back to the :root (Dark) value, which is
+     how a light theme ends up with one unreadable dark patch. tests/webui
+     asserts every theme declares the full set.
+
+     --*-dim are the tinted backgrounds behind badges; --accent-ink is the text
+     that sits ON an accent-filled button, so it has to contrast with --accent
+     rather than with --bg. */
+  :root, [data-theme="dark"] {
     --bg:#0e1116; --panel:#161b22; --panel2:#1c232d; --line:#2a323d;
-    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff;
-    --buy:#3fb950; --buy-dim:#1f3d27; --sell:#f85149; --sell-dim:#3d1f1f;
-    --inst:#d29922; --buyback:#a371f7;
+    --text:#e6edf3; --muted:#8b949e;
+    --accent:#58a6ff; --accent-ink:#06121f; --accent-dim:#1b2733;
+    --buy:#3fb950; --sell:#f85149;
+    --inst:#d29922; --inst-dim:#33290e;
+    --buyback:#a371f7; --buyback-dim:#2a1e3d;
+    --hover:#243041; --shadow:rgba(0,0,0,.5);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Daytime reading. GitHub's light palette — already tuned for contrast. */
+  [data-theme="light"] {
+    --bg:#ffffff; --panel:#f6f8fa; --panel2:#eaeef2; --line:#d0d7de;
+    --text:#1f2328; --muted:#59636e;
+    --accent:#0969da; --accent-ink:#ffffff; --accent-dim:#ddf4ff;
+    --buy:#1a7f37; --sell:#cf222e;
+    --inst:#7d4e00; --inst-dim:#fff8c5;
+    --buyback:#8250df; --buyback-dim:#fbefff;
+    --hover:#eaeef2; --shadow:rgba(31,35,40,.15);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Trading-desk phosphor: amber on near-black, monospaced like a real
+     terminal. The only theme that changes the typeface. */
+  [data-theme="terminal"] {
+    --bg:#05080a; --panel:#0a1014; --panel2:#0f181d; --line:#1b2a30;
+    --text:#cdf5d8; --muted:#6f9c7d;
+    --accent:#ffb000; --accent-ink:#05080a; --accent-dim:#2a1f00;
+    --buy:#00e676; --sell:#ff5252;
+    --inst:#ffb000; --inst-dim:#2a1f00;
+    --buyback:#b388ff; --buyback-dim:#1f1630;
+    --hover:#12202a; --shadow:rgba(0,0,0,.7);
+    --font:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  /* The financial press: salmon paper, teal ink. For long reading sessions. */
+  [data-theme="newsprint"] {
+    --bg:#fff1e5; --panel:#fff8f2; --panel2:#f7e3d3; --line:#e0cdbb;
+    --text:#33302e; --muted:#6b625c;
+    --accent:#0d7680; --accent-ink:#ffffff; --accent-dim:#d9eced;
+    --buy:#1a7f4b; --sell:#cc2b2b;
+    --inst:#96690b; --inst-dim:#f5e6c8;
+    --buyback:#7a4fa3; --buyback-dim:#ece2f5;
+    --hover:#f7e3d3; --shadow:rgba(51,48,46,.18);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Softer than Dark — navy rather than black, for late sessions. */
+  [data-theme="midnight"] {
+    --bg:#0b1220; --panel:#121c2e; --panel2:#1a2740; --line:#26364f;
+    --text:#e3e9f2; --muted:#8896ad;
+    --accent:#7aa2f7; --accent-ink:#0b1220; --accent-dim:#1c2942;
+    --buy:#9ece6a; --sell:#f7768e;
+    --inst:#e0af68; --inst-dim:#2e2716;
+    --buyback:#bb9af7; --buyback-dim:#2a2140;
+    --hover:#1e2b45; --shadow:rgba(0,0,0,.55);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* 🍁 White and flag red. Sell keeps a deeper crimson so it stays distinct
+     from the red used for links and the active tab. */
+  [data-theme="canadian"] {
+    --bg:#ffffff; --panel:#fff6f6; --panel2:#ffeaea; --line:#f2cccc;
+    --text:#24110f; --muted:#7d5b5b;
+    --accent:#d80621; --accent-ink:#ffffff; --accent-dim:#ffe3e6;
+    --buy:#0b6e4f; --sell:#a4161a;
+    --inst:#8a5a00; --inst-dim:#fff3cd;
+    --buyback:#7b3fa0; --buyback-dim:#f2e6f7;
+    --hover:#ffeaea; --shadow:rgba(216,6,33,.15);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; }
   body {
     background:var(--bg); color:var(--text);
-    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font:14px/1.45 var(--font);
     display:flex; flex-direction:column; height:100vh;
   }
   header {
@@ -85,7 +166,7 @@
   .bell { background:transparent; border:1px solid var(--line); border-radius:6px;
     padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer; filter:grayscale(1) opacity(.6); }
   .bell:hover { border-color:var(--accent); filter:none; }
-  .bell.on { border-color:var(--inst); filter:none; background:#33290e; }
+  .bell.on { border-color:var(--inst); filter:none; background:var(--inst-dim); }
   .sedi-link { background:transparent; color:var(--muted); border:1px solid var(--line);
     border-radius:6px; padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer;
     text-decoration:none; margin-left:6px; }
@@ -129,7 +210,7 @@
     flex:1 1 200px; background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:7px; padding:7px 10px; font-size:13px; }
   .frow input:focus { outline:none; border-color:var(--accent); }
-  .btn { background:var(--accent); color:#06121f; border:0; border-radius:8px;
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:8px;
     padding:8px 16px; font-weight:600; cursor:pointer; font-size:13px; }
   .btn.ghost { background:var(--panel2); color:var(--text); border:1px solid var(--line); }
   .alarm-row { display:flex; align-items:center; gap:10px; padding:10px 12px;
@@ -152,9 +233,9 @@
   .who .role { color:var(--muted); font-size:12px; display:block; }
   .badge { font-size:10px; text-transform:uppercase; letter-spacing:.4px;
     padding:2px 6px; border-radius:5px; white-space:nowrap; }
-  .badge.individual { background:#1b2733; color:var(--accent); }
-  .badge.institution { background:#33290e; color:var(--inst); }
-  .badge.buyback { background:#2a1e3d; color:var(--buyback); }
+  .badge.individual { background:var(--accent-dim); color:var(--accent); }
+  .badge.institution { background:var(--inst-dim); color:var(--inst); }
+  .badge.buyback { background:var(--buyback-dim); color:var(--buyback); }
   .bar { display:flex; height:8px; border-radius:5px; overflow:hidden; background:var(--panel2); }
   .bar .b { background:var(--buy); }
   .bar .s { background:var(--sell); }
@@ -198,8 +279,8 @@
   .txn-table .t-role, .txn-table .t-date { color:var(--muted); }
   .t-badge { font-size:9px; text-transform:uppercase; letter-spacing:.3px; margin-left:6px;
     padding:1px 5px; border-radius:4px; vertical-align:middle; }
-  .t-badge.institution { background:#33290e; color:var(--inst); }
-  .t-badge.buyback { background:#2a1e3d; color:var(--buyback); }
+  .t-badge.institution { background:var(--inst-dim); color:var(--inst); }
+  .t-badge.buyback { background:var(--buyback-dim); color:var(--buyback); }
   /* add-company picker */
   .adder { position:relative; }
   .add-toggle { background:var(--panel2); color:var(--text); border:1px solid var(--line);
@@ -208,16 +289,16 @@
   .add-row { display:flex; gap:8px; flex:1; }
   .add-row.hidden { display:none; }
   .add-row input { flex:1 1 280px; }
-  .add-row button { background:var(--accent); color:#06121f; border:0; border-radius:8px;
+  .add-row button { background:var(--accent); color:var(--accent-ink); border:0; border-radius:8px;
     padding:0 16px; font-weight:600; cursor:pointer; }
   .picker { position:absolute; z-index:10; top:calc(100% + 6px); left:0; right:0;
     background:var(--panel2); border:1px solid var(--line); border-radius:10px;
-    max-height:340px; overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.5); }
+    max-height:340px; overflow-y:auto; box-shadow:0 12px 30px var(--shadow); }
   .picker.hidden { display:none; }
   .cand { display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer;
     border-bottom:1px solid var(--line); }
   .cand:last-child { border-bottom:0; }
-  .cand:hover { background:#243041; }
+  .cand:hover { background:var(--hover); }
   .cand .nm { flex:1; }
   .cand .nm .sub { color:var(--muted); font-size:12px; }
   .cand .flag { font-size:11px; color:var(--muted); }
@@ -231,6 +312,51 @@
   .toast.show { opacity:1; }
   footer { flex:0 0 auto; padding:8px 20px; border-top:1px solid var(--line);
     background:var(--panel); color:var(--muted); font-size:11px; }
+  /* ---- settings dialog ---- */
+  .settings-cog { margin-left:auto; font-size:15px; line-height:1; padding:5px 10px; }
+  .modal { position:fixed; inset:0; z-index:100; display:flex;
+    align-items:center; justify-content:center; padding:24px;
+    background:rgba(0,0,0,.55); }
+  .modal.hidden { display:none; }
+  .modal-card { background:var(--bg); border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 18px 50px var(--shadow); width:min(760px,100%); max-height:100%;
+    display:flex; flex-direction:column; overflow:hidden; }
+  .modal-head { display:flex; align-items:center; gap:12px; padding:14px 18px;
+    border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
+  .modal-head h2 { margin:0; font-size:16px; }
+  .modal-x { margin-left:auto; background:transparent; color:var(--muted);
+    border:1px solid var(--line); border-radius:7px; padding:3px 10px;
+    font-size:13px; cursor:pointer; }
+  .modal-x:hover { border-color:var(--accent); color:var(--accent); }
+  .modal-body { display:flex; min-height:0; flex:1 1 auto; }
+  .settings-nav { flex:0 0 150px; border-right:1px solid var(--line);
+    background:var(--panel); padding:10px 8px; display:flex; flex-direction:column; gap:2px; }
+  .settings-nav button { background:transparent; border:0; border-radius:7px;
+    color:var(--muted); text-align:left; padding:8px 12px; font-size:13px; cursor:pointer; }
+  .settings-nav button:hover { color:var(--text); background:var(--panel2); }
+  .settings-nav button.active { background:var(--panel2); color:var(--text); }
+  .settings-pane { flex:1 1 auto; padding:18px; overflow-y:auto; min-width:0; }
+  .settings-pane .panel { max-width:none; }
+  .settings-pane h3:first-child { margin-top:0; }
+  .settings-hint { color:var(--muted); font-size:12px; margin:0 0 14px; }
+  /* theme picker */
+  .theme-grid { display:grid; gap:10px;
+    grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+  .theme-card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:10px; cursor:pointer; text-align:left; font:inherit; color:var(--text);
+    display:flex; flex-direction:column; gap:8px; }
+  .theme-card:hover { border-color:var(--accent); }
+  .theme-card.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+  .theme-card .tname { font-weight:600; font-size:13px; display:flex;
+    align-items:center; gap:6px; }
+  .theme-card .tname .tick { margin-left:auto; color:var(--accent); }
+  .theme-card .tdesc { color:var(--muted); font-size:11px; line-height:1.4; }
+  /* a miniature of the app, painted with the theme's own variables */
+  .swatch { border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+  .swatch .sw-bar { height:16px; display:flex; align-items:center; gap:4px; padding:0 6px; }
+  .swatch .sw-body { height:26px; display:flex; align-items:center; gap:5px; padding:0 6px; }
+  .swatch .dot { width:9px; height:9px; border-radius:50%; }
+  .swatch .rule { height:4px; border-radius:2px; flex:1 1 auto; }
 </style>
 </head>
 <body>
@@ -244,6 +370,8 @@
     </label>
     <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Opens a visible browser; solve the CAPTCHA once if prompted. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
+    <button id="settings-open" class="refresh-btn settings-cog"
+      title="Settings — theme and notifications">⚙</button>
   </div>
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
@@ -291,6 +419,22 @@
 
 <footer id="foot"></footer>
 
+<div class="modal hidden" id="settings">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="modal-x" id="settings-close" title="Close (Esc)">✕ Close</button>
+    </div>
+    <div class="modal-body">
+      <nav class="settings-nav" id="settings-nav">
+        <button data-page="theme" class="active">Appearance</button>
+        <button data-page="notify">Notifications</button>
+      </nav>
+      <div class="settings-pane" id="settings-pane"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const fmtMoney = (v, cur) => {
   if (!v) return (cur||"") + "0";
@@ -313,7 +457,9 @@ let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"
               notes:{}, notesOpen:new Set(), noteDraft:{},
               // back-stack of previous {view,q,filter,range}, plus the kind of
               // the last step (so typing bursts collapse) and any pending jump
-              nav:[], navKind:null, jump:null };
+              nav:[], navKind:null, jump:null,
+              theme:document.documentElement.getAttribute("data-theme") || "dark",
+              settingsPage:"theme" };
 
 // Alarm identity — must match notify.alarm_key on the backend.
 const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -702,57 +848,56 @@ async function toggleAlarm(ds){
   } catch(e){ toast("Alarm failed: " + e.message); }
 }
 
+function alarmRow(a){
+  return `
+    <div class="alarm-row">
+      <span class="lbl">${esc(a.label)}</span>
+      <button class="del-co del-alarm" data-id="${esc(a.id)}" title="Delete alarm">✕ Delete</button>
+    </div>`;
+}
+
+// Companies and insiders are different things to watch — one is "any trade in
+// this stock", the other "any trade by this person, anywhere" — so the list
+// keeps them apart instead of interleaving two kinds of row.
+function alarmSection(title, rows, empty){
+  return `
+    <div class="panel">
+      <h3>${title} (${rows.length})</h3>
+      ${rows.length ? rows.map(alarmRow).join("") : `<div class="hint">${empty}</div>`}
+    </div>`;
+}
+
+// The Alarms tab is the list of what you're watching. Setting up *how* you get
+// told (email / push) lives in Settings ▸ Notifications, since that is
+// configured once and then left alone.
 function renderAlarms(){
   const n = STATE.notify || {email:{},ntfy:{},alarms:[]};
   const e = n.email || {}, y = n.ntfy || {};
   const alarms = n.alarms || [];
+  const companies = alarms.filter(a => a.type === "company");
+  const people = alarms.filter(a => a.type === "person");
   setStats(alarms.length, "alarms",
            e.enabled ? "on" : "off", "email",
            y.enabled ? "on" : "off", "push");
-  document.getElementById("datameta").textContent = "notification settings & alarms";
+  document.getElementById("datameta").textContent = "alarms you have set";
   document.getElementById("foot").textContent =
     "Alarms fire after each scrape (daily timer or Refresh) when a watched company/person has a new transaction.";
 
-  const list = alarms.length
-    ? alarms.map(a => `
-        <div class="alarm-row">
-          <span class="kind">${a.type}</span>
-          <span class="lbl">${esc(a.label)}</span>
-          <button class="del-co del-alarm" data-id="${esc(a.id)}" title="Delete alarm">✕ Delete</button>
-        </div>`).join("")
-    : `<div class="hint">No alarms yet. Use the 🔔 button on a company or an insider to add one.</div>`;
+  const channels = [e.enabled && "email", y.enabled && "push"].filter(Boolean);
+  const banner = alarms.length && !channels.length
+    ? `<div class="panel"><h3>⚠ No delivery channel is on</h3>
+         <p class="hint">These alarms will not reach you until you enable email or push
+         in <b>Settings ⚙ ▸ Notifications</b>.</p></div>`
+    : "";
 
-  document.getElementById("feed").innerHTML = `
-    <div class="panel">
-      <h3>📧 Email (SMTP)</h3>
-      <div class="frow"><label>Enabled</label><input type="checkbox" id="e-en" ${e.enabled?"checked":""}></div>
-      <div class="frow"><label>SMTP host</label><input type="text" id="e-host" value="${esc(e.smtp_host||"smtp.gmail.com")}"></div>
-      <div class="frow"><label>SMTP port</label><input type="number" id="e-port" value="${esc(e.smtp_port||587)}"></div>
-      <div class="frow"><label>Username</label><input type="email" id="e-user" value="${esc(e.username||"")}" placeholder="you@example.com"></div>
-      <div class="frow"><label>App password</label><input type="password" id="e-pass" value="${esc(e.password||"")}" placeholder="Gmail app password"></div>
-      <div class="frow"><label>From</label><input type="email" id="e-from" value="${esc(e.from||"")}" placeholder="(defaults to username)"></div>
-      <div class="frow"><label>Send to</label><input type="email" id="e-to" value="${esc(e.to||"")}" placeholder="alerts@you.com"></div>
-      <p class="hint">Gmail/Workspace: create an “App password” and use it here (normal password won’t work).</p>
-    </div>
-    <div class="panel">
-      <h3>🔔 Push (ntfy.sh)</h3>
-      <div class="frow"><label>Enabled</label><input type="checkbox" id="y-en" ${y.enabled?"checked":""}></div>
-      <div class="frow"><label>Server</label><input type="text" id="y-server" value="${esc(y.server||"https://ntfy.sh")}" placeholder="https://ntfy.sh"></div>
-      <div class="frow"><label>Topic</label><input type="text" id="y-topic" value="${esc(y.topic||"")}" placeholder="e.g. insight-alerts-pick-your-own"></div>
-      <p class="hint">Server is the host only (e.g. <code>https://ntfy.sh</code>) — <b>do not</b> include the topic. The Topic is the full path after the host: for <code>ntfy.sh/insight-alerts-pick-your-own</code>, Server is <code>https://ntfy.sh</code> and Topic is <code>insight-alerts-pick-your-own</code>. Install the ntfy app and “subscribe” to this topic. Pick a long, private topic name.</p>
-    </div>
-    <div class="frow">
-      <button class="btn" id="notify-save">Save settings</button>
-      <button class="btn ghost" id="notify-test">Send test</button>
-      <span class="meta" id="notify-msg"></span>
-    </div>
-    <div class="panel">
-      <h3>Alarms (${alarms.length})</h3>
-      ${list}
-    </div>`;
+  document.getElementById("feed").innerHTML = banner
+    + alarmSection("🏢 Companies", companies,
+        "No company alarms. Use the 🔔 button on a company to add one.")
+    + alarmSection("👤 Insiders", people,
+        "No insider alarms. Use the 🔔 button on an insider to add one.")
+    + `<p class="settings-hint">Delivery (email / push) is set up in
+         <b>Settings ⚙ ▸ Notifications</b>.</p>`;
 
-  document.getElementById("notify-save").addEventListener("click", saveNotifySettings);
-  document.getElementById("notify-test").addEventListener("click", sendNotifyTest);
   document.querySelectorAll(".del-alarm").forEach(b => b.addEventListener("click", async () => {
     const d = await (await fetch("/api/alarms?id=" + encodeURIComponent(b.dataset.id), {method:"DELETE"})).json();
     toast(d.msg || "Removed."); await loadAlarms(); render();
@@ -791,6 +936,140 @@ async function sendNotifyTest(){
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ---- settings dialog ----------------------------------------------------- */
+// One dialog, one page per concern. Appearance is instant and local;
+// Notifications is the email/push setup that used to sit on the Alarms tab —
+// it is configured once, so it belongs behind a settings door rather than in
+// front of the list you actually check.
+
+// `id` must match a [data-theme="id"] block in the stylesheet. DEFAULT_THEME is
+// also what :root declares, so the page looks right before any JS runs.
+const DEFAULT_THEME = "dark";
+const THEMES = [
+  {id:"dark",      name:"Dark",      desc:"The original. Near-black, blue accent."},
+  {id:"light",     name:"Light",     desc:"Clean and bright for daytime reading."},
+  {id:"terminal",  name:"Terminal",  desc:"Trading-desk phosphor: amber on black, monospaced.", icon:"▮"},
+  {id:"newsprint", name:"Newsprint", desc:"Salmon paper and teal ink, like the financial press."},
+  {id:"midnight",  name:"Midnight",  desc:"Navy rather than black — softer for late sessions."},
+  {id:"canadian",  name:"Canadian",  desc:"White and flag red, for the home market.", icon:"🍁"},
+];
+const themeIds = () => THEMES.map(t => t.id);
+const isTheme = id => themeIds().includes(id);
+
+// Paint immediately, then persist. The theme is mirrored into localStorage so
+// the next load applies it before first paint (see the boot script in <head>);
+// the server copy is the source of truth so it survives a cleared cache and
+// follows you to another browser.
+function applyTheme(id, {persist = true} = {}){
+  const theme = isTheme(id) ? id : DEFAULT_THEME;
+  document.documentElement.setAttribute("data-theme", theme);
+  STATE.theme = theme;
+  try { localStorage.setItem("insight.theme", theme); } catch(e){ /* private mode */ }
+  if (persist){
+    fetch("/api/settings", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({theme})
+    }).catch(() => toast("Theme applied, but could not be saved."));
+  }
+  if (!document.getElementById("settings").classList.contains("hidden")
+      && STATE.settingsPage === "theme") renderSettings();
+}
+
+async function loadTheme(){
+  try {
+    const d = await (await fetch("/api/settings")).json();
+    if (d.theme && d.theme !== STATE.theme) applyTheme(d.theme, {persist:false});
+  } catch(e){ /* keep whatever localStorage already painted */ }
+}
+
+function themeCard(t){
+  const on = STATE.theme === t.id;
+  // The swatch is painted with the theme's OWN variables via data-theme on the
+  // preview itself, so it can never drift from the real palette.
+  return `
+    <button class="theme-card${on?" active":""}" data-theme-id="${esc(t.id)}"
+      aria-pressed="${on}" title="Use the ${esc(t.name)} theme">
+      <span class="tname">${t.icon ? esc(t.icon)+" " : ""}${esc(t.name)}
+        <span class="tick">${on ? "✓" : ""}</span></span>
+      <span class="swatch" data-theme="${esc(t.id)}" style="background:var(--bg)">
+        <span class="sw-bar" style="background:var(--panel)">
+          <span class="dot" style="background:var(--accent)"></span>
+          <span class="rule" style="background:var(--line)"></span>
+        </span>
+        <span class="sw-body">
+          <span class="dot" style="background:var(--buy)"></span>
+          <span class="dot" style="background:var(--sell)"></span>
+          <span class="dot" style="background:var(--inst)"></span>
+          <span class="rule" style="background:var(--panel2)"></span>
+        </span>
+      </span>
+      <span class="tdesc">${esc(t.desc)}</span>
+    </button>`;
+}
+
+function themePage(){
+  return `<p class="settings-hint">Applies straight away and is remembered for next time.</p>
+    <div class="theme-grid">${THEMES.map(themeCard).join("")}</div>`;
+}
+
+// Same field ids the old Alarms-tab form used, so collectNotifySettings and
+// saveNotifySettings keep working unchanged — only the location moved.
+function notifyPage(){
+  const n = STATE.notify || {email:{},ntfy:{},alarms:[]};
+  const e = n.email || {}, y = n.ntfy || {};
+  return `
+    <p class="settings-hint">How InSight reaches you when an alarm fires. Which
+      companies and insiders you're watching is on the <b>Alarms</b> tab.</p>
+    <div class="panel">
+      <h3>📧 Email (SMTP)</h3>
+      <div class="frow"><label>Enabled</label><input type="checkbox" id="e-en" ${e.enabled?"checked":""}></div>
+      <div class="frow"><label>SMTP host</label><input type="text" id="e-host" value="${esc(e.smtp_host||"smtp.gmail.com")}"></div>
+      <div class="frow"><label>SMTP port</label><input type="number" id="e-port" value="${esc(e.smtp_port||587)}"></div>
+      <div class="frow"><label>Username</label><input type="email" id="e-user" value="${esc(e.username||"")}" placeholder="you@example.com"></div>
+      <div class="frow"><label>App password</label><input type="password" id="e-pass" value="${esc(e.password||"")}" placeholder="Gmail app password"></div>
+      <div class="frow"><label>From</label><input type="email" id="e-from" value="${esc(e.from||"")}" placeholder="(defaults to username)"></div>
+      <div class="frow"><label>Send to</label><input type="email" id="e-to" value="${esc(e.to||"")}" placeholder="alerts@you.com"></div>
+      <p class="hint">Gmail/Workspace: create an “App password” and use it here (normal password won’t work).</p>
+    </div>
+    <div class="panel">
+      <h3>🔔 Push (ntfy.sh)</h3>
+      <div class="frow"><label>Enabled</label><input type="checkbox" id="y-en" ${y.enabled?"checked":""}></div>
+      <div class="frow"><label>Server</label><input type="text" id="y-server" value="${esc(y.server||"https://ntfy.sh")}" placeholder="https://ntfy.sh"></div>
+      <div class="frow"><label>Topic</label><input type="text" id="y-topic" value="${esc(y.topic||"")}" placeholder="e.g. insight-alerts-pick-your-own"></div>
+      <p class="hint">Server is the host only (e.g. <code>https://ntfy.sh</code>) — <b>do not</b> include the topic. The Topic is the full path after the host: for <code>ntfy.sh/insight-alerts-pick-your-own</code>, Server is <code>https://ntfy.sh</code> and Topic is <code>insight-alerts-pick-your-own</code>. Install the ntfy app and “subscribe” to this topic. Pick a long, private topic name.</p>
+    </div>
+    <div class="frow">
+      <button class="btn" id="notify-save">Save settings</button>
+      <button class="btn ghost" id="notify-test">Send test</button>
+      <span class="meta" id="notify-msg"></span>
+    </div>`;
+}
+
+function renderSettings(){
+  const pane = document.getElementById("settings-pane");
+  pane.innerHTML = STATE.settingsPage === "notify" ? notifyPage() : themePage();
+  document.querySelectorAll("#settings-nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.page === STATE.settingsPage));
+  if (STATE.settingsPage === "notify"){
+    document.getElementById("notify-save").addEventListener("click", saveNotifySettings);
+    document.getElementById("notify-test").addEventListener("click", sendNotifyTest);
+  }
+}
+
+function openSettings(page){
+  STATE.settingsPage = page || STATE.settingsPage || "theme";
+  renderSettings();
+  document.getElementById("settings").classList.remove("hidden");
+  document.getElementById("settings-close").focus();
+}
+
+function closeSettings(){
+  document.getElementById("settings").classList.add("hidden");
+  // The alarm list shows whether a delivery channel is on, so it may be stale
+  // after a visit to the Notifications page.
+  if (STATE.view === "alarms") render();
+}
 
 async function load(){
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
@@ -1186,7 +1465,30 @@ document.querySelectorAll("#tabs button[data-view]").forEach(b => {
 });
 
 document.getElementById("back").addEventListener("click", goBack);
+
+/* ---- settings dialog wiring ---- */
+document.getElementById("settings-open").addEventListener("click", () => openSettings());
+document.getElementById("settings-close").addEventListener("click", closeSettings);
+document.getElementById("settings-nav").addEventListener("click", e => {
+  const b = e.target.closest("button[data-page]");
+  if (!b) return;
+  STATE.settingsPage = b.dataset.page;
+  renderSettings();
+});
+document.getElementById("settings-pane").addEventListener("click", e => {
+  const card = e.target.closest(".theme-card");
+  if (card) applyTheme(card.dataset.themeId);
+});
+// Clicking the backdrop (but not the card) closes, like any modal.
+document.getElementById("settings").addEventListener("click", e => {
+  if (e.target.id === "settings") closeSettings();
+});
+
 document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !document.getElementById("settings").classList.contains("hidden")){
+    closeSettings();
+    return;
+  }
   // Alt+← matches the browser's own back gesture; the app owns it because the
   // page never navigates, so the browser's history is empty.
   if (e.altKey && e.key === "ArrowLeft"){ e.preventDefault(); goBack(); }
@@ -1206,7 +1508,7 @@ function applyViewChrome(){
 
 // Alarms and notes first, so the 🔔 and 📝 buttons render their state on the
 // very first paint instead of flipping on a second pass.
-Promise.all([loadAlarms(), loadNotes()]).then(load);
+Promise.all([loadAlarms(), loadNotes(), loadTheme()]).then(load);
 </script>
 </body>
 </html>

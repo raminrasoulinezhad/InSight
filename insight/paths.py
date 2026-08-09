@@ -68,6 +68,15 @@ def delisted_file() -> Path:
     return app_dir() / "delisted.json"
 
 
+def settings_file() -> Path:
+    """App preferences (currently the chosen theme) — a small JSON object.
+
+    Kept apart from notify.json so a display toggle never shares a file with
+    SMTP credentials.
+    """
+    return app_dir() / "settings.json"
+
+
 def notes_file() -> Path:
     """Free-text notes the user keeps per company (your own research, thesis,
     reminders) — a JSON object keyed "EXCH:TICKER" -> note text.

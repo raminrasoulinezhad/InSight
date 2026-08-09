@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from . import notes, notify, paths
+from . import notes, notify, paths, settings
 from .aggregate import load_people_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -266,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, dict(_refresh))
         elif path == "/api/notes":
             self._send_json(200, {"notes": notes.load_notes(paths.notes_file())})
+        elif path == "/api/settings":
+            self._send_json(200, settings.load_settings(paths.settings_file()))
         elif path == "/api/notify/config":
             self._send_json(200, notify.public_config(paths.notify_file()))
         else:
@@ -303,6 +305,12 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("ticker", ""),
                     body.get("text", ""),
                 )
+                self._send_json(200 if saved else 400, {"saved": saved, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"saved": False, "msg": f"bad request: {e}"})
+        elif parsed.path == "/api/settings":
+            try:
+                saved, msg = settings.save_settings(paths.settings_file(), self._read_json())
                 self._send_json(200 if saved else 400, {"saved": saved, "msg": msg})
             except Exception as e:
                 self._send_json(400, {"saved": False, "msg": f"bad request: {e}"})

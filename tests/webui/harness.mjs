@@ -53,7 +53,29 @@ const LEXICAL = [
   "fmtMoney",
   "fmtPrice",
   "dayLbl",
+  "THEMES",
+  "DEFAULT_THEME",
+  "themeIds",
+  "isTheme",
 ];
+
+/** Every `[data-theme="x"] { … }` block in the stylesheet, as {id: {var: value}}. */
+export function themeBlocks(html = readIndexHtml()) {
+  const out = {};
+  const re = /(:root, )?\[data-theme="([a-z]+)"\]\s*\{([^}]*)\}/g;
+  for (const m of html.matchAll(re)) {
+    const vars = {};
+    for (const v of m[3].matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) vars[v[1]] = v[2].trim();
+    out[m[2]] = vars;
+  }
+  return out;
+}
+
+/** Every `var(--x)` the stylesheet actually reads. */
+export function usedVars(html = readIndexHtml()) {
+  const style = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  return [...new Set([...style.matchAll(/var\((--[a-z0-9-]+)\)/g)].map((m) => m[1]))].sort();
+}
 
 const exposeEpilogue = () =>
   "\n;globalThis.__lex = {" +
@@ -111,8 +133,18 @@ export function loadUi({ fetchResponses = {} } = {}) {
   };
   const fetchLog = [];
 
+  // documentElement is where the theme attribute is set, so it records writes
+  // rather than discarding them.
+  const root = makeElement("html");
+  root._attrs = {};
+  root.setAttribute = (k, v) => {
+    root._attrs[k] = v;
+  };
+  root.getAttribute = (k) => (k in root._attrs ? root._attrs[k] : null);
+
   const document = {
     getElementById: getEl,
+    documentElement: root,
     querySelector: () => null,
     querySelectorAll: () => [],
     addEventListener: () => {},
@@ -121,8 +153,16 @@ export function loadUi({ fetchResponses = {} } = {}) {
     activeElement: null,
   };
 
+  const store = new Map();
+  const localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+
   const context = {
     document,
+    localStorage,
     window: { location: { reload: () => {} } },
     console,
     setTimeout,
