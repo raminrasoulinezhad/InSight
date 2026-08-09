@@ -25,12 +25,48 @@ const ids = () => Array.from(themeIds());
 /* ---- the palette contract ------------------------------------------------ */
 
 test("the promised themes all exist", () => {
-  assert.deepEqual(ids(), ["dark", "light", "terminal", "newsprint", "midnight", "canadian"]);
+  assert.deepEqual(ids().sort(), [
+    "canadian", "caramel", "chic", "dark", "lemon",
+    "light", "midnight", "newsprint", "sage", "terminal",
+  ].sort());
 });
 
 test("there is at least one dark and one light theme", () => {
   assert.ok(ids().includes("dark"));
   assert.ok(ids().includes("light"));
+});
+
+test("every theme declares which shelf it belongs on", () => {
+  for (const t of Array.from(THEMES)) {
+    assert.ok(["dark", "light"].includes(t.mode), `${t.id} has mode "${t.mode}"`);
+  }
+});
+
+test("a theme's declared mode matches how bright it actually is", () => {
+  // Guards against a palette being filed on the wrong shelf — the grouping is
+  // only useful if it tells the truth.
+  const luminance = (hex) => {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+    const n = parseInt(m[1], 16);
+    return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  };
+  for (const t of Array.from(THEMES)) {
+    const lum = luminance(blocks[t.id]["--bg"]);
+    if (t.mode === "dark") assert.ok(lum < 0.4, `"${t.id}" is filed dark but its bg is bright (${lum.toFixed(2)})`);
+    else assert.ok(lum > 0.6, `"${t.id}" is filed light but its bg is dark (${lum.toFixed(2)})`);
+  }
+});
+
+test("both shelves are populated", () => {
+  const byMode = (m) => Array.from(THEMES).filter((t) => t.mode === m);
+  assert.ok(byMode("dark").length >= 2);
+  assert.ok(byMode("light").length >= 2);
+});
+
+test("the picker renders a labelled shelf per mode", () => {
+  const page = themePage();
+  assert.equal((page.match(/class="shelf-h"/g) || []).length, 2);
+  for (const id of ids()) assert.ok(page.includes(`data-theme-id="${id}"`), `${id} missing`);
 });
 
 test("every theme in the list has a stylesheet block", () => {
@@ -82,17 +118,97 @@ test("each theme is visually distinct from the others", () => {
   }
 });
 
+test("no theme lets the accent collide with buy or sell", () => {
+  // The real hazard once themes get colourful: a red accent reading as "sell",
+  // or a green accent reading as "buy". Chrome and signal must stay separable.
+  for (const [id, vars] of Object.entries(blocks)) {
+    assert.notEqual(vars["--accent"], vars["--buy"], `accent doubles as "buy" in "${id}"`);
+    assert.notEqual(vars["--accent"], vars["--sell"], `accent doubles as "sell" in "${id}"`);
+  }
+});
+
 test("Canadian keeps sell distinguishable from the red accent", () => {
-  // A red-accented theme is the one place where "sell" and "a link" could read
-  // as the same colour.
   const c = blocks.canadian;
   assert.notEqual(c["--sell"], c["--accent"]);
   assert.notEqual(c["--buy"], c["--sell"]);
 });
 
+test("every colour variable is a valid CSS colour", () => {
+  // A typo like "#c align-items" or a mistyped hex silently kills one rule and
+  // leaves the rest of the theme looking almost right.
+  const ok = /^(#[0-9a-f]{3}|#[0-9a-f]{6}|#[0-9a-f]{8}|rgba?\([\d\s.,%]+\))$/i;
+  for (const [id, vars] of Object.entries(blocks)) {
+    for (const [name, value] of Object.entries(vars)) {
+      if (name === "--font") continue;
+      assert.match(value, ok, `${id} ${name} is not a colour: ${JSON.stringify(value)}`);
+    }
+  }
+});
+
+test("every theme sets a font stack", () => {
+  for (const [id, vars] of Object.entries(blocks)) {
+    assert.ok(vars["--font"] && vars["--font"].length > 5, `"${id}" has no --font`);
+  }
+});
+
 test("buy and sell never collide in any theme", () => {
   for (const [id, vars] of Object.entries(blocks)) {
     assert.notEqual(vars["--buy"], vars["--sell"], `buy and sell are identical in "${id}"`);
+  }
+});
+
+/* ---- legibility ---------------------------------------------------------- */
+
+// WCAG relative luminance / contrast ratio. Colourful themes are exactly where
+// a palette stops being readable — a green "buy" on green paper looks fine to
+// the person who picked it and fails for everyone else.
+function contrast(a, b) {
+  const chan = (h) => {
+    const n = parseInt(h.trim().slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const lin = (c) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+  const lum = (h) => {
+    const [r, g, bl] = chan(h);
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(bl);
+  };
+  const [l1, l2] = [lum(a), lum(b)];
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+test("body text clears WCAG AAA against its background", () => {
+  for (const [id, v] of Object.entries(blocks)) {
+    const r = contrast(v["--text"], v["--bg"]);
+    assert.ok(r >= 7, `"${id}" body text is ${r.toFixed(2)}:1 (want >= 7)`);
+  }
+});
+
+test("secondary text clears WCAG AA", () => {
+  for (const [id, v] of Object.entries(blocks)) {
+    const r = contrast(v["--muted"], v["--bg"]);
+    assert.ok(r >= 4.5, `"${id}" muted text is ${r.toFixed(2)}:1 (want >= 4.5)`);
+  }
+});
+
+test("buy and sell stay legible in every theme", () => {
+  // These two carry the meaning of the whole app; if they wash out, the page
+  // is decorative.
+  for (const [id, v] of Object.entries(blocks)) {
+    for (const key of ["--buy", "--sell"]) {
+      const r = contrast(v[key], v["--bg"]);
+      assert.ok(r >= 4.5, `"${id}" ${key} is ${r.toFixed(2)}:1 on its background (want >= 4.5)`);
+    }
+  }
+});
+
+test("accents are readable on the background and under their own ink", () => {
+  for (const [id, v] of Object.entries(blocks)) {
+    const onBg = contrast(v["--accent"], v["--bg"]);
+    assert.ok(onBg >= 4.5, `"${id}" accent is ${onBg.toFixed(2)}:1 on its background`);
+    // --accent-ink is the label ON a filled accent button, so it contrasts with
+    // the accent, not the page.
+    const onAccent = contrast(v["--accent-ink"], v["--accent"]);
+    assert.ok(onAccent >= 4.5, `"${id}" button label is ${onAccent.toFixed(2)}:1 on its accent`);
   }
 });
 

@@ -468,9 +468,11 @@ inputs rather than live HTTP.
 ## Themes
 
 Every colour in the stylesheet comes from a CSS variable, so a theme is nothing
-but a re-declaration of the same set under `[data-theme="id"]`. Six ship: Dark
-(the `:root` default), Light, Terminal, Newsprint, Midnight and Canadian.
-Terminal is the only one that also swaps `--font`, to a monospace stack.
+but a re-declaration of the same set under `[data-theme="id"]`. Ten ship, split
+across two shelves in the picker by their `mode`: **dark** (Dark — the `:root`
+default — Midnight, Terminal, Caramel, Chic) and **light** (Light, Newsprint,
+Sage, Lemon, Canadian). Terminal is the only one that also swaps `--font`, to a
+monospace stack.
 
 Adding one means three edits that must agree, and the tests enforce all three:
 
@@ -482,7 +484,16 @@ Adding one means three edits that must agree, and the tests enforce all three:
 
 `tests/webui/theme.test.mjs` checks the stylesheet and the picker agree, that
 every theme declares the full variable set, that no colour is hardcoded outside
-a theme block, and that buy/sell/text stay mutually distinct in each.
+a theme block, that every value parses as a colour, that a theme's declared
+`mode` matches its actual background luminance, and that the accent never
+doubles as buy or sell.
+
+It also enforces **WCAG contrast**: body text ≥ 7:1 (AAA), and secondary text,
+accents, button ink and buy/sell all ≥ 4.5:1 (AA) against what they sit on.
+This is not decoration — Sage originally shipped a mid-green `--buy` that hit
+only 3.16:1 on green paper. Buy and sell carry the meaning of the whole app, so
+a colourful theme that washes them out is a broken theme.
+
 `tests/test_settings.py` checks the Python and JS lists haven't drifted apart.
 
 The choice is stored server-side (`settings.json`, see `paths.settings_file()`)

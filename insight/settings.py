@@ -29,7 +29,18 @@ import threading
 from pathlib import Path
 from typing import Any
 
-THEMES = ("dark", "light", "terminal", "newsprint", "midnight", "canadian")
+THEMES = (
+    "dark",
+    "midnight",
+    "terminal",
+    "caramel",
+    "chic",
+    "light",
+    "newsprint",
+    "sage",
+    "lemon",
+    "canadian",
+)
 DEFAULT_THEME = "dark"
 
 # Same reasoning as notes.py: read-modify-write from a threaded server.

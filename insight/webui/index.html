@@ -93,6 +93,54 @@
     --hover:#ffeaea; --shadow:rgba(216,6,33,.15);
     --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
+  /* Espresso and caramel — a warm dark, for people who find blue-greys cold. */
+  [data-theme="caramel"] {
+    --bg:#1b1310; --panel:#241a15; --panel2:#30231b; --line:#453325;
+    --text:#f2e5d7; --muted:#a89080;
+    --accent:#e0a465; --accent-ink:#1b1310; --accent-dim:#3b2a1a;
+    --buy:#8cbf6a; --sell:#ef6f5a;
+    --inst:#d9a441; --inst-dim:#3a2e14;
+    --buyback:#c39ad6; --buyback-dim:#33253a;
+    --hover:#33251c; --shadow:rgba(0,0,0,.6);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Soft sage paper with a deep teal-green accent. The accent is deliberately
+     teal rather than grass, so it never reads as a "buy". */
+  [data-theme="sage"] {
+    --bg:#f2f7f0; --panel:#eaf2e6; --panel2:#dde9d8; --line:#c5d6bd;
+    --text:#1f2a1c; --muted:#5b6b56;
+    --accent:#1f6f5c; --accent-ink:#ffffff; --accent-dim:#d6ecdc;
+    /* a mid green only reaches 3.2:1 on sage paper — this is the darkest that
+       still reads as "green" while clearing WCAG AA */
+    --buy:#1a7f37; --sell:#c62828;
+    --inst:#8a6100; --inst-dim:#f7ecc9;
+    --buyback:#6b4fa0; --buyback-dim:#ebe3f7;
+    --hover:#dde9d8; --shadow:rgba(31,42,28,.14);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Lemon zest, cut with teal so the accent doesn't disappear into the paper. */
+  [data-theme="lemon"] {
+    --bg:#fffce6; --panel:#fff8cc; --panel2:#fdf2ab; --line:#e8d97a;
+    --text:#2b2a12; --muted:#6b6636;
+    --accent:#0f766e; --accent-ink:#ffffff; --accent-dim:#cfeae7;
+    --buy:#1a7f37; --sell:#c62828;
+    --inst:#8a5a00; --inst-dim:#f6e59a;
+    --buyback:#7b3fa0; --buyback-dim:#f0e4f7;
+    --hover:#fdf2ab; --shadow:rgba(43,42,18,.15);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  /* Charcoal and champagne — understated, low-contrast chrome so the numbers
+     carry the page. */
+  [data-theme="chic"] {
+    --bg:#131113; --panel:#1b181b; --panel2:#252125; --line:#353035;
+    --text:#ede9ec; --muted:#9c9299;
+    --accent:#c9a86a; --accent-ink:#131113; --accent-dim:#302818;
+    --buy:#8fbf8a; --sell:#e0736f;
+    --inst:#b98b3c; --inst-dim:#2e2716;
+    --buyback:#b79ad6; --buyback-dim:#2b2338;
+    --hover:#262127; --shadow:rgba(0,0,0,.6);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; }
   body {
@@ -340,8 +388,11 @@
   .settings-pane h3:first-child { margin-top:0; }
   .settings-hint { color:var(--muted); font-size:12px; margin:0 0 14px; }
   /* theme picker */
+  .shelf-h { margin:16px 0 8px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.6px; color:var(--muted); font-weight:600; }
+  .shelf-h:first-of-type { margin-top:0; }
   .theme-grid { display:grid; gap:10px;
-    grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+    grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); }
   .theme-card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:10px; cursor:pointer; text-align:left; font:inherit; color:var(--text);
     display:flex; flex-direction:column; gap:8px; }
@@ -946,13 +997,20 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
 // `id` must match a [data-theme="id"] block in the stylesheet. DEFAULT_THEME is
 // also what :root declares, so the page looks right before any JS runs.
 const DEFAULT_THEME = "dark";
+// `mode` only groups the picker — ten cards in one undifferentiated grid is a
+// worse choice than two labelled shelves, and dark-vs-light is how people
+// actually narrow it down.
 const THEMES = [
-  {id:"dark",      name:"Dark",      desc:"The original. Near-black, blue accent."},
-  {id:"light",     name:"Light",     desc:"Clean and bright for daytime reading."},
-  {id:"terminal",  name:"Terminal",  desc:"Trading-desk phosphor: amber on black, monospaced.", icon:"▮"},
-  {id:"newsprint", name:"Newsprint", desc:"Salmon paper and teal ink, like the financial press."},
-  {id:"midnight",  name:"Midnight",  desc:"Navy rather than black — softer for late sessions."},
-  {id:"canadian",  name:"Canadian",  desc:"White and flag red, for the home market.", icon:"🍁"},
+  {id:"dark",      mode:"dark",  name:"Dark",      desc:"The original. Near-black, blue accent."},
+  {id:"midnight",  mode:"dark",  name:"Midnight",  desc:"Navy rather than black — softer for late sessions."},
+  {id:"terminal",  mode:"dark",  name:"Terminal",  desc:"Trading-desk phosphor: amber on black, monospaced.", icon:"▮"},
+  {id:"caramel",   mode:"dark",  name:"Caramel",   desc:"Espresso and warm caramel, for when blue-greys feel cold.", icon:"☕"},
+  {id:"chic",      mode:"dark",  name:"Chic",      desc:"Charcoal and champagne — understated, numbers do the talking.", icon:"✦"},
+  {id:"light",     mode:"light", name:"Light",     desc:"Clean and bright for daytime reading."},
+  {id:"newsprint", mode:"light", name:"Newsprint", desc:"Salmon paper and teal ink, like the financial press."},
+  {id:"sage",      mode:"light", name:"Sage",      desc:"Soft green paper with a deep teal accent. Easy on the eyes.", icon:"🌿"},
+  {id:"lemon",     mode:"light", name:"Lemon",     desc:"Lemon zest cut with teal. Bright without being loud.", icon:"🍋"},
+  {id:"canadian",  mode:"light", name:"Canadian",  desc:"White and flag red, for the home market.", icon:"🍁"},
 ];
 const themeIds = () => THEMES.map(t => t.id);
 const isTheme = id => themeIds().includes(id);
@@ -1008,9 +1066,16 @@ function themeCard(t){
     </button>`;
 }
 
+function themeShelf(mode, title){
+  const rows = THEMES.filter(t => t.mode === mode);
+  return `<h4 class="shelf-h">${title}</h4>
+    <div class="theme-grid">${rows.map(themeCard).join("")}</div>`;
+}
+
 function themePage(){
   return `<p class="settings-hint">Applies straight away and is remembered for next time.</p>
-    <div class="theme-grid">${THEMES.map(themeCard).join("")}</div>`;
+    ${themeShelf("dark", "Dark")}
+    ${themeShelf("light", "Light")}`;
 }
 
 // Same field ids the old Alarms-tab form used, so collectNotifySettings and
