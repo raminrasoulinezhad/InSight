@@ -444,7 +444,7 @@
   </div>
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
-    <button data-view="people">Insiders</button>
+    <button data-view="insiders">Insiders</button>
     <button data-view="alarms">Alarms</button>
     <button id="back" class="back-btn" disabled
       title="Go back to where you were (Alt+←)">← Back</button>
@@ -518,7 +518,7 @@ const fmtShares = n => !n ? "0" : n.toLocaleString();
 const fmtPrice = (v, cur) => v == null ? "—" :
   (cur ? cur+" " : "$") + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 
-let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"all", range:"d14",
+let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter:"all", range:"d14",
               notify:null, alarmKeys:new Set(), alarmById:{}, sediPages:new Set(),
               // per-company notes: saved text, which editors are open, and any
               // unsaved draft (kept so a re-render — filter/search — never eats
@@ -635,8 +635,8 @@ function indexCompanies(d){
       t._hay = ((t.insider_name||"") + " " + (t.insider_role||"")).toLowerCase();
   }
 }
-function indexPeople(d){
-  for (const p of d.people || []){
+function indexInsiders(d){
+  for (const p of d.insiders || []){
     const cos = (p.companies||[]).map(c => c.issuer_name+" "+c.ticker+" "+c.exchange).join(" ");
     p._hay = ((p.insider_name||"") + " " + (p.roles||[]).join(" ") + " " + cos).toLowerCase();
   }
@@ -826,7 +826,7 @@ function setMeta(d){
 
 function render(){
   if (STATE.view === "alarms") return renderAlarms();
-  if (STATE.view === "people") return renderPeople();
+  if (STATE.view === "insiders") return renderInsiders();
   return renderCompanies();
 }
 
@@ -843,7 +843,7 @@ function renderCompanies(){
 }
 
 /* ---- People tab: same records, grouped by insider across companies ---- */
-function personMatchesQuery(p){
+function insiderMatchesQuery(p){
   const q = STATE.qnorm;
   if (!q) return true;
   return p._hay.includes(q);
@@ -894,7 +894,7 @@ function renderPersonCompany(c){
 }
 
 function renderPerson(p){
-  if (!boxMatchesFilter(p) || !personMatchesQuery(p)) return "";
+  if (!boxMatchesFilter(p) || !insiderMatchesQuery(p)) return "";
   const kind = p.entity_type === "institution" ? "institution" : "individual";
   const roles = (p.roles||[]).join(", ") || "—";
   const cur = p.currency || "";
@@ -912,14 +912,14 @@ function renderPerson(p){
   </section>`;
 }
 
-function renderPeople(){
-  const d = STATE.people;
+function renderInsiders(){
+  const d = STATE.insiders;
   if (!d){ return; }
-  setStats(d.total_people, "insiders",
+  setStats(d.total_insiders, "insiders",
            d.total_transactions, "transactions",
            d.total_companies, "companies traded");
   setMeta(d);
-  const html = d.people.map(renderPerson).join("");
+  const html = d.insiders.map(renderPerson).join("");
   document.getElementById("feed").innerHTML =
     html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`;
 }
@@ -1320,14 +1320,14 @@ const settingsOpen = () =>
 async function load(){
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
   try {
-    const url = STATE.view === "people" ? "/api/people" : "/api/data";
+    const url = STATE.view === "insiders" ? "/api/insiders" : "/api/data";
     // Range token is "dN" for a week/day window, else a plain month count.
     const qp = STATE.range[0] === "d"
       ? "days=" + STATE.range.slice(1)
       : "months=" + STATE.range;
     const r = await fetch(url + "?" + qp);
     const d = await r.json();
-    if (STATE.view === "people"){ indexPeople(d); STATE.people = d; }
+    if (STATE.view === "insiders"){ indexInsiders(d); STATE.insiders = d; }
     else { indexCompanies(d); STATE.data = d; }
     render();
     reportJump();
@@ -1399,7 +1399,7 @@ function goToCompany(exch, ticker, name){
 
 function goToPerson(name){
   pushNav("jump");
-  STATE.view = "people";
+  STATE.view = "insiders";
   setQuery(name);
   STATE.filter = "all";
   STATE.jump = {kind:"person", label:name};
@@ -1420,7 +1420,7 @@ function reportJump(){
     if (!found) toast(`${j.label} isn't on your watchlist — add it to open its page.`);
   } else {
     const want = j.label.trim().toLowerCase();
-    const found = (STATE.people?.people || []).some(
+    const found = (STATE.insiders?.insiders || []).some(
       p => (p.insider_name||"").trim().toLowerCase() === want);
     if (!found) toast(`No trades by ${j.label} in this period — try a wider time range.`);
   }
@@ -1757,7 +1757,7 @@ function applyViewChrome(){
   const isAlarms = STATE.view === "alarms";
   hideAdder();
   document.querySelectorAll("header .controls").forEach(el => { el.style.display = isAlarms ? "none" : ""; });
-  document.getElementById("q").placeholder = STATE.view === "people"
+  document.getElementById("q").placeholder = STATE.view === "insiders"
     ? "Filter by insider name, company, or ticker…"
     : "Filter by company, ticker, or insider name…";
   syncBackBtn();

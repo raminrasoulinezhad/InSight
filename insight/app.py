@@ -42,7 +42,7 @@ from importlib import resources
 from pathlib import Path
 
 from . import notes, notify, paths, profiles, settings
-from .aggregate import load_people_view, load_view
+from .aggregate import load_insiders_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
 # The UI lives inside the package (importlib.resources) so it is available when
@@ -231,13 +231,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
             self._send(200, png, "image/png")
-        elif path in ("/api/data", "/api/people"):
+        elif path in ("/api/data", "/api/insiders", "/api/people"):
             qs = urllib.parse.parse_qs(parsed.query)
             m = qs.get("months", [""])[0]
             months = int(m) if m.isdigit() and int(m) > 0 else None
             d = qs.get("days", [""])[0]
             days = int(d) if d.isdigit() and int(d) > 0 else None
-            view = (load_people_view if path == "/api/people" else load_view)(
+            # /api/people is the pre-rename name, kept working so a bookmark
+            # or a script written against it does not break.
+            insiders = path in ("/api/insiders", "/api/people")
+            view = (load_insiders_view if insiders else load_view)(
                 DATA_DIR, CONFIG, months=months, days=days
             )
             if path == "/api/data":

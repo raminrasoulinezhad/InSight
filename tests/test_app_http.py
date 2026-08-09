@@ -147,10 +147,17 @@ class TestDataEndpoints:
         assert d["total_transactions"] == 2
         assert [c["ticker"] for c in d["companies"]] == ["ABC"]
 
-    def test_people_returns_the_insider_view(self, client: Client):
-        status, d = client.get("/api/people?days=3650")
+    def test_insiders_returns_the_insider_view(self, client: Client):
+        status, d = client.get("/api/insiders?days=3650")
         assert status == 200
-        assert sorted(p["insider_name"] for p in d["people"]) == ["Bob Roe", "Jane Doe"]
+        assert sorted(p["insider_name"] for p in d["insiders"]) == ["Bob Roe", "Jane Doe"]
+
+    def test_the_old_people_route_still_works(self, client: Client):
+        # Kept so a bookmark or a script written against the pre-rename name
+        # does not break.
+        _, old = client.get("/api/people?days=3650")
+        _, new = client.get("/api/insiders?days=3650")
+        assert old == new
 
     def test_the_window_is_honoured(self, client: Client):
         # the fixture's trades are older than a fortnight

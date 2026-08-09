@@ -11,7 +11,7 @@ cloud, no paid data services.
 - **Companies tab** — insider activity grouped per watchlist company.
 - **Insiders tab** — the same data re-sliced by *person*, spanning every scraped
   company (watchlist or not), so you can follow one insider across companies.
-  (User-visible name only; the view id and `/api/people` are still `people`.)
+  Served by `/api/insiders`; `/api/people` is kept as an alias for the old name.
 - **Cross-links + back-stack** — an insider name on a company opens that insider,
   a company on an insider's card opens that company; a Back button (and Alt+←)
   walks up to 10 previous states back.
@@ -103,7 +103,7 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
                                                    │
                               store.sync ──> data/store.json (deduped; folds only new snapshots)
                                                    │
-        app (HTTP) ──> aggregate.load_view / load_people_view
+        app (HTTP) ──> aggregate.load_view / load_insiders_view
                           │  reads the store (cached), filters delisted + the date window
                           ▼
                     webui/index.html  (Companies / Insiders tabs, client-side search)
@@ -112,7 +112,7 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
 ## Layout
 ```
 insight/
-  app.py          local HTTP server + API (/api/data, /api/people, /api/watchlist,
+  app.py          local HTTP server + API (/api/data, /api/insiders, /api/watchlist,
                   /api/notes, /api/settings, /api/refresh)
   scrape.py       insight-scrape CLI (targets, output, --discover, prune commands)
   marketbeat.py   Playwright scraper + discovery + cache/delisted helpers

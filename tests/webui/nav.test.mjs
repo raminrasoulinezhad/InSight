@@ -74,7 +74,7 @@ test("a different control between bursts starts a new step", () => {
 test("typing after switching tabs is its own step", () => {
   reset();
   pushNav("tab");
-  STATE.view = "people";
+  STATE.view = "insiders";
   pushNav("search");
   STATE.q = "sprott";
   assert.equal(STATE.nav.length, 2);

@@ -35,7 +35,7 @@ from . import store
 
 # ---- access cache -------------------------------------------------------------
 # Search over names/companies is the app's main job, and every /api/data and
-# /api/people request would otherwise re-read + re-parse + re-merge every dated
+# /api/insiders request would otherwise re-read + re-parse + re-merge every dated
 # snapshot from disk and rebuild the whole view. Instead we memoize by a cheap
 # signature of the inputs (each snapshot's mtime+size, plus the watchlist and
 # delisted files) so a rebuild happens ONLY when the underlying data actually
@@ -43,7 +43,7 @@ from . import store
 # embedded DB for a single-user, few-MB dataset (no query/serialization layer);
 # SQLite/FTS5 is the escalation path if the data ever outgrows memory.
 Rec = dict[str, Any]  # one normalized transaction record (JSON object)
-View = dict[str, Any]  # a built company/people view
+View = dict[str, Any]  # a built company/insiders view
 DirSig = tuple[tuple[str, int, int], ...]  # (name, mtime_ns, size) per snapshot
 
 _CACHE_LOCK = threading.Lock()
@@ -249,8 +249,8 @@ def build_view(records: list[Rec], watchlist: list[Rec]) -> View:
     }
 
 
-# ---- people view: same records, grouped by insider across companies ----------
-# The company view answers "who traded THIS company?"; the people view answers
+# ---- insiders view: same records, grouped by insider across companies --------
+# The company view answers "who traded THIS company?"; the insiders view answers
 # "what did THIS person trade, across every watchlist company?". It is a pure
 # re-slice of the same records — no extra scraping — so its coverage is exactly
 # the companies on the watchlist.
@@ -327,12 +327,12 @@ def _accumulate(agg: dict[str, Any], rec: Rec) -> None:
         agg["latest_date"] = d
 
 
-def build_people_view(records: list[Rec]) -> View:
+def build_insiders_view(records: list[Rec]) -> View:
     """Group records into insiders -> the companies they traded.
 
     Unlike the company view, this is NOT gated to the watchlist: it spans EVERY
     company present in the scraped data (e.g. the broader universe pulled in by
-    `insight-scrape --discover`), because the whole point of the people view is
+    `insight-scrape --discover`), because the whole point of the insiders view is
     to follow a person's trades across all companies, watchlist or not. Issuer
     buybacks are excluded — they are the company trading its own stock, not a
     person/insider.
@@ -392,8 +392,8 @@ def build_people_view(records: list[Rec]) -> View:
     # most active insiders first (gross dollars), then alphabetical
     out_people.sort(key=lambda p: (-(p["buy_value"] + p["sell_value"]), p["insider_name"].lower()))
     return {
-        "people": out_people,
-        "total_people": len(out_people),
+        "insiders": out_people,
+        "total_insiders": len(out_people),
         "total_transactions": sum(p["txn_count"] for p in out_people),
         "total_companies": len({c["key"] for p in out_people for c in p["companies"]}),
     }
@@ -471,7 +471,7 @@ def _delisted_keys(config_path: Path) -> set[str]:
 def _load_records(
     data_dir: Path, config_path: Path, months: int | None, days: int | None = None
 ) -> tuple[list[Rec], list[Rec]]:
-    """Shared loader for the company and people views.
+    """Shared loader for the company and insiders views.
 
     Returns (records, watchlist). Records are the deduplicated union of ALL
     dated snapshots (see load_all_records), minus anything flagged delisted.
@@ -573,14 +573,14 @@ def load_view(
     return _cached_view("company", data_dir, config_path, months, days, build)
 
 
-def load_people_view(
+def load_insiders_view(
     data_dir: Path, config_path: Path, months: int | None = None, days: int | None = None
 ) -> View:
-    """Build the people view from the merged history (spans all scraped
+    """Build the insiders view from the merged history (spans all scraped
     companies, not just the watchlist). Cached like the company view."""
 
     def build() -> View:
         records, _watchlist = _load_records(data_dir, config_path, months, days)
-        return _stamp(build_people_view(records), data_dir, months, days)
+        return _stamp(build_insiders_view(records), data_dir, months, days)
 
-    return _cached_view("people", data_dir, config_path, months, days, build)
+    return _cached_view("insiders", data_dir, config_path, months, days, build)

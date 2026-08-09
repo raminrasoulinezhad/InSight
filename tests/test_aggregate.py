@@ -14,10 +14,10 @@ from insight.aggregate import (
     _load_records,
     _stamp,
     _txn_key,
-    build_people_view,
+    build_insiders_view,
     build_view,
     load_all_records,
-    load_people_view,
+    load_insiders_view,
     load_view,
     months_ago,
 )
@@ -147,17 +147,17 @@ class TestBuildPeopleView:
                 is_issuer_buyback=True,
             ),  # excluded
         ]
-        self.view = build_people_view(self.records)
+        self.view = build_insiders_view(self.records)
 
     def test_buyback_excluded_and_totals(self):
-        names = {p["insider_name"] for p in self.view["people"]}
+        names = {p["insider_name"] for p in self.view["insiders"]}
         assert "ABC Inc" not in names
-        assert self.view["total_people"] == 2  # Jane + Acme Fund
+        assert self.view["total_insiders"] == 2  # Jane + Acme Fund
         assert self.view["total_companies"] == 2  # ABC + XYZ
 
     def test_person_merges_across_companies_case_insensitively(self):
         jane = next(
-            p for p in self.view["people"] if p["insider_name"].lower().strip() == "jane doe"
+            p for p in self.view["insiders"] if p["insider_name"].lower().strip() == "jane doe"
         )
         assert jane["company_count"] == 2
         assert set(jane["roles"]) == {"Director", "Officer"}
@@ -167,7 +167,7 @@ class TestBuildPeopleView:
 
     def test_per_company_avg_prices(self):
         jane = next(
-            p for p in self.view["people"] if p["insider_name"].lower().strip() == "jane doe"
+            p for p in self.view["insiders"] if p["insider_name"].lower().strip() == "jane doe"
         )
         abc = next(c for c in jane["companies"] if c["ticker"] == "ABC")
         xyz = next(c for c in jane["companies"] if c["ticker"] == "XYZ")
@@ -279,9 +279,9 @@ class TestDelistedAndLoadRecords:
     def test_load_view_end_to_end_hides_delisted(self, tmp_path):
         cfg = self._setup(tmp_path, delisted=["TSE:IPL"])
         cv = load_view(tmp_path, cfg, months=None)
-        pv = load_people_view(tmp_path, cfg, months=None)
+        pv = load_insiders_view(tmp_path, cfg, months=None)
         assert "TSE:IPL" not in {c["key"] for c in cv["companies"]}
-        assert "IPL" not in {c["ticker"] for p in pv["people"] for c in p["companies"]}
+        assert "IPL" not in {c["ticker"] for p in pv["insiders"] for c in p["companies"]}
 
 
 class TestViewCache:

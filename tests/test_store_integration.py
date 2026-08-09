@@ -7,7 +7,7 @@
 
 The store sits underneath every view, and the one thing it must never do is
 alter what the app reports. These tests drive the real entry points
-(`load_all_records`, `load_view`, `load_people_view`) across a scrape, a
+(`load_all_records`, `load_view`, `load_insiders_view`) across a scrape, a
 restart, and a prune, asserting the output is identical each time.
 """
 
@@ -20,7 +20,7 @@ from insight import aggregate, store
 from insight.aggregate import (
     _txn_key,
     load_all_records,
-    load_people_view,
+    load_insiders_view,
     load_view,
 )
 
@@ -81,18 +81,18 @@ class TestStoreIsTransparent:
             snap(tmp_path, d, [rec(date=d), rec(name="Bob", date=d)])
 
         before_co = load_view(tmp_path, cfg, days=3650)
-        before_people = load_people_view(tmp_path, cfg, days=3650)
+        before_insiders = load_insiders_view(tmp_path, cfg, days=3650)
 
         removed, _ = store.prune_folded(tmp_path, _txn_key, keep=1)
         assert removed, "expected the older snapshots to be pruned"
         clear_caches()
 
         after_co = load_view(tmp_path, cfg, days=3650)
-        after_people = load_people_view(tmp_path, cfg, days=3650)
+        after_insiders = load_insiders_view(tmp_path, cfg, days=3650)
 
         assert after_co["total_transactions"] == before_co["total_transactions"]
         assert after_co["companies"] == before_co["companies"]
-        assert after_people["people"] == before_people["people"]
+        assert after_insiders["insiders"] == before_insiders["insiders"]
 
     def test_history_count_and_date_survive_a_prune(self, tmp_path: Path):
         cfg = config(tmp_path)

@@ -54,7 +54,7 @@ test("the tabs read Companies / Insiders / Alarms", () => {
   ]);
   assert.deepEqual(tabs, [
     ["companies", "Companies"],
-    ["people", "Insiders"],
+    ["insiders", "Insiders"],
     ["alarms", "Alarms"],
   ]);
 });
