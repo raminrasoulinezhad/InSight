@@ -220,7 +220,15 @@ live pid) and skipped — a lock naming a dead pid is a crash leftover and is
 correctly ignored. The check errs toward "in use": skipping a cleanup costs
 disk, a wrong guess costs a broken session.
 
-**Reclaiming the disk.** Once folded, the dated files are redundant bulk:
+**Reclaiming the disk happens by itself.** Once folded, the dated files are
+redundant bulk, so every scrape folds the new snapshot in and drops the copies it
+made redundant, keeping the newest `--keep-snapshots N` (default 3). This is
+deliberate rather than opt-in: snapshots restate each other, so left alone they
+grow without anyone noticing, and a cleanup command nobody discovers is the same
+as no cleanup. It also leaves the store warm, so the app's next cold start is
+already fast. Pass a large `--keep-snapshots` to keep everything.
+
+To reclaim on demand without scraping:
 
 ```bash
 insight-scrape --prune-snapshots      # keep the newest 2, delete the rest

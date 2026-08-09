@@ -112,6 +112,26 @@ def _prune(outdir: Path, keep: int) -> int:
     return 0
 
 
+def _autoprune_snapshots(outdir: Path, keep: int) -> None:
+    """Fold the new snapshot in and drop the ones it made redundant.
+
+    Best-effort: a scrape that collected data successfully must not be reported
+    as a failure because housekeeping tripped.
+    """
+    try:
+        from .aggregate import _txn_key
+        from .store import prune_folded
+
+        removed, freed = prune_folded(outdir, _txn_key, keep=keep)
+        if removed:
+            print(
+                f"Folded into store.json; removed {len(removed)} redundant snapshot(s), "
+                f"freeing {freed / 1e6:.1f} MB (kept the newest {keep})."
+            )
+    except Exception as e:
+        print(f"Snapshot cleanup skipped: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def _prune_browser_caches(*dirs: Path, quiet: bool = False) -> int:
     """Reclaim Chromium cache from the given profiles. Best-effort.
 
@@ -201,6 +221,15 @@ def main(argv: list[str] | None = None) -> int:
         "are lost — the store holds the deduplicated union of everything ever scraped",
     )
     ap.add_argument(
+        "--keep-snapshots",
+        type=int,
+        default=3,
+        metavar="N",
+        help="after scraping, delete dated snapshots already folded into store.json, "
+        "keeping the newest N (default 3). The store holds every record, so this only "
+        "removes redundant copies. Pass a large number to keep them all",
+    )
+    ap.add_argument(
         "--prune-browser-cache",
         action="store_true",
         help="reclaim disk: clear the Chromium caches in InSight's two browser profiles, "
@@ -277,6 +306,13 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(results, outdir, run_date, source=args.source)
     summarize(results)
     print(f"\nWrote: {outdir}/insider_{run_date}.json")
+
+    # Fold the new snapshot into the store and drop the copies it made
+    # redundant. Doing it here rather than behind a flag is the point: snapshots
+    # restate each other, so left alone they grow without anyone noticing, and a
+    # cleanup command nobody discovers is the same as no cleanup. It also leaves
+    # the store warm, so the app's next cold start is already fast.
+    _autoprune_snapshots(outdir, args.keep_snapshots)
 
     # Fire any alarms whose watched company/person has new transactions.
     try:
