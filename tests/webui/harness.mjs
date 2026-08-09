@@ -57,6 +57,9 @@ const LEXICAL = [
   "DEFAULT_THEME",
   "themeIds",
   "isTheme",
+  "themeMode",
+  "themesFor",
+  "systemPrefersDark",
 ];
 
 /** Every `[data-theme="x"] { … }` block in the stylesheet, as {id: {var: value}}. */
@@ -160,10 +163,30 @@ export function loadUi({ fetchResponses = {} } = {}) {
     removeItem: (k) => store.delete(k),
   };
 
+  // Stands in for the OS light/dark setting. `system.dark` is writable and
+  // `system.emit()` fires the page's change listener, so a test can simulate
+  // someone flipping their desktop to dark mode while the app is open.
+  const listeners = [];
+  const system = {
+    dark: false,
+    emit() {
+      listeners.forEach((fn) => fn({ matches: system.dark }));
+    },
+  };
+  const matchMedia = (query) => ({
+    media: query,
+    get matches() {
+      return /dark/.test(query) ? system.dark : !system.dark;
+    },
+    addEventListener: (_type, fn) => listeners.push(fn),
+    removeEventListener: () => {},
+  });
+
   const context = {
     document,
     localStorage,
-    window: { location: { reload: () => {} } },
+    matchMedia,
+    window: { location: { reload: () => {} }, matchMedia },
     console,
     setTimeout,
     clearTimeout,
@@ -190,5 +213,5 @@ export function loadUi({ fetchResponses = {} } = {}) {
   vm.runInContext(extractScript() + exposeEpilogue(), context, {
     filename: "index.html<script>",
   });
-  return { ctx: context, lex: context.__lex, elements, fetchLog, el: getEl };
+  return { ctx: context, lex: context.__lex, elements, fetchLog, el: getEl, system };
 }

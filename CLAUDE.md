@@ -31,7 +31,8 @@ cloud, no paid data services.
   setup lives in **Settings ▸ Notifications**.
 - **Themes** — ten palettes, shelved dark/light (Dark, Midnight, Terminal,
   Caramel, Chic | Light, Newsprint, Sage, Lemon, Canadian), chosen in
-  **Settings ▸ Appearance** and stored server-side.
+  **Settings ▸ Appearance** and stored server-side. **Match my system** follows
+  `prefers-color-scheme`, using the user's pick from each shelf.
 
 ## Technical stack
 - **Env / deps:** `uv` (dependency-groups; `uv sync --group dev`).

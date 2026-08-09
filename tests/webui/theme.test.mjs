@@ -16,9 +16,13 @@ import { loadUi, readIndexHtml, themeBlocks, usedVars } from "./harness.mjs";
 
 const html = readIndexHtml();
 const blocks = themeBlocks(html);
-const { ctx, lex } = loadUi();
-const { applyTheme, themeCard, themePage, notifyPage, renderAlarms, alarmSection } = ctx;
-const { STATE, THEMES, DEFAULT_THEME, themeIds, isTheme } = lex;
+const { ctx, lex, system } = loadUi();
+const { applyThemeCfg, pickTheme, setFollowSystem, resolveTheme, themeCard, themePage,
+        notifyPage, renderAlarms, alarmSection } = ctx;
+const { STATE, THEMES, DEFAULT_THEME, themeIds, isTheme, themeMode } = lex;
+
+// Most tests care about a single painted theme, not the auto machinery.
+const applyTheme = (id, opts) => applyThemeCfg({auto: false, theme: id}, opts);
 
 const ids = () => Array.from(themeIds());
 
@@ -233,15 +237,22 @@ test("an unknown theme falls back to the default rather than blanking the app", 
   assert.equal(STATE.theme, DEFAULT_THEME);
 });
 
-test("the choice is mirrored to localStorage for a flash-free reload", () => {
+test("the whole preference is mirrored to localStorage for a flash-free reload", () => {
   applyTheme("midnight", { persist: false });
-  assert.equal(ctx.localStorage.getItem("insight.theme"), "midnight");
+  const cached = JSON.parse(ctx.localStorage.getItem("insight.theme.cfg"));
+  // The preference, not the resolved theme: with "match my system" on, the OS
+  // may have changed since the app was last open, so the boot script has to be
+  // able to resolve it again rather than replay a stale answer.
+  assert.equal(cached.theme, "midnight");
+  assert.equal(cached.auto, false);
+  assert.ok("auto_dark" in cached && "auto_light" in cached);
 });
 
-test("the head boot script applies the cached theme before first paint", () => {
+test("the head boot script resolves the cached preference before first paint", () => {
   const boot = html.match(/<script id="theme-boot">([\s\S]*?)<\/script>/);
   assert.ok(boot, "without this the page flashes the default theme on every load");
-  assert.match(boot[1], /localStorage\.getItem\("insight\.theme"\)/);
+  assert.match(boot[1], /localStorage\.getItem\("insight\.theme\.cfg"\)/);
+  assert.match(boot[1], /prefers-color-scheme: dark/, "auto must be resolved, not cached");
   assert.match(boot[1], /setAttribute\("data-theme"/);
   assert.ok(
     html.indexOf('id="theme-boot"') < html.indexOf("<body"),
@@ -260,6 +271,165 @@ test("every theme has a name and a description for the picker", () => {
   for (const t of Array.from(THEMES)) {
     assert.ok(t.name && t.name.length > 0, `${t.id} has no name`);
     assert.ok(t.desc && t.desc.length > 10, `${t.id} has no useful description`);
+  }
+});
+
+/* ---- following the system ------------------------------------------------ */
+
+function manual(theme) {
+  system.dark = false;
+  applyThemeCfg({ auto: false, theme, auto_dark: "dark", auto_light: "light" }, { persist: false });
+}
+
+function following({ dark, light }) {
+  applyThemeCfg({ auto: true, auto_dark: dark, auto_light: light }, { persist: false });
+}
+
+const painted = () => ctx.document.documentElement.getAttribute("data-theme");
+
+test("with auto off the chosen theme is used whatever the OS says", () => {
+  manual("caramel");
+  system.dark = true;
+  assert.equal(resolveTheme(), "caramel");
+  system.dark = false;
+  assert.equal(resolveTheme(), "caramel");
+});
+
+test("with auto on a dark system gets the dark pick", () => {
+  following({ dark: "midnight", light: "lemon" });
+  system.dark = true;
+  applyThemeCfg({}, { persist: false });
+  assert.equal(painted(), "midnight");
+});
+
+test("with auto on a light system gets the light pick", () => {
+  following({ dark: "midnight", light: "lemon" });
+  system.dark = false;
+  applyThemeCfg({}, { persist: false });
+  assert.equal(painted(), "lemon");
+});
+
+test("flipping the OS repaints a following app", () => {
+  following({ dark: "chic", light: "sage" });
+  system.dark = false;
+  applyThemeCfg({}, { persist: false });
+  assert.equal(painted(), "sage");
+  system.dark = true;
+  system.emit(); // the OS switched while the app was open
+  assert.equal(painted(), "chic");
+});
+
+test("a missed change event is caught up on the next resync", () => {
+  // Not every environment delivers the media change event, and a scheduled OS
+  // switch usually happens while the app is in the background — so returning to
+  // the tab re-checks rather than trusting the event.
+  following({ dark: "chic", light: "sage" });
+  system.dark = true;
+  applyThemeCfg({}, { persist: false });
+  assert.equal(painted(), "chic");
+  system.dark = false; // flipped with no event delivered
+  assert.equal(painted(), "chic", "still stale, as expected");
+  ctx.resyncSystemTheme();
+  assert.equal(painted(), "sage");
+});
+
+test("a resync leaves a manually-themed app alone", () => {
+  manual("terminal");
+  system.dark = false;
+  ctx.resyncSystemTheme();
+  assert.equal(painted(), "terminal");
+});
+
+test("flipping the OS leaves a manually-themed app alone", () => {
+  manual("terminal");
+  system.dark = true;
+  system.emit();
+  assert.equal(painted(), "terminal", "a hand-picked theme must not be overridden");
+});
+
+test("turning auto off restores the hand-picked theme", () => {
+  manual("newsprint");
+  following({ dark: "dark", light: "light" });
+  system.dark = true;
+  applyThemeCfg({}, { persist: false });
+  assert.equal(painted(), "dark");
+  setFollowSystem(false);
+  assert.equal(painted(), "newsprint", "the manual choice was remembered, not overwritten");
+});
+
+test("clicking a card while following sets that shelf's pick, not the theme", () => {
+  manual("canadian");
+  following({ dark: "dark", light: "light" });
+  system.dark = true;
+  applyThemeCfg({}, { persist: false });
+
+  pickTheme("caramel"); // a dark theme
+  assert.equal(STATE.themeCfg.auto_dark, "caramel");
+  assert.equal(STATE.themeCfg.auto_light, "light", "the light shelf is untouched");
+  assert.equal(STATE.themeCfg.theme, "canadian", "the manual choice is preserved");
+  assert.equal(painted(), "caramel");
+
+  pickTheme("sage"); // a light theme, while the OS is dark
+  assert.equal(STATE.themeCfg.auto_light, "sage");
+  assert.equal(painted(), "caramel", "still dark outside, so the dark pick keeps painting");
+});
+
+test("clicking a card while not following sets the theme", () => {
+  manual("dark");
+  pickTheme("lemon");
+  assert.equal(STATE.themeCfg.theme, "lemon");
+  assert.equal(painted(), "lemon");
+});
+
+test("each auto pick is constrained to its own shelf", () => {
+  for (const t of Array.from(THEMES)) {
+    manual("dark");
+    following({ dark: "dark", light: "light" });
+    pickTheme(t.id);
+    const cfg = STATE.themeCfg;
+    if (themeMode(t.id) === "dark") assert.equal(cfg.auto_dark, t.id);
+    else assert.equal(cfg.auto_light, t.id);
+    // a light theme must never land in auto_dark, or the app brightens at night
+    assert.equal(themeMode(cfg.auto_dark), "dark");
+    assert.equal(themeMode(cfg.auto_light), "light");
+  }
+});
+
+test("the picker offers the follow-system toggle", () => {
+  manual("dark");
+  assert.match(themePage(), /id="follow-system"/);
+  assert.ok(!/id="follow-system"[^>]*checked/.test(themePage()));
+  following({ dark: "dark", light: "light" });
+  assert.match(themePage(), /id="follow-system"[^>]*checked/);
+});
+
+test("while following, each shelf marks its own pick", () => {
+  following({ dark: "chic", light: "sage" });
+  system.dark = true;
+  applyThemeCfg({}, { persist: false });
+  const page = themePage();
+  assert.equal((page.match(/theme-card active/g) || []).length, 2, "one tick per shelf");
+  assert.match(page, /class="theme-card active" data-theme-id="chic"/);
+  assert.match(page, /class="theme-card active" data-theme-id="sage"/);
+  assert.match(page, /● now/, "the one currently painting should be called out");
+});
+
+test("with auto off exactly one card is marked", () => {
+  manual("caramel");
+  const page = themePage();
+  assert.equal((page.match(/theme-card active/g) || []).length, 1);
+  assert.ok(!page.includes("● now"));
+});
+
+test("a missing matchMedia does not break theme resolution", () => {
+  // Older/embedded browsers: fall back to the light pick rather than throwing.
+  const saved = ctx.matchMedia;
+  ctx.matchMedia = undefined;
+  try {
+    following({ dark: "chic", light: "sage" });
+    assert.equal(resolveTheme(), "sage");
+  } finally {
+    ctx.matchMedia = saved;
   }
 });
 

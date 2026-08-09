@@ -29,19 +29,16 @@ import threading
 from pathlib import Path
 from typing import Any
 
-THEMES = (
-    "dark",
-    "midnight",
-    "terminal",
-    "caramel",
-    "chic",
-    "light",
-    "newsprint",
-    "sage",
-    "lemon",
-    "canadian",
-)
+# Split by brightness, because "follow my system" needs to know which theme to
+# use for each. The two tuples together are the full set, and the UI shelves the
+# picker the same way — tests assert both halves match the stylesheet.
+DARK_THEMES = ("dark", "midnight", "terminal", "caramel", "chic")
+LIGHT_THEMES = ("light", "newsprint", "sage", "lemon", "canadian")
+THEMES = DARK_THEMES + LIGHT_THEMES
+
 DEFAULT_THEME = "dark"
+DEFAULT_AUTO_DARK = "dark"
+DEFAULT_AUTO_LIGHT = "light"
 
 # Same reasoning as notes.py: read-modify-write from a threaded server.
 _WRITE_LOCK = threading.Lock()
@@ -59,8 +56,20 @@ def load_settings(path: Path) -> dict[str, Any]:
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
-    theme = raw.get("theme")
-    return {"theme": theme if theme in THEMES else DEFAULT_THEME}
+
+    def pick(key: str, allowed: tuple[str, ...], fallback: str) -> str:
+        value = raw.get(key)
+        return value if value in allowed else fallback
+
+    return {
+        "theme": pick("theme", THEMES, DEFAULT_THEME),
+        # When auto is on the browser decides between the two below by asking the
+        # OS; `theme` is kept untouched so turning auto back off restores the
+        # theme the user last picked by hand.
+        "auto": bool(raw.get("auto", False)),
+        "auto_dark": pick("auto_dark", DARK_THEMES, DEFAULT_AUTO_DARK),
+        "auto_light": pick("auto_light", LIGHT_THEMES, DEFAULT_AUTO_LIGHT),
+    }
 
 
 def save_settings(path: Path, incoming: dict[str, Any]) -> tuple[bool, str]:
@@ -72,14 +81,30 @@ def save_settings(path: Path, incoming: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(incoming, dict):
         return False, "Expected a settings object."
 
-    theme = incoming.get("theme")
-    if theme is not None and theme not in THEMES:
-        return False, f"Unknown theme {theme!r}. Choose one of: {', '.join(THEMES)}."
+    # Each theme field is validated against the set it is allowed to hold, so
+    # "follow my system" can never end up with a light theme filed as the dark
+    # one — the app would then flip to a brighter palette when the OS goes dark.
+    fields: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("theme", THEMES),
+        ("auto_dark", DARK_THEMES),
+        ("auto_light", LIGHT_THEMES),
+    )
+    for key, allowed in fields:
+        value = incoming.get(key)
+        if value is not None and value not in allowed:
+            return False, f"Unknown {key} {value!r}. Choose one of: {', '.join(allowed)}."
+
+    auto = incoming.get("auto")
+    if auto is not None and not isinstance(auto, bool):
+        return False, "'auto' must be true or false."
 
     with _WRITE_LOCK:
         current = load_settings(path)
-        if theme is not None:
-            current["theme"] = theme
+        for key, _allowed in fields:
+            if incoming.get(key) is not None:
+                current[key] = incoming[key]
+        if auto is not None:
+            current["auto"] = auto
         _write(path, current)
     return True, "Saved."
 

@@ -558,12 +558,37 @@ a colourful theme that washes them out is a broken theme.
 
 `tests/test_settings.py` checks the Python and JS lists haven't drifted apart.
 
-The choice is stored server-side (`settings.json`, see `paths.settings_file()`)
-so it survives a cleared cache and follows the user between a browser tab and the
-`--window` app, which use different profiles. It is *also* mirrored into
-localStorage and applied by a tiny `<script id="theme-boot">` in `<head>` — the
-server copy can't be read before first paint, so without that cache every load
-would flash the default theme first.
+**Following the system.** `settings.json` holds four fields, not one:
+
+```json
+{"theme": "dark", "auto": false, "auto_dark": "dark", "auto_light": "light"}
+```
+
+With `auto` off the app paints `theme`. With it on, the browser asks the OS via
+`prefers-color-scheme` and paints `auto_dark` or `auto_light` — which is why the
+picker's two shelves earn their keep: while following, a click sets that shelf's
+pick rather than the theme, so you can have Chic at night and Sage by day.
+`theme` is left untouched throughout, so turning the toggle back off restores the
+theme picked by hand. The backend validates each field against its own shelf: a
+light theme stored as `auto_dark` would make the app get *brighter* when the OS
+goes dark.
+
+The choice is stored server-side (see `paths.settings_file()`) so it survives a
+cleared cache and follows the user between a browser tab and the `--window` app,
+which use different profiles. It is *also* mirrored into localStorage and applied
+by a tiny `<script id="theme-boot">` in `<head>` — the server copy can't be read
+before first paint, so without that cache every load would flash the default
+theme first. The cache holds the *preference*, not the resolved theme: the OS may
+have changed since the app was last open, so the boot script re-resolves rather
+than replaying a stale answer.
+
+Two subtleties in the live-update path, both of which bit during development:
+the `MediaQueryList` is held in a module-level binding because an unreferenced
+one can be collected and take its listener with it; and because not every
+environment delivers the `change` event (Chromium under devtools colour-scheme
+emulation does not), the theme is also re-resolved on `visibilitychange`. An OS
+that switches on a schedule usually does it while the app is in the background
+anyway.
 
 ### Browser-UI tests (`tests/webui/`)
 

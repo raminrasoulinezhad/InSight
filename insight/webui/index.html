@@ -9,8 +9,15 @@
   // Runs before the stylesheet paints anything, so a non-default theme doesn't
   // flash the dark palette first. The server copy is authoritative and is
   // reconciled once the app loads; this is only the cached last-known value.
+  //
+  // It has to resolve "follow my system" itself rather than replaying a cached
+  // result: the OS may have switched to dark since the app was last open, and
+  // caching the resolved theme would then paint the wrong one for a frame.
   try {
-    var t = localStorage.getItem("insight.theme");
+    var cfg = JSON.parse(localStorage.getItem("insight.theme.cfg") || "null");
+    var t = cfg && cfg.auto
+      ? (matchMedia("(prefers-color-scheme: dark)").matches ? cfg.auto_dark : cfg.auto_light)
+      : (cfg && cfg.theme);
     if (t) document.documentElement.setAttribute("data-theme", t);
   } catch (e) { /* private mode — fall back to the :root default */ }
 </script>
@@ -390,7 +397,14 @@
   /* theme picker */
   .shelf-h { margin:16px 0 8px; font-size:11px; text-transform:uppercase;
     letter-spacing:.6px; color:var(--muted); font-weight:600; }
-  .shelf-h:first-of-type { margin-top:0; }
+  .shelf-note { text-transform:none; letter-spacing:0; font-weight:400;
+    margin-left:8px; opacity:.8; }
+  .follow-row { display:flex; align-items:flex-start; gap:10px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:10px 12px; margin-bottom:16px; }
+  .follow-row input { margin-top:2px; cursor:pointer; }
+  .follow-row b { font-size:13px; display:block; }
+  .follow-row .settings-hint { margin:2px 0 0; display:block; }
   .theme-grid { display:grid; gap:10px;
     grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); }
   .theme-card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
@@ -510,6 +524,9 @@ let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"
               // the last step (so typing bursts collapse) and any pending jump
               nav:[], navKind:null, jump:null,
               theme:document.documentElement.getAttribute("data-theme") || "dark",
+              // mirrors settings.json; `theme` is the manual pick, auto_* are
+              // the per-mode picks used when following the system
+              themeCfg:{theme:"dark", auto:false, auto_dark:"dark", auto_light:"light"},
               settingsPage:"theme" };
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -1014,42 +1031,117 @@ const THEMES = [
 ];
 const themeIds = () => THEMES.map(t => t.id);
 const isTheme = id => themeIds().includes(id);
+const themeMode = id => (THEMES.find(t => t.id === id) || {}).mode;
+const themesFor = mode => THEMES.filter(t => t.mode === mode);
 
-// Paint immediately, then persist. The theme is mirrored into localStorage so
-// the next load applies it before first paint (see the boot script in <head>);
-// the server copy is the source of truth so it survives a cleared cache and
-// follows you to another browser.
-function applyTheme(id, {persist = true} = {}){
-  const theme = isTheme(id) ? id : DEFAULT_THEME;
+const systemPrefersDark = () => {
+  try { return matchMedia("(prefers-color-scheme: dark)").matches; }
+  catch(e){ return false; }   // no matchMedia — behave as if the OS is light
+};
+
+// Which theme should actually be painted, given the stored preference. With
+// `auto` on the OS chooses between the user's dark and light picks; otherwise
+// it is simply the theme they selected.
+function resolveTheme(cfg = STATE.themeCfg){
+  const id = cfg.auto
+    ? (systemPrefersDark() ? cfg.auto_dark : cfg.auto_light)
+    : cfg.theme;
+  return isTheme(id) ? id : DEFAULT_THEME;
+}
+
+// Paint immediately, then persist. The preference is mirrored into localStorage
+// so the next load applies it before first paint (see the boot script in
+// <head>); the server copy is the source of truth, so it survives a cleared
+// cache and follows you to another browser.
+function applyThemeCfg(patch, {persist = true} = {}){
+  STATE.themeCfg = {...STATE.themeCfg, ...patch};
+  const theme = resolveTheme();
   document.documentElement.setAttribute("data-theme", theme);
   STATE.theme = theme;
-  try { localStorage.setItem("insight.theme", theme); } catch(e){ /* private mode */ }
+  try {
+    localStorage.setItem("insight.theme.cfg", JSON.stringify(STATE.themeCfg));
+  } catch(e){ /* private mode */ }
   if (persist){
     fetch("/api/settings", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({theme})
+      body: JSON.stringify(STATE.themeCfg)
     }).catch(() => toast("Theme applied, but could not be saved."));
   }
   if (!document.getElementById("settings").classList.contains("hidden")
       && STATE.settingsPage === "theme") renderSettings();
 }
 
+// Clicking a card means "use this" when following the system is off, and "use
+// this for <shelf>" when it is on — which is why the shelves exist at all.
+function pickTheme(id){
+  if (!isTheme(id)) return;
+  applyThemeCfg(STATE.themeCfg.auto
+    ? (themeMode(id) === "dark" ? {auto_dark:id} : {auto_light:id})
+    : {theme:id});
+}
+
+function setFollowSystem(on){
+  applyThemeCfg({auto: !!on});
+}
+
 async function loadTheme(){
   try {
     const d = await (await fetch("/api/settings")).json();
-    if (d.theme && d.theme !== STATE.theme) applyTheme(d.theme, {persist:false});
+    // Only take fields the server actually sent. Copying undefined over a good
+    // local value would blank the preference on a partial or empty response —
+    // and that value is what the boot script reads on the next load.
+    const patch = {};
+    for (const k of ["theme", "auto_dark", "auto_light"]) if (d[k]) patch[k] = d[k];
+    if (typeof d.auto === "boolean") patch.auto = d.auto;
+    applyThemeCfg(patch, {persist:false});
   } catch(e){ /* keep whatever localStorage already painted */ }
 }
 
+// Repaint when the OS flips between light and dark while the app is open.
+//
+// The MediaQueryList is held in a module-level binding on purpose: a browser is
+// free to collect an unreferenced one, and the listener goes silent with it. An
+// inline `matchMedia(...).addEventListener(...)` looks correct and stops working
+// at an unpredictable point.
+let SYSTEM_DARK_MQ = null;
+function resyncSystemTheme(){
+  if (STATE.themeCfg.auto && resolveTheme() !== STATE.theme) applyThemeCfg({}, {persist:false});
+}
+function watchSystemTheme(){
+  try {
+    SYSTEM_DARK_MQ = matchMedia("(prefers-color-scheme: dark)");
+    SYSTEM_DARK_MQ.addEventListener("change", resyncSystemTheme);
+  } catch(e){ /* older browser — the choice still applies on next load */ }
+  // Belt and braces: not every environment delivers that change event (Chromium
+  // under devtools colour-scheme emulation, for one), and an OS that switches on
+  // a schedule usually does it while the app is in the background. Re-checking
+  // when the tab becomes visible catches up either way, and costs one comparison.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) resyncSystemTheme();
+  });
+}
+
+// With auto on, each shelf marks its own pick — two ticks, one per mode — and
+// the one the OS is currently using is called out so the page you're looking at
+// is never a mystery.
+function isChosen(t){
+  const cfg = STATE.themeCfg;
+  if (!cfg.auto) return cfg.theme === t.id;
+  return t.mode === "dark" ? cfg.auto_dark === t.id : cfg.auto_light === t.id;
+}
+
 function themeCard(t){
-  const on = STATE.theme === t.id;
+  const on = isChosen(t);
+  const live = on && STATE.themeCfg.auto && STATE.theme === t.id;
   // The swatch is painted with the theme's OWN variables via data-theme on the
   // preview itself, so it can never drift from the real palette.
   return `
     <button class="theme-card${on?" active":""}" data-theme-id="${esc(t.id)}"
-      aria-pressed="${on}" title="Use the ${esc(t.name)} theme">
+      aria-pressed="${on}" title="${STATE.themeCfg.auto
+        ? `Use ${esc(t.name)} when your system is ${t.mode}`
+        : `Use the ${esc(t.name)} theme`}">
       <span class="tname">${t.icon ? esc(t.icon)+" " : ""}${esc(t.name)}
-        <span class="tick">${on ? "✓" : ""}</span></span>
+        <span class="tick">${live ? "● now" : (on ? "✓" : "")}</span></span>
       <span class="swatch" data-theme="${esc(t.id)}" style="background:var(--bg)">
         <span class="sw-bar" style="background:var(--panel)">
           <span class="dot" style="background:var(--accent)"></span>
@@ -1067,13 +1159,28 @@ function themeCard(t){
 }
 
 function themeShelf(mode, title){
-  const rows = THEMES.filter(t => t.mode === mode);
-  return `<h4 class="shelf-h">${title}</h4>
-    <div class="theme-grid">${rows.map(themeCard).join("")}</div>`;
+  const auto = STATE.themeCfg.auto;
+  const note = auto
+    ? `<span class="shelf-note">used when your system is ${mode}</span>`
+    : "";
+  return `<h4 class="shelf-h">${title}${note}</h4>
+    <div class="theme-grid">${themesFor(mode).map(themeCard).join("")}</div>`;
 }
 
 function themePage(){
-  return `<p class="settings-hint">Applies straight away and is remembered for next time.</p>
+  const auto = STATE.themeCfg.auto;
+  return `
+    <label class="follow-row">
+      <input type="checkbox" id="follow-system" ${auto ? "checked" : ""}>
+      <span>
+        <b>Match my system</b>
+        <span class="settings-hint">${auto
+          ? "Switching automatically — right now your system is <b>"
+            + (systemPrefersDark() ? "dark" : "light")
+            + "</b>. Pick the theme to use for each below."
+          : "Follow the light/dark setting of your operating system."}</span>
+      </span>
+    </label>
     ${themeShelf("dark", "Dark")}
     ${themeShelf("light", "Light")}`;
 }
@@ -1542,7 +1649,10 @@ document.getElementById("settings-nav").addEventListener("click", e => {
 });
 document.getElementById("settings-pane").addEventListener("click", e => {
   const card = e.target.closest(".theme-card");
-  if (card) applyTheme(card.dataset.themeId);
+  if (card) pickTheme(card.dataset.themeId);
+});
+document.getElementById("settings-pane").addEventListener("change", e => {
+  if (e.target.id === "follow-system") setFollowSystem(e.target.checked);
 });
 // Clicking the backdrop (but not the card) closes, like any modal.
 document.getElementById("settings").addEventListener("click", e => {
@@ -1573,6 +1683,7 @@ function applyViewChrome(){
 
 // Alarms and notes first, so the 🔔 and 📝 buttons render their state on the
 // very first paint instead of flipping on a second pass.
+watchSystemTheme();
 Promise.all([loadAlarms(), loadNotes(), loadTheme()]).then(load);
 </script>
 </body>

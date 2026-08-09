@@ -86,7 +86,10 @@ Then reload the app to see the update.
 - **Settings ⚙** — top right, two pages. **Appearance** picks from ten themes,
   shelved as **Dark** (Dark, Midnight, Terminal, ☕ Caramel, ✦ Chic) and
   **Light** (Light, Newsprint, 🌿 Sage, 🍋 Lemon, 🍁 Canadian) — it applies
-  instantly and is remembered. **Notifications** holds the email/push setup.
+  instantly and is remembered. Tick **Match my system** and InSight follows your
+  computer's light/dark setting, switching by itself; pick which theme it uses
+  for each by choosing one from the Dark shelf and one from the Light shelf.
+  **Notifications** holds the email/push setup.
 - **Add a company** — type a name in the *“Add a company…”* box, pick the right
   match, and it joins your watchlist.
 - **Remove a company** — click **✕ Remove** on any company.
