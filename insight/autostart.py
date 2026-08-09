@@ -29,6 +29,8 @@ nothing.
 from __future__ import annotations
 
 import os
+import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,16 +44,44 @@ class UnsupportedPlatform(RuntimeError):
     """Raised when the OS has no autostart convention we know how to write."""
 
 
-def _executable() -> str:
-    """Absolute path to the installed `insight` command.
+def _argv() -> list[str]:
+    """The command to run at login, as separate arguments.
+
+    A list rather than a joined string on purpose: a home directory with a space
+    is ordinary on macOS and Windows, and every one of these formats treats a
+    bare space as an argument separator. Joining first and splitting later turned
+    "/Users/Jo Smith/.local/bin/insight" into two broken arguments and the entry
+    silently never launched.
 
     Falls back to `python -m insight.app` when the console script isn't on PATH
     (a source checkout, say), so enabling still produces something that runs.
     """
     found = shutil.which("insight")
     if found:
-        return str(Path(found).resolve())
-    return f"{Path(sys.executable).resolve()} -m insight.app"
+        return [str(Path(found).resolve()), "--window"]
+    return [str(Path(sys.executable).resolve()), "-m", "insight.app", "--window"]
+
+
+def _desktop_exec(argv: list[str]) -> str:
+    """Quote argv for a Desktop Entry `Exec=` key.
+
+    The spec reserves space as a separator and gives backslash and double quote
+    a meaning inside a quoted argument, so both need escaping before quoting.
+    """
+    out = []
+    for arg in argv:
+        if any(c in arg for c in " \t\"'\\`$"):
+            escaped = arg.replace("\\", "\\\\").replace('"', '\\"')
+            out.append(f'"{escaped}"')
+        else:
+            out.append(arg)
+    return " ".join(out)
+
+
+def _cmd_line(argv: list[str]) -> str:
+    """Quote argv for a Windows .cmd. `start` takes a title first, hence the ""."""
+    quoted = " ".join(f'"{a}"' if " " in a else a for a in argv)
+    return f'start "" {quoted}'
 
 
 def entry_path() -> Path:
@@ -71,37 +101,28 @@ def entry_path() -> Path:
     raise UnsupportedPlatform(f"No autostart convention known for {sys.platform!r}.")
 
 
-def _contents(command: str) -> str:
+def _contents(argv: list[str]) -> str:
     if sys.platform == "win32":
-        # `start ""` returns immediately so the console window doesn't linger.
-        return f'@echo off\r\nstart "" {command} --window\r\n'
+        # `start` returns immediately so no console window lingers for the session.
+        return f"@echo off\r\n{_cmd_line(argv)}\r\n"
     if sys.platform == "darwin":
-        args = "".join(f"    <string>{a}</string>\n" for a in [*command.split(" "), "--window"])
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
-            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-            '<plist version="1.0">\n'
-            "<dict>\n"
-            "  <key>Label</key>\n"
-            f"  <string>{MAC_LABEL}</string>\n"
-            "  <key>ProgramArguments</key>\n"
-            "  <array>\n"
-            f"{args}"
-            "  </array>\n"
-            "  <key>RunAtLoad</key>\n"
-            "  <true/>\n"
-            # Not KeepAlive: this is an app the user may close, not a daemon to
-            # be resurrected every time they quit it.
-            "</dict>\n"
-            "</plist>\n"
-        )
+        # Built with plistlib rather than string-formatted: it escapes &, < and >
+        # in a path for us, which hand-written XML would silently get wrong.
+        return plistlib.dumps(
+            {
+                "Label": MAC_LABEL,
+                "ProgramArguments": argv,
+                "RunAtLoad": True,
+                # Not KeepAlive: this is an app the user may close, not a daemon
+                # to be resurrected every time they quit it.
+            }
+        ).decode("utf-8")
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=InSight\n"
         "Comment=Insider transactions for your watchlist\n"
-        f"Exec={command} --window\n"
+        f"Exec={_desktop_exec(argv)}\n"
         "Icon=InSight\n"
         "Terminal=false\n"
         "X-GNOME-Autostart-enabled=true\n"
@@ -127,7 +148,7 @@ def enable() -> tuple[bool, str]:
     # newline="" disables translation: the .cmd content already carries CRLF, and
     # on Windows the default would rewrite each \n again and yield \r\r\n.
     with path.open("w", encoding="utf-8", newline="") as fh:
-        fh.write(_contents(_executable()))
+        fh.write(_contents(_argv()))
     if sys.platform != "win32":
         path.chmod(0o644 if sys.platform == "darwin" else 0o755)
     if sys.platform == "darwin":
@@ -175,6 +196,6 @@ def status() -> dict[str, object]:
         "supported": supported,
         "enabled": bool(path and path.exists()),
         "path": str(path) if path else "",
-        "command": _executable() + " --window",
+        "command": shlex.join(_argv()),
         "reason": reason,
     }

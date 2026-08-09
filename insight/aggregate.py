@@ -95,12 +95,6 @@ def _file_date(path: str | Path) -> str:
     return m.group(1) if m else ""
 
 
-def latest_data_file(data_dir: Path) -> Path | None:
-    """Newest data/insider_*.json by embedded date, or None if none exist yet."""
-    files = glob(str(data_dir / "insider_*.json"))
-    return Path(max(files, key=lambda f: (_file_date(f), f))) if files else None
-
-
 def _avg_price(value: float, shares: int) -> float | None:
     """Volume-weighted average cost per share (total $ / total shares), or None
     when there are no shares to divide by."""

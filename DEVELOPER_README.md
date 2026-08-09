@@ -50,7 +50,7 @@ insight-scrape --tickers TSE:FNV TSE:CNQ NYSE:AEO
 
 # widen coverage: auto-discover MarketBeat's ticker universe and scrape it
 # alongside the watchlist (default exchange TSE, ~215 large/mid-cap names).
-# The People tab then spans every scraped company; the Companies tab stays
+# The Insiders tab then spans every scraped company; the Companies tab stays
 # limited to your watchlist. Small-cap TSX-V/CSE names are not enumerated —
 # MarketBeat does not list them — so this is a best-effort free expansion.
 insight-scrape --discover          # TSE universe + watchlist
@@ -222,7 +222,7 @@ disk, a wrong guess costs a broken session.
 
 **Reclaiming the disk happens by itself.** Once folded, the dated files are
 redundant bulk, so every scrape folds the new snapshot in and drops the copies it
-made redundant, keeping the newest `--keep-snapshots N` (default 3). This is
+made redundant, keeping the newest `--keep-snapshots N` (default 2). This is
 deliberate rather than opt-in: snapshots restate each other, so left alone they
 grow without anyone noticing, and a cleanup command nobody discovers is the same
 as no cleanup. It also leaves the store warm, so the app's next cold start is
@@ -573,6 +573,15 @@ entry. A login session often has a different PATH than the terminal the user
 enabled it from, and a bare command name is the classic way an autostart entry
 silently does nothing. If the console script isn't on PATH at all (a source
 checkout), it falls back to `python -m insight.app`.
+
+The command is carried as a **list of arguments**, never a joined string. A home
+directory with a space is ordinary on macOS and Windows, and all three formats
+treat a bare space as an argument separator — joining first and splitting later
+turned `/Users/Jo Smith/.local/bin/insight` into two broken arguments and the
+entry silently never launched. Each format quotes it its own way: the Desktop
+Entry `Exec=` key per its spec, `start ""` with the path quoted on Windows, and
+the macOS plist built with `plistlib` so `&`, `<` and `>` in a path are escaped
+correctly rather than by hand.
 
 The macOS agent sets `RunAtLoad` but deliberately not `KeepAlive`: this is an app
 the user may close, not a daemon to resurrect. The Windows entry uses

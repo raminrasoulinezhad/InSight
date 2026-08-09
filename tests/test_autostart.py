@@ -15,6 +15,7 @@ autostart directories.
 from __future__ import annotations
 
 import plistlib
+import shlex
 import sys
 from pathlib import Path
 
@@ -171,6 +172,63 @@ class TestFileContents:
         monkeypatch.delenv("APPDATA", raising=False)
         with pytest.raises(autostart.UnsupportedPlatform):
             autostart.entry_path()
+
+
+class TestPathsWithSpaces:
+    """A home directory with a space is ordinary on macOS and Windows.
+
+    Every one of these formats treats a bare space as an argument separator, so
+    an unquoted path produced an entry that silently never launched — the
+    checkbox said enabled and nothing happened at login.
+    """
+
+    SPACED = "/Users/jo smith/.local/bin/insight"
+
+    @pytest.fixture(autouse=True)
+    def _spaced(self, home, monkeypatch):
+        # depends on `home` so it runs after it — otherwise that fixture's own
+        # `which` patch would win and the spaced path never reach the code
+        monkeypatch.setattr(autostart.shutil, "which", lambda _: self.SPACED)
+
+    def test_the_linux_exec_quotes_the_path(self, home: Path, monkeypatch):
+        as_platform(monkeypatch, "linux")
+        autostart.enable()
+        exec_line = next(
+            line
+            for line in autostart.entry_path().read_text(encoding="utf-8").splitlines()
+            if line.startswith("Exec=")
+        )
+        assert exec_line == f'Exec="{self.SPACED}" --window'
+
+    def test_the_macos_argv_keeps_the_path_in_one_piece(self, home: Path, monkeypatch):
+        as_platform(monkeypatch, "darwin")
+        autostart.enable()
+        with autostart.entry_path().open("rb") as fh:
+            plist = plistlib.load(fh)
+        assert plist["ProgramArguments"] == [self.SPACED, "--window"]
+
+    def test_the_windows_command_quotes_the_path(self, home: Path, monkeypatch):
+        as_platform(monkeypatch, "win32")
+        autostart.enable()
+        body = autostart.entry_path().read_text(encoding="utf-8")
+        assert f'"{self.SPACED}"' in body
+
+    @pytest.mark.parametrize("platform", PLATFORMS)
+    def test_the_reported_command_round_trips_through_a_shell_split(
+        self, home: Path, monkeypatch, platform
+    ):
+        # What the Startup page shows must still name one real program.
+        as_platform(monkeypatch, platform)
+        assert shlex.split(str(autostart.status()["command"]))[0] == self.SPACED
+
+    def test_xml_special_characters_in_a_path_are_escaped(self, home: Path, monkeypatch):
+        # plistlib handles this; hand-written XML silently would not.
+        as_platform(monkeypatch, "darwin")
+        monkeypatch.setattr(autostart.shutil, "which", lambda _: "/home/a&b/<x>/insight")
+        autostart.enable()
+        with autostart.entry_path().open("rb") as fh:
+            plist = plistlib.load(fh)
+        assert plist["ProgramArguments"][0] == "/home/a&b/<x>/insight"
 
 
 class TestStatus:

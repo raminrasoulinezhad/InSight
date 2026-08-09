@@ -224,11 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--keep-snapshots",
         type=int,
-        default=3,
+        default=2,
         metavar="N",
         help="after scraping, delete dated snapshots already folded into store.json, "
-        "keeping the newest N (default 3). The store holds every record, so this only "
-        "removes redundant copies. Pass a large number to keep them all",
+        "keeping the newest N (default 2, matching --prune-snapshots). The store holds "
+        "every record, so this only removes redundant copies. Pass a large number to keep all",
     )
     ap.add_argument(
         "--prune-browser-cache",
