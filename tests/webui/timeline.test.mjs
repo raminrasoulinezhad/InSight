@@ -124,6 +124,39 @@ test("zero-share trades do not produce NaN geometry", () => {
   for (const c of cs) assert.ok(Number.isFinite(c.cx) && Number.isFinite(c.r));
 });
 
+test("marks landing on one pixel collapse to a single dot", () => {
+  // They painted on top of each other before, so nothing is lost visually — but
+  // a busy company in a wide window costs a node per position, not per trade.
+  const sameDay = Array.from({ length: 400 }, (_, i) => txn("2026-06-15", 100 + i));
+  const cs = circles(svgTimeline([txn("2026-06-01", 10), ...sameDay, txn("2026-06-30", 10)]));
+  assert.ok(cs.length < 10, `expected a handful of dots, got ${cs.length}`);
+});
+
+test("collapsing keeps the largest trade at each position", () => {
+  const cs = circles(
+    svgTimeline([txn("2026-06-15", 1), txn("2026-06-15", 1000), txn("2026-06-01", 1000)]),
+  );
+  const atMid = cs.filter((c) => c.cx > 300);
+  assert.equal(atMid.length, 1);
+  assert.ok(atMid[0].r > 5, "the big trade must be the one that survives");
+});
+
+test("buys and sells at the same instant both survive", () => {
+  // Collapsing by position alone would hide one side of a same-day pair.
+  const cs = circles(svgTimeline([txn("2026-06-15", 100), txn("2026-06-15", 100, "sell")]));
+  assert.deepEqual(
+    cs.map((c) => c.side).sort(),
+    ["buy", "sell"],
+  );
+});
+
+test("distinct dates stay distinct", () => {
+  const cs = circles(
+    svgTimeline([txn("2026-06-01", 10), txn("2026-06-15", 10), txn("2026-06-30", 10)]),
+  );
+  assert.equal(cs.length, 3);
+});
+
 test("renderCharts says so plainly when there is nothing to plot", () => {
   const html = renderCharts([{ side: "buy", date: null, shares: 0 }]);
   assert.match(html, /class="empty"/);

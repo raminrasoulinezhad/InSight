@@ -320,6 +320,10 @@
   .svg-chart circle { stroke:none; fill-opacity:.75; }
   .svg-chart circle.tl-buy { fill:var(--buy); }
   .svg-chart circle.tl-sell { fill:var(--sell); }
+  .t-more { color:var(--muted); font-size:12px; padding:8px 10px; text-align:center; }
+  .show-all { background:transparent; border:1px solid var(--line); border-radius:6px;
+    color:var(--accent); font:inherit; font-size:12px; padding:2px 10px; cursor:pointer; }
+  .show-all:hover { border-color:var(--accent); }
   .txn-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
   .txn-table { width:100%; border-collapse:collapse; font-size:13px; }
   .txn-table th, .txn-table td { padding:7px 10px; text-align:left; white-space:nowrap;
@@ -527,7 +531,8 @@ let STATE = { view:"companies", data:null, people:null, q:"", qnorm:"", filter:"
               // mirrors settings.json; `theme` is the manual pick, auto_* are
               // the per-mode picks used when following the system
               themeCfg:{theme:"dark", auto:false, auto_dark:"dark", auto_light:"light"},
-              settingsPage:"theme", settingsOpener:null };
+              settingsPage:"theme", settingsOpener:null,
+              expanded:new Set() };   // companies showing their full row list
 
 // Alarm identity — must match notify.alarm_key on the backend.
 const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -672,12 +677,22 @@ function svgTimeline(txns){
   const maxSh = Math.max(...txns.map(t => t.shares||0)) || 1;
   // sqrt so a dot's *area* tracks share count — linear radius over-weights the
   // big trades and makes everything else vanish.
-  const marks = txns.map(t => {
+  // Collapse marks that would land on the same pixel and side, keeping the
+  // largest. They were painting on top of each other anyway, so the strip looks
+  // identical — but a company with thousands of trades in a wide window now
+  // costs one node per visible position instead of one per transaction.
+  const byPixel = new Map();
+  for (const t of txns){
     const x = padX + (Date.parse(t.date)-minT)/(maxT-minT)*(W-padX*2);
     const r = rMin + Math.sqrt((t.shares||0)/maxSh) * (rMax - rMin);
     const cls = t.side === "buy" ? "buy" : "sell";
-    return `<circle class="tl-${cls}" cx="${x.toFixed(1)}" cy="${mid}" r="${r.toFixed(1)}"/>`;
-  }).join("");
+    const key = Math.round(x) + cls;
+    const prev = byPixel.get(key);
+    if (!prev || r > prev.r) byPixel.set(key, {x, r, cls});
+  }
+  const marks = [...byPixel.values()].map(m =>
+    `<circle class="tl-${m.cls}" cx="${m.x.toFixed(1)}" cy="${mid}" r="${m.r.toFixed(1)}"/>`
+  ).join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="svg-chart">
     <line class="axis" x1="0" y1="${mid}" x2="${W}" y2="${mid}"/>
     ${marks}
@@ -695,8 +710,30 @@ function renderCharts(rows){
   </div>`;
 }
 
-function renderTxnTable(rows){
-  const body = rows.map(t => {
+// How many transactions a company shows before you ask for the rest.
+//
+// The feed is rebuilt as one innerHTML assignment, so its cost is the total row
+// count: a 2-year window over 96 companies meant 21,416 rows, ~195k DOM nodes
+// and a ~700 ms freeze on every filter keystroke. Nobody reads 400 rows of one
+// company at once, so the tail is pure cost — it stays one click away instead.
+const ROWS_PER_COMPANY = 25;
+
+function renderTxnTable(rows, key){
+  const total = rows.length;
+  const capped = key != null && !STATE.expanded.has(key) && total > ROWS_PER_COMPANY;
+  const shown = capped ? rows.slice(0, ROWS_PER_COMPANY) : rows;
+  const more = capped
+    ? `<tfoot><tr><td colspan="7" class="t-more">
+         Showing the ${ROWS_PER_COMPANY} most recent of ${total.toLocaleString()} —
+         <button class="show-all" data-key="${esc(key)}">show all</button>
+       </td></tr></tfoot>`
+    : (key != null && total > ROWS_PER_COMPANY
+        ? `<tfoot><tr><td colspan="7" class="t-more">
+             Showing all ${total.toLocaleString()} —
+             <button class="show-all" data-key="${esc(key)}">show fewer</button>
+           </td></tr></tfoot>`
+        : "");
+  const body = shown.map(t => {
     const cur = t.currency || "";
     const sideCls = t.side === "buy" ? "t-buy" : t.side === "sell" ? "t-sell" : "";
     const kind = t.is_issuer_buyback ? "buyback"
@@ -724,6 +761,7 @@ function renderTxnTable(rows){
       <th class="t-num">Shares</th><th class="t-num">Price</th><th class="t-num">Value</th>
     </tr></thead>
     <tbody>${body}</tbody>
+    ${more}
   </table></div>`;
 }
 
@@ -742,7 +780,9 @@ function renderCompany(c){
   } else if (rows.length === 0){
     body = `<div class="empty">No transactions match the current filter.</div>`;
   } else {
-    body = renderCharts(rows) + renderTxnTable(rows);
+    // The chart keeps every transaction — it is the summary of the window, and
+    // a dot is one node. Only the table, which is ~10 nodes a row, is capped.
+    body = renderCharts(rows) + renderTxnTable(rows, `${c.exchange}:${c.ticker}`);
   }
   const nIns = c.insider_count === 1 ? "1 insider" : `${c.insider_count} insiders`;
   const hasSedi = STATE.sediPages.has(`${c.exchange}:${c.ticker}`);
@@ -1489,6 +1529,13 @@ const feed = document.getElementById("feed");
 feed.addEventListener("click", e => {
   const bell = e.target.closest(".bell");
   if (bell){ toggleAlarm(bell.dataset); return; }
+  const showAll = e.target.closest(".show-all");
+  if (showAll){
+    const k = showAll.dataset.key;
+    if (STATE.expanded.has(k)) STATE.expanded.delete(k); else STATE.expanded.add(k);
+    render();
+    return;
+  }
   const xnav = e.target.closest(".xnav");
   if (xnav){
     if (xnav.dataset.person) goToPerson(xnav.dataset.person);

@@ -265,14 +265,22 @@ in-memory approach beats an embedded DB for a single-user, few-MB dataset;
 SQLite/FTS5 is the escalation path only if the data ever outgrows memory or needs
 concurrent writers.
 
-**The window defaults to the last 2 weeks.** The range selector opens on
-`Last 2 weeks`, not the full history. Rendering is a single `innerHTML` rebuild
-of the whole feed, so the window size sets the interaction cost directly: on the
-same data a 2-year window was a 6.2 MB payload and 195 746 feed nodes taking
-699 ms to paint, against 56 KB / 1 805 nodes / 13 ms for 2 weeks. The wider
-ranges are all still one click away — they just aren't what you pay for on every
-load, tab switch and keystroke. If the feed ever needs to render a large window
-smoothly, virtualizing the transaction rows is the next step.
+**The window defaults to the last 2 weeks**, and wide windows are bounded so
+picking one isn't a punishment. Rendering is a single `innerHTML` rebuild of the
+whole feed, so its cost is the total node count. Two caps keep that in hand:
+
+* each company's table shows `ROWS_PER_COMPANY` (25) with a *show all* expander —
+  a 2-year window meant 21 416 rows, and nobody reads 400 rows of one company;
+* the timeline collapses marks that land on the same pixel and side, keeping the
+  largest. They were painting on top of each other anyway, so the strip is
+  unchanged, but a busy company costs a node per visible position rather than
+  one per transaction.
+
+On the same data, a 2-year window went from 195 746 nodes / 699 ms to 27 529 /
+105 ms, with a filter click at 74 ms and search at 11 ms. The 2-week default is
+1 881 nodes / 11 ms. True virtualization (rendering only companies near the
+viewport) is the next step if it is ever needed; it wasn't, for a 3–7× win from
+two caps.
 
 ### Example summary
 
