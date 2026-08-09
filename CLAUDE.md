@@ -74,8 +74,10 @@ app restart.
   `paths`) is **mypy --strict clean**. The Playwright/HTTP glue (`marketbeat`,
   `app`) is relaxed via per-module overrides — the binding-layer analogue of
   MoneyTor's `ui.*` relaxation. Keep new pure logic strict.
-- **License headers:** every `.py`/`.sh` gets the SPDX PolyForm header (inserted
-  by pre-commit). Don't hand-edit.
+- **License:** Apache-2.0. Every `.py`/`.sh` gets the SPDX header from
+  `.license-header.txt` (inserted by pre-commit). Don't hand-edit; the `.mjs`
+  UI tests carry the same header with `//` comments, applied by hand since the
+  hook only covers `.py`/`.sh`.
 - **Source-agnostic model:** all data is normalized to `InsiderTransaction`
   (`models.py`). A new data source = a new module yielding these; nothing
   downstream changes.
