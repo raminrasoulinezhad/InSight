@@ -383,8 +383,14 @@ works). To productionize the SEDI path, pick one:
 ## Alarms & notifications
 
 Set an alarm on a **company** ("any insider trade in ATH") or a **person**
-("whenever Eric Sprott trades, in any company") via the 🔔 button on its card, or
-manage everything in the **Alarms tab** (settings + list). After every scrape
+("whenever Eric Sprott trades, in any company") via the 🔔 button on its card.
+The two halves live in different places: the **Alarms tab** lists what you're
+watching, split into Companies and Insiders, while the delivery setup (SMTP
+credentials, ntfy topic) is behind **Settings ⚙ ▸ Notifications** — it is
+configured once and then left alone, so it shouldn't sit in front of the list you
+actually check. Both read the same `notify.json`; only the form moved, and it
+kept its field ids so `collectNotifySettings` was unchanged. The Alarms tab warns
+when alarms exist but no channel is enabled. After every scrape
 (`evaluate_and_notify`, called from the daily timer and the Refresh button), any
 alarm whose target has a transaction *newer than when the alarm was set* fires
 over the enabled free channels:
@@ -428,6 +434,7 @@ insight/
   store.py              dated snapshots -> one deduplicated, incrementally folded store
   aggregate.py          flat records -> per-company / per-insider boxes
   notes.py              per-company user notes (your own research, kept per ticker)
+  settings.py           app preferences (theme); kept apart from notify.json
   issuers.py            name -> issuer-candidate resolver (+ watchlist add)
   companies.default.json  seed watchlist (copied to the app folder on first run)
   webui/index.html      the single-page UI (scrollable insider boxes)
@@ -458,6 +465,33 @@ are intentionally isolated behind pure helpers (`_extract_tickers`,
 `_no_insider_page_kind`, `_row_to_record`, …) so they can be tested with sample
 inputs rather than live HTTP.
 
+## Themes
+
+Every colour in the stylesheet comes from a CSS variable, so a theme is nothing
+but a re-declaration of the same set under `[data-theme="id"]`. Six ship: Dark
+(the `:root` default), Light, Terminal, Newsprint, Midnight and Canadian.
+Terminal is the only one that also swaps `--font`, to a monospace stack.
+
+Adding one means three edits that must agree, and the tests enforce all three:
+
+1. a `[data-theme="id"] { … }` block declaring **every** variable — a missing one
+   silently inherits the Dark value, which is how a light theme grows a single
+   unreadable dark patch;
+2. an entry in the `THEMES` array in `webui/index.html` (id, name, description);
+3. the id in `THEMES` in `insight/settings.py`, which validates what gets saved.
+
+`tests/webui/theme.test.mjs` checks the stylesheet and the picker agree, that
+every theme declares the full variable set, that no colour is hardcoded outside
+a theme block, and that buy/sell/text stay mutually distinct in each.
+`tests/test_settings.py` checks the Python and JS lists haven't drifted apart.
+
+The choice is stored server-side (`settings.json`, see `paths.settings_file()`)
+so it survives a cleared cache and follows the user between a browser tab and the
+`--window` app, which use different profiles. It is *also* mirrored into
+localStorage and applied by a tiny `<script id="theme-boot">` in `<head>` — the
+server copy can't be read before first paint, so without that cache every load
+would flash the default theme first.
+
 ### Browser-UI tests (`tests/webui/`)
 
 All of the app's interaction logic lives in `insight/webui/index.html`, so it
@@ -483,8 +517,9 @@ exercise shipped code rather than a copy. Two things to know when writing them:
 The suite covers bullet normalization and note escaping, timeline geometry
 (nothing clipped, radii ordered by share count), the back-stack state machine
 (typing collapses to one step, the cap drops the oldest), the cross-link markup,
-and markup invariants — including that the preselected `<option>` and
-`STATE.range` still agree, which is the same fact stated in two places.
+the theme palette contract, the alarm grouping, and markup invariants —
+including that the preselected `<option>` and `STATE.range` still agree, which is
+the same fact stated in two places.
 
 Anything needing real layout or real events (focus, key handling, paint cost) is
 verified against a live browser instead, not here.

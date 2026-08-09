@@ -83,6 +83,9 @@ Then reload the app to see the update.
 - **Follow a name** — click an insider in a company's table to see everything
   *they* traded; click a company on an insider's card to open that company. The
   **← Back** button (or **Alt+←**) retraces up to 10 steps.
+- **Settings ⚙** — top right, two pages. **Appearance** picks a theme (Dark,
+  Light, Terminal, Newsprint, Midnight, or 🍁 Canadian) — it applies instantly
+  and is remembered. **Notifications** holds the email/push setup for alarms.
 - **Add a company** — type a name in the *“Add a company…”* box, pick the right
   match, and it joins your watchlist.
 - **Remove a company** — click **✕ Remove** on any company.
@@ -107,8 +110,12 @@ supported — use either or both:
 ### Set an alarm
 
 In the app, click the **🔔** button on any company card or insider, then open the
-**Alarms** tab to manage them. Only trades that arrive *after* you set the alarm
+**Alarms** tab to manage them — it lists what you're watching, split into
+**Companies** and **Insiders**. Only trades that arrive *after* you set the alarm
 will fire — your existing history won't spam you.
+
+Setting up *how* you get told (email or push) lives in **Settings ⚙ →
+Notifications** — you do that once, then forget about it.
 
 Alarms are checked after each scrape (the daily timer, or when you click
 **↻ Refresh data**).
@@ -131,7 +138,7 @@ and click **Create**. Google shows a **16-character password** in a popup —
 **copy it now**, you can't see it again (but you can always delete it and make a
 new one).
 
-**3. Fill in the Alarms tab → 📧 Email (SMTP)** panel:
+**3. Fill in Settings ⚙ → Notifications → 📧 Email (SMTP)** panel:
 
 | Field | Value |
 |---|---|
@@ -165,7 +172,7 @@ no credentials** — you just pick a private *topic* name and subscribe to it.
 **long, hard-to-guess** topic name — anyone who knows it can send you
 notifications, so treat it like a password. For example: `insight-alerts-pick-your-own`.
 
-**3. Fill in the Alarms tab → 🔔 Push (ntfy.sh)** panel:
+**3. Fill in Settings ⚙ → Notifications → 🔔 Push (ntfy.sh)** panel:
 
 | Field | Value |
 |---|---|

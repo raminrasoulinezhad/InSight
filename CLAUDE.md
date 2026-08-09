@@ -26,7 +26,11 @@ cloud, no paid data services.
 - **Delisting hygiene** — acquired/delisted tickers are detected during scrape,
   dropped from cache, and hidden from views (self-healing).
 - **Alarms** — per-company / per-person alarms that notify (email via SMTP, or
-  ntfy push) when a new transaction appears; evaluated after each scrape.
+  ntfy push) when a new transaction appears; evaluated after each scrape. The
+  **Alarms tab** lists what's watched (split Companies / Insiders); the delivery
+  setup lives in **Settings ▸ Notifications**.
+- **Themes** — six palettes (Dark, Light, Terminal, Newsprint, Midnight,
+  Canadian) chosen in **Settings ▸ Appearance**, stored server-side.
 
 ## Technical stack
 - **Env / deps:** `uv` (dependency-groups; `uv sync --group dev`).
@@ -106,12 +110,13 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
 ```
 insight/
   app.py          local HTTP server + API (/api/data, /api/people, /api/watchlist,
-                  /api/notes, /api/refresh)
+                  /api/notes, /api/settings, /api/refresh)
   scrape.py       insight-scrape CLI (targets, output, --discover, --prune-snapshots)
   marketbeat.py   Playwright scraper + discovery + cache/delisted helpers
   store.py        dated snapshots -> one deduplicated store, folded incrementally
   aggregate.py    records -> company/people views (+ in-memory access cache)
   notes.py        per-company user notes (EXCH:TICKER -> text)
+  settings.py     app preferences (theme); separate from notify.json
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
   notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers
@@ -121,3 +126,12 @@ tests/            pytest (parsing, math, aggregation, add/remove, cache)
 ```
 See `DEVELOPER_README.md` for deeper docs (scheduling, delisting, caching,
 data-source rationale).
+
+## Themes
+A theme is a `[data-theme="id"]` block re-declaring every CSS variable — nothing
+else in the stylesheet knows which is active, and **no colour may be hardcoded
+outside a theme block** (a literal can't be re-themed). Adding one means three
+edits that must agree: the stylesheet block, the `THEMES` array in
+`webui/index.html`, and `THEMES` in `insight/settings.py`. Tests enforce all
+three, plus that every theme declares the complete variable set — a missing
+variable silently inherits Dark's value.
