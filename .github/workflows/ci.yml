@@ -2,11 +2,11 @@ name: CI
 
 # Lint, type-check, and test on every push and pull request. Mirrors the local
 # dev tooling (ruff / mypy / pytest) so CI fails the same way a developer would
-# locally. Tests are pure (no network/browser), so no Playwright install needed.
+# locally. No test touches the outside network.
 #
-# Node is set up explicitly: the browser-UI tests run on Node's built-in runner
-# and pytest SKIPS them when node is missing, so without this they would quietly
-# stop running here instead of failing.
+# Node and Chromium are both installed explicitly. The suites that need them
+# SKIP when they are missing rather than failing, so leaving either out would
+# mean those tests quietly stop running here instead of going red.
 
 on:
   push:
@@ -33,6 +33,27 @@ jobs:
 
       - name: Set up Python + sync dev deps
         run: uv sync --group dev
+
+      # Chromium is ~150 MB; cache it on the resolved Playwright version so it
+      # is downloaded once rather than on every run.
+      - name: Resolve the Playwright version
+        id: pw
+        run: echo "version=$(uv run python -c 'import importlib.metadata as m; print(m.version(\"playwright\"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium (for the end-to-end tests)
+        run: uv run playwright install --with-deps chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+
+      - name: Install Chromium system deps (cached browser)
+        run: uv run playwright install-deps chromium
+        if: steps.pw-cache.outputs.cache-hit == 'true'
 
       - name: Ruff lint
         run: uv run ruff check insight tests

@@ -676,6 +676,32 @@ the theme palette contract, the alarm grouping, and markup invariants —
 including that the preselected `<option>` and `STATE.range` still agree, which is
 the same fact stated in two places.
 
+### End-to-end tests (`tests/test_e2e_browser.py`)
+
+The vm harness has no renderer, no focus model and no keyboard, so a keydown
+handler can look perfect and never fire, and a layout can overflow a phone
+screen with every unit test green. That gap is covered by driving the real page
+in Chromium via Playwright — already a dependency for the scraper, so nothing new
+is installed. The tests skip (rather than fail) when the browser binary is
+missing; CI installs it explicitly, cached on the resolved Playwright version so
+the ~150 MB download happens once.
+
+Scope is deliberately narrow — only what needs a browser:
+
+* real key presses: Enter opening the next bullet, Backspace removing an empty
+  one, Ctrl+Enter saving, Escape discarding;
+* real focus: Tab and Shift+Tab cycling inside the settings dialog, focus
+  returning to the ⚙ on close, Alt+Left staying inert while the dialog is up;
+* computed styles: a theme actually repainting the body, Terminal actually
+  switching to a monospace stack;
+* geometry: no horizontal overflow at 375 px, the dialog fitting a phone screen,
+  the timeline staying one thin row, the transaction table scrolling inside its
+  card.
+
+Every page is also watched for uncaught JS errors, which fails the test on
+teardown. Anything provable without a browser belongs in `tests/webui/` instead —
+these are ~6 s against ~1 s for everything else.
+
 Anything needing real layout or real events (focus, key handling, paint cost) is
 verified against a live browser instead, not here.
 

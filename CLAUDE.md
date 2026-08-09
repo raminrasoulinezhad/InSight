@@ -61,6 +61,7 @@ uv run insight-scrape --prune-browser-cache  # clear Chromium caches (keeps cook
 
 uv run pytest                  # tests (pure, no network/browser; runs the UI suite too)
 node --test tests/webui/       # browser-UI tests alone (Node's runner, no npm deps)
+uv run playwright install chromium   # once, for the end-to-end tests
 uv run ruff check insight tests
 uv run ruff format insight tests
 uv run mypy insight            # strict on the core
@@ -95,6 +96,9 @@ app restart.
 - **UI logic is tested too** (`tests/webui/`, Node's built-in runner — still no
   frontend deps). The harness evaluates the real `index.html` in a `node:vm`, so
   new pure UI logic (formatting, geometry, state machines) belongs there.
+- **Anything needing a real browser** (keyboard, focus, computed styles, layout)
+  goes in `tests/test_e2e_browser.py`, which drives Chromium with Playwright.
+  Keep it small — it is ~6× slower than the rest of the suite combined.
 - **On-disk writes are concurrent**: the server is a `ThreadingHTTPServer`, so
   any read-modify-write of a JSON file needs a lock plus a unique temp name +
   `os.replace` (see `notes.py`, `store.py`). A fixed temp name lets two writers
