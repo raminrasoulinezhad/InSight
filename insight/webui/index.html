@@ -170,6 +170,21 @@
   .disc { color:var(--muted); font-size:12px; display:inline-flex; align-items:center;
     gap:5px; cursor:pointer; user-select:none; }
   .disc input { cursor:pointer; }
+  /* Scrape progress. A SEDI fetch is minutes of a browser doing nothing visible
+     in this window, so the bar is the only sign it is alive. */
+  .progress { height:6px; margin-top:10px; border-radius:3px; overflow:hidden;
+    background:var(--accent-dim); border:1px solid var(--line); }
+  .progress.hidden { display:none; }
+  .progress-fill { height:100%; width:0; background:var(--accent);
+    transition:width .3s ease; }
+  /* Work started, count not known yet (opening the browser, discovering the
+     universe). A determinate bar stuck at 0% reads as hung. */
+  .progress.indeterminate .progress-fill { width:35%; animation:slide 1.3s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
+  @media (prefers-reduced-motion:reduce) {
+    .progress-fill { transition:none; }
+    .progress.indeterminate .progress-fill { animation:none; width:100%; opacity:.45; }
+  }
   .tabs { display:flex; gap:4px; margin-top:12px; border-bottom:1px solid var(--line); }
   .tabs button {
     background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent;
@@ -437,13 +452,17 @@
     <h1>InSight</h1>
     <span class="meta" id="datameta">loading…</span>
     <button id="refresh" class="refresh-btn">↻ Refresh data</button>
-    <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the People tab.">
+    <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the Insiders tab.">
       <input type="checkbox" id="discover" /> Scan all TSE (~215)
     </label>
     <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Opens a visible browser; solve the CAPTCHA once if prompted. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
     <button id="settings-open" class="refresh-btn settings-cog"
       title="Settings — theme and notifications">⚙</button>
+  </div>
+  <div id="progress" class="progress hidden" role="progressbar"
+       aria-valuemin="0" aria-valuemax="100" aria-label="Fetch progress">
+    <div id="progress-fill" class="progress-fill"></div>
   </div>
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
@@ -1691,7 +1710,38 @@ document.addEventListener("click", e => {
 const refreshBtn = document.getElementById("refresh");
 const sediBtn = document.getElementById("sedi");
 const refreshMsg = document.getElementById("refreshmsg");
+const progressBar = document.getElementById("progress");
+const progressFill = document.getElementById("progress-fill");
 let pollTimer = null;
+let hideTimer = null;
+
+// A scrape reports done/total once it knows how many companies it will fetch.
+// Until then total is 0 — running, but not yet countable.
+function progressPercent(done, total){
+  if (!total || total < 0) return null;              // nothing countable yet
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+function setProgress(on, done, total){
+  progressBar.classList.toggle("hidden", !on);
+  if (!on){
+    progressBar.classList.remove("indeterminate");
+    progressFill.style.width = "0%";
+    progressBar.removeAttribute("aria-valuenow");
+    return;
+  }
+  const pct = progressPercent(done, total);
+  // Unknown count: an animated stripe. A determinate bar frozen at 0% for the
+  // minute it takes to open a browser is indistinguishable from a hang.
+  progressBar.classList.toggle("indeterminate", pct === null);
+  if (pct === null){
+    progressFill.style.width = "";
+    progressBar.removeAttribute("aria-valuenow");
+  } else {
+    progressFill.style.width = pct + "%";
+    progressBar.setAttribute("aria-valuenow", String(pct));
+  }
+}
 
 function setRefreshing(on, msg){
   refreshBtn.disabled = on;                    // both buttons share one job slot
@@ -1704,24 +1754,39 @@ async function pollRefresh(){
   try {
     const d = await (await fetch("/api/refresh/status")).json();
     refreshMsg.textContent = d.message || "";
-    if (d.running){ return; }                 // keep polling
+    if (d.running){ setProgress(true, d.done, d.total); return; }   // keep polling
     clearInterval(pollTimer); pollTimer = null;
     setRefreshing(false, d.message);
-    if (d.ok) await load();                    // show freshly scraped data
+    if (d.ok){
+      // Land on full and hold a beat, so the bar is seen finishing rather than
+      // vanishing at whatever the last poll happened to catch (e.g. 11 of 12).
+      setProgress(true, 1, 1);
+      hideTimer = setTimeout(()=>{ setProgress(false); }, 900);
+      await load();                            // show freshly scraped data
+    } else {
+      setProgress(false);                      // failed: don't imply completion
+    }
     setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
   } catch(e){
     clearInterval(pollTimer); pollTimer = null;
+    setProgress(false);
     setRefreshing(false, "status check failed: " + e.message);
   }
 }
 
 async function startRefresh(url, startMsg){
+  clearTimeout(hideTimer);                     // a run starting inside the
+  hideTimer = null;                            // hold-at-100% window keeps its bar
   setRefreshing(true, startMsg);
+  setProgress(true, 0, 0);                     // indeterminate until the count lands
   try {
     const r = await fetch(url, { method:"POST" });
     if (r.status === 409){ setRefreshing(true, "A refresh is already running…"); }
     if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
-  } catch(e){ setRefreshing(false, "Could not start: " + e.message); }
+  } catch(e){
+    setProgress(false);
+    setRefreshing(false, "Could not start: " + e.message);
+  }
 }
 
 refreshBtn.addEventListener("click", () => {

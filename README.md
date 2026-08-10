@@ -110,6 +110,9 @@ unattended:
 - A real browser window opens. If a CAPTCHA appears, solve it — **once**. The
   login is remembered for later runs.
 - Only Canadian companies on your watchlist are fetched.
+- **A progress bar** under the toolbar tracks it, naming the company being
+  fetched (*“Fetching 3 of 7 — West Red Lake Gold”*). It takes a few minutes;
+  the bar is how you know it's working and not stuck.
 - Where a company has a saved SEDI report, a **⛏ SEDI report** link appears on
   its card and opens the official page.
 

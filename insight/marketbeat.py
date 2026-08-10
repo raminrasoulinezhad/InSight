@@ -351,6 +351,7 @@ def scrape_many(
     *,
     scraper_factory: Callable[[], Any] | None = None,
     source: str = "marketbeat",
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, list[InsiderTransaction]]:
     """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
 
@@ -370,6 +371,14 @@ def scrape_many(
     `.fetch(exchange, ticker, name) -> list[InsiderTransaction]`. `source` names
     the data source: for anything other than the default MarketBeat the cache is
     kept in a per-source sub-folder so keys from different sources never collide.
+
+    `on_progress(done, total, label)` is called before each fetch and once more
+    when the batch ends, so a caller can drive a progress bar. It counts only
+    companies actually fetched, not cache hits — a run that serves 200 of 215
+    from cache does ~15 companies of work, and a bar counting the other 200 as
+    progress would sit at 93% before the slow part even began. `label` names the
+    company being fetched *now* (empty at the end). Exceptions from the callback
+    are never allowed to break a scrape.
     """
     targets = list(targets)
     results: dict[str, list[InsiderTransaction]] = {}
@@ -394,13 +403,25 @@ def scrape_many(
         else:
             to_fetch.append((key, t, entry))
 
+    def progress(done: int, label: str) -> None:
+        """Report, but never let a reporting bug take the scrape down with it."""
+        if on_progress is None:
+            return
+        with contextlib.suppress(Exception):
+            on_progress(done, len(to_fetch), label)
+
     if not to_fetch:
+        progress(0, "")
         _save_delisted(delisted_path, delisted)
         return results
 
     factory = scraper_factory or (lambda: MarketBeatScraper(headless=headless))
     with factory() as mb:
-        for key, t, entry in to_fetch:
+        for done, (key, t, entry) in enumerate(to_fetch):
+            # Announced before the fetch, not after: a bar that only moves on
+            # completion shows nothing at all for the first (slowest) company,
+            # which is exactly when the user is wondering if it hung.
+            progress(done, str(t.get("name") or key))
             try:
                 recs = mb.fetch(t["exchange"], t["ticker"], t.get("name", ""))
                 results[key] = recs
@@ -425,5 +446,6 @@ def scrape_many(
                 print(f"  [{key}] ERROR: {type(e).__name__}: {str(e)[:120]}{note}")
             time.sleep(1.0)  # be polite between requests
 
+    progress(len(to_fetch), "")
     _save_delisted(delisted_path, delisted)
     return results

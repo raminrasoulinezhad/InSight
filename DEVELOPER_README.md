@@ -399,7 +399,26 @@ visible.
 | `GET /api/notify/config` | Alarms + channel settings (a projection, see below) |
 | `POST /api/notify/settings`, `/api/notify/test` | Channel setup, test send |
 | `POST,DELETE /api/watchlist`, `/api/alarms` | Add / remove |
-| `POST /api/refresh`, `GET /api/refresh/status` | Trigger and poll a scrape |
+| `POST /api/refresh`, `GET /api/refresh/status` | Trigger a scrape; poll it for progress |
+
+### Scrape progress
+
+A SEDI fetch is minutes of a browser window doing nothing this page can see, so
+the progress bar is the only evidence the app has not hung.
+
+- `scrape_many(..., on_progress=cb)` calls `cb(done, total, label)` before each
+  fetch and once at the end. `app._progress` publishes it into the job state, and
+  `/api/refresh/status` grows `done`, `total` and `label`; the UI polls every 1.5 s.
+- **`total` counts only companies actually fetched, not cache hits.** A discover
+  run serves ~200 of 215 from cache in milliseconds; counting those would park
+  the bar at 93% before the slow part began.
+- **`total == 0` means "running, count unknown"** — opening the browser, or a
+  cache-only run. The UI shows an animated indeterminate bar, because a
+  determinate one frozen at 0% is what users read as a crash.
+- The callback is wrapped in `contextlib.suppress` — progress is decoration, and
+  a bug in the reporter must not cost the scrape it reports on.
+- `label` names the company being fetched *now*, falling back to `EXCH:TICKER`
+  for the nameless `--tickers` targets.
 
 ---
 

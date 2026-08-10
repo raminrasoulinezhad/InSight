@@ -106,6 +106,14 @@ export function makeElement(tag = "div") {
       contains: (c) => el._classes.has(c),
       toggle: (c, on) => (on ? el._classes.add(c) : el._classes.delete(c)),
     },
+    attributes: {},
+    setAttribute: (k, v) => {
+      el.attributes[k] = String(v);
+    },
+    getAttribute: (k) => (k in el.attributes ? el.attributes[k] : null),
+    removeAttribute: (k) => {
+      delete el.attributes[k];
+    },
     addEventListener: (type, fn) => {
       (el.listeners[type] ||= []).push(fn);
     },

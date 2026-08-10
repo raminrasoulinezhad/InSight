@@ -56,7 +56,28 @@ CONFIG = paths.config_file()
 
 # ---- background refresh (re-scrape) job state ----
 _refresh_lock = threading.Lock()
-_refresh = {"running": False, "message": "", "finished": False, "ok": False, "date": None}
+# done/total/label drive the progress bar. total==0 means "no countable work yet"
+# (starting up, discovering, or a cache-only run), and the UI shows an
+# indeterminate bar rather than a misleading 0%.
+_refresh = {
+    "running": False,
+    "message": "",
+    "finished": False,
+    "ok": False,
+    "date": None,
+    "done": 0,
+    "total": 0,
+    "label": "",
+}
+
+
+def _progress(done: int, total: int, label: str) -> None:
+    """Publish scrape progress for /api/refresh/status."""
+    with _refresh_lock:
+        _refresh.update(done=done, total=total, label=label)
+        if total:
+            where = f" — {label}" if label else ""
+            _refresh["message"] = f"Fetching {min(done + 1, total)} of {total}{where}"
 
 
 def _sedi_page_keys() -> list[str]:
@@ -107,6 +128,10 @@ def _finish_refresh(results, targets, run_date: str) -> None:
             ok=True,
             date=run_date,
             message=f"Done — {total} transactions across {covered}/{len(targets)} companies.",
+            # Full, not cleared: the bar reads 100% for the moment before it is
+            # hidden, rather than snapping back to empty on the last poll.
+            done=_refresh["total"],
+            label="",
         )
 
 
@@ -149,6 +174,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                 targets,
                 cache_dir=paths.cache_dir(),
                 force=True,
+                on_progress=_progress,
                 scraper_factory=lambda: SediScraper(
                     headless=False,
                     profile_dir=paths.sedi_profile_dir(),
@@ -190,6 +216,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             cache_dir=paths.cache_dir(),
             force=not discover,
             delisted_path=paths.delisted_file(),
+            on_progress=_progress,
         )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
@@ -303,7 +330,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(409, {"started": False, **_refresh})
                     return
                 _refresh.update(
-                    running=True, finished=False, ok=False, message="Starting…", date=None
+                    running=True,
+                    finished=False,
+                    ok=False,
+                    message="Starting…",
+                    date=None,
+                    # without this the new run inherits the last one's bar and
+                    # opens at 100%
+                    done=0,
+                    total=0,
+                    label="",
                 )
             threading.Thread(target=_do_refresh, args=(discover, source), daemon=True).start()
             self._send_json(202, {"started": True})

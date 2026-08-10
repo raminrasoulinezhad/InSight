@@ -285,3 +285,82 @@ class TestRenderingAndLayout:
         page.wait_for_timeout(200)
         wrap = page.locator(".txn-table-wrap").first
         assert wrap.evaluate("el => getComputedStyle(el).overflowX") == "auto"
+
+
+class TestTheScrapeProgressBar:
+    """A SEDI fetch is minutes of a browser window doing nothing this page can
+    see, so the bar is the only evidence the app has not hung.
+
+    The vm harness proves the percentage maths; only a real browser proves the
+    element is actually visible, actually animated, and actually goes away.
+    """
+
+    @pytest.fixture
+    def gate(self, monkeypatch):
+        """Replace the scrape with one the test can hold open at a known point.
+
+        Progress goes through the real `app._progress`, so this exercises the
+        genuine status route and the genuine polling loop — only the browser and
+        the network are faked out.
+        """
+        release = threading.Event()
+
+        def fake_refresh(discover=False, source="marketbeat"):
+            app._progress(1, 3, "Beta Inc")  # one of three done -> 33%
+            release.wait(timeout=15)
+            app._progress(3, 3, "")
+            with app._refresh_lock:
+                app._refresh.update(
+                    running=False, finished=True, ok=True, message="Done — test", done=3, label=""
+                )
+
+        with app._refresh_lock:  # never inherit another test's job state
+            app._refresh.update(
+                running=False, finished=False, ok=False, message="", done=0, total=0, label=""
+            )
+        monkeypatch.setattr(app, "_do_refresh", fake_refresh)
+        try:
+            yield release
+        finally:
+            release.set()
+
+    def test_it_is_hidden_until_something_starts(self, page, gate):
+        assert page.locator("#progress").is_visible() is False
+
+    def test_it_appears_immediately_and_animates_before_the_count_is_known(self, page, gate):
+        # Between the click and the first status poll the app knows only that
+        # work started. A determinate bar frozen at 0% for the minute it takes
+        # to open a browser is what users read as a crash.
+        page.click("#sedi")
+        page.wait_for_selector("#progress:not(.hidden)", timeout=5_000)
+        assert page.locator("#progress").get_attribute("class").find("indeterminate") != -1
+        assert page.locator("#progress").get_attribute("aria-valuenow") is None
+
+    def test_it_fills_to_the_real_percentage_once_counting_starts(self, page, gate):
+        page.click("#sedi")
+        page.wait_for_function(
+            "document.querySelector('#progress')?.getAttribute('aria-valuenow') === '33'",
+            timeout=10_000,
+        )
+        width = page.evaluate("getComputedStyle(document.querySelector('#progress-fill')).width")
+        track = page.evaluate("getComputedStyle(document.querySelector('#progress')).width")
+        assert 0.3 < float(width[:-2]) / float(track[:-2]) < 0.36, (width, track)
+
+    def test_it_says_which_company_is_being_fetched(self, page, gate):
+        # "Fetching 2 of 3" alone still leaves the user watching a silent window.
+        page.click("#sedi")
+        page.wait_for_function(
+            "document.getElementById('refreshmsg').textContent.includes('Beta Inc')",
+            timeout=10_000,
+        )
+        assert "2 of 3" in page.text_content("#refreshmsg")
+
+    def test_it_goes_away_once_the_fetch_is_done(self, page, gate):
+        page.click("#sedi")
+        page.wait_for_selector("#progress:not(.hidden)", timeout=5_000)
+        gate.set()
+        page.wait_for_selector("#progress.hidden", state="attached", timeout=10_000)
+        page.wait_for_function(
+            "document.querySelector('#progress').classList.contains('hidden')", timeout=10_000
+        )
+        assert page.locator("#refresh").is_disabled() is False, "the buttons must come back"
