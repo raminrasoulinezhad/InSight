@@ -128,6 +128,22 @@ page** (the parser is built from the issuer-search shape plus the captured form)
 so `fetch_insider` always dumps its HTML — that dump is the evidence needed if
 the shape differs.
 
+**In the app**, the same search sits behind **⛏ Find companies** on any
+individual's card in the Insiders tab, and the results dialog puts **+ Add** on
+each company not already on the watchlist.
+
+- `POST /api/insider-search {name}` starts it; `GET /api/insider-search` returns
+  the last result. Progress comes from the existing `/api/refresh/status`.
+- **It shares the refresh job slot** rather than getting its own. Both drive the
+  one visible SEDI browser against one profile, so two at once would fight over
+  the session — and sharing means the existing "a job is running" handling
+  (disabled buttons, progress bar, polling) covers it for nothing. Starting one
+  while a refresh runs is a 409.
+- The result is served on its own route, not folded into the job status, so a
+  reload after the job ends can still show it.
+- The button is hidden for institutions: it drives the *family name* field, and a
+  fund files under "Insider company name" instead, so it would return nothing.
+
 ### Blocked alternatives
 
 - **canadianinsider.com**, **insidertracking.com** — Cloudflare (HTTP 403).
@@ -443,6 +459,7 @@ visible.
 | `GET /api/insiders` | Insiders view (`/api/people` is the pre-rename alias) |
 | `GET /api/search?q=` | Issuer-name candidates |
 | `GET /api/sedi-page?exchange=&ticker=` | A saved SEDI report page |
+| `POST,GET /api/insider-search` | Start a SEDI person search / read its result |
 | `GET,POST /api/notes` | Per-company notes |
 | `GET,POST /api/settings` | Theme preferences |
 | `GET,POST /api/autostart` | Open-at-login toggle |

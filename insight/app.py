@@ -26,6 +26,7 @@ refresh; reload the page to see updates.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -41,6 +42,7 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from . import autostart, notes, notify, paths, profiles, settings
 from .aggregate import load_insiders_view, load_view
@@ -78,6 +80,95 @@ def _progress(done: int, total: int, label: str) -> None:
         if total:
             where = f" — {label}" if label else ""
             _refresh["message"] = f"Fetching {min(done + 1, total)} of {total}{where}"
+
+
+# The insider search is a *browser* job, so it shares the refresh job slot rather
+# than getting its own: SEDI is driven through one visible window with one
+# profile, and two of those at once would fight over the same session. Sharing
+# the slot also means the UI's existing "a job is running" handling — disabled
+# buttons, progress bar, polling — covers it for free.
+_insider_result: dict[str, Any] = {"name": "", "companies": [], "unresolved": []}
+
+
+def _do_insider_search(name: str) -> None:
+    """Ask SEDI which companies one person has filed against.
+
+    Reports only — deliberately writes no snapshot. The records are a
+    person-shaped slice of a dataset the rest of the app treats as
+    company-shaped, so folding them into the store would make each company look
+    like it has exactly one insider. The point is to tell the user what to add.
+    """
+    try:
+        from .issuers import in_watchlist, load_watchlist
+        from .sedi import SediScraper, resolve_tickers
+
+        with _refresh_lock:
+            _refresh["message"] = f"Opening SEDI for “{name}” — solve the CAPTCHA if it appears…"
+
+        with SediScraper(
+            headless=False,
+            profile_dir=paths.sedi_profile_dir(),
+            capture_dir=paths.app_dir() / "sedi-debug",
+        ) as sedi:
+            records = sedi.fetch_insider(name)
+
+        unresolved: list[str] = []
+        if records:
+            with _refresh_lock:
+                _refresh["message"] = "Matching issuer names to tickers…"
+            records, unresolved = resolve_tickers(records)
+
+        cfg = load_watchlist(CONFIG)
+        grouped: dict[str, dict[str, Any]] = {}
+        for r in records:
+            issuer = r.issuer_name or "(unnamed issuer)"
+            row = grouped.get(issuer)
+            if row is None:
+                row = grouped[issuer] = {
+                    "issuer_name": issuer,
+                    "exchange": r.exchange,
+                    "ticker": r.ticker,
+                    "txn_count": 0,
+                    "latest_date": "",
+                    "on_watchlist": bool(r.ticker) and in_watchlist(cfg, r.exchange, r.ticker),
+                    "resolved": bool(r.ticker),
+                }
+            row["txn_count"] += 1
+            row["latest_date"] = max(row["latest_date"], r.transaction_date or "")
+
+        companies = sorted(grouped.values(), key=lambda c: -int(c["txn_count"]))
+        _insider_result.update(name=name, companies=companies, unresolved=unresolved)
+        found = sum(1 for c in companies if not c["on_watchlist"] and c["resolved"])
+        with _refresh_lock:
+            _refresh.update(
+                running=False,
+                finished=True,
+                ok=True,
+                message=(
+                    f"{name}: {len(records)} filings across {len(companies)} company(ies)"
+                    + (f" — {found} not on your watchlist." if found else ".")
+                    if records
+                    else f"No SEDI filings found for “{name}”."
+                ),
+                done=_refresh["total"],
+                label="",
+            )
+    except Exception as e:
+        with _refresh_lock:
+            _refresh.update(
+                running=False,
+                finished=True,
+                ok=False,
+                message=f"Insider search failed: {type(e).__name__}: {e}",
+            )
+        traceback.print_exc()
+    finally:
+        # The browser has closed, so its caches are safe to drop; the cookie that
+        # carries the solved CAPTCHA is never touched.
+        with contextlib.suppress(Exception):
+            from .profiles import prune_profile
+
+            prune_profile(paths.sedi_profile_dir())
 
 
 def _sedi_page_keys() -> list[str]:
@@ -297,6 +388,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"query": q, "candidates": search_issuers(q)})
             except Exception as e:
                 self._send_json(502, {"error": f"resolver failed: {e}"})
+        elif path == "/api/insider-search":
+            # The result of the last search. Served separately from the job
+            # status so a reload can still see it after the job ended.
+            self._send_json(200, dict(_insider_result))
         elif path == "/api/refresh/status":
             with _refresh_lock:
                 self._send_json(200, dict(_refresh))
@@ -343,6 +438,33 @@ class Handler(BaseHTTPRequestHandler):
                 )
             threading.Thread(target=_do_refresh, args=(discover, source), daemon=True).start()
             self._send_json(202, {"started": True})
+        elif parsed.path == "/api/insider-search":
+            try:
+                name = str(self._read_json().get("name", "")).strip()
+            except Exception as e:
+                self._send_json(400, {"started": False, "msg": f"bad request: {e}"})
+                return
+            if not name:
+                self._send_json(400, {"started": False, "msg": "an insider name is required"})
+                return
+            with _refresh_lock:
+                # Shares the refresh slot: both drive the one SEDI browser.
+                if _refresh["running"]:
+                    self._send_json(409, {"started": False, **_refresh})
+                    return
+                _refresh.update(
+                    running=True,
+                    finished=False,
+                    ok=False,
+                    message=f"Starting SEDI search for “{name}”…",
+                    date=None,
+                    done=0,
+                    total=0,
+                    label="",
+                )
+            _insider_result.update(name=name, companies=[], unresolved=[])
+            threading.Thread(target=_do_insider_search, args=(name,), daemon=True).start()
+            self._send_json(202, {"started": True, "name": name})
         elif parsed.path == "/api/notes":
             try:
                 body = self._read_json()

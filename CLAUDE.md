@@ -17,10 +17,12 @@ data services.
   their card opens that company; Back (and Alt+←) walks up to 10 states.
 - **Two data sources** — MarketBeat by default (unattended); **SEDI** on demand
   via ⛏ or `--source sedi` for TSXV/CSE names MarketBeat misses. See below.
-- **Person-first search** — `insight-scrape --insider FAMILY_NAME` uses SEDI's
-  cross-issuer insider search to list every company someone filed against and
-  flag those missing from the watchlist. The only way to discover an untracked
-  company; everything else here is company-first. Reports only, writes nothing.
+- **Person-first search** — **⛏ Find companies** on an insider's card (or
+  `insight-scrape --insider FAMILY_NAME`) uses SEDI's cross-issuer insider search
+  to list every company someone filed against, with **+ Add** on those missing
+  from the watchlist. The only way to discover an untracked company; everything
+  else here is company-first. Reports only — it writes no snapshot. Shares the
+  refresh job slot, since both drive the one SEDI browser.
 - **Watchlist** — add by name (TradingView resolver) / remove.
 - **Refresh** — re-scrape from the UI; optional "Scan all TSE (~215)".
 - **Notes** — free-text per company (a bullet list in the UI), shown above that

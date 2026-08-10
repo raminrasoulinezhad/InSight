@@ -108,11 +108,18 @@ test("closing returns focus to whatever opened the dialog", () => {
   assert.equal(STATE.settingsOpener, null, "and the reference is released");
 });
 
-test("the dialog is marked up as a modal for assistive tech", () => {
+test("every dialog is marked up as a modal for assistive tech", () => {
+  // Written against "the first .modal-card" when there was only one, so it
+  // quietly started describing a different dialog once a second was added.
+  // Check them all, each tied to its own labelling element.
   const html = readIndexHtml();
-  const card = html.match(/<div class="modal-card"[^>]*>/)[0];
-  assert.match(card, /role="dialog"/);
-  assert.match(card, /aria-modal="true"/);
-  assert.match(card, /aria-labelledby="settings-title"/);
-  assert.match(html, /id="settings-title"/);
+  const cards = [...html.matchAll(/<div class="modal-card"[^>]*>/g)].map((m) => m[0]);
+  assert.ok(cards.length >= 2, `expected several dialogs, found ${cards.length}`);
+  for (const card of cards) {
+    assert.match(card, /role="dialog"/, card);
+    assert.match(card, /aria-modal="true"/, card);
+    const labelled = card.match(/aria-labelledby="([^"]+)"/);
+    assert.ok(labelled, `no aria-labelledby: ${card}`);
+    assert.match(html, new RegExp(`id="${labelled[1]}"`), `nothing carries id=${labelled[1]}`);
+  }
 });

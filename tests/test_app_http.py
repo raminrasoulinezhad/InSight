@@ -426,3 +426,58 @@ class TestSediRefreshWiring:
         # Headless cannot get past the wall, and nobody can solve a challenge
         # they cannot see.
         assert spy.get("headless") is False
+
+
+class TestInsiderSearchRoute:
+    """The in-app front end for SEDI's person search.
+
+    It shares the refresh job slot deliberately: both drive the one visible SEDI
+    browser against one profile, and two at once would fight over the session.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _quiet(self, monkeypatch):
+        with app._refresh_lock:
+            app._refresh.update(running=False, finished=False, ok=False, message="")
+        # Never launch a browser from a test.
+        monkeypatch.setattr(app, "_do_insider_search", lambda name: None)
+
+    def test_a_name_starts_a_job(self, client: Client):
+        status, d = client.post("/api/insider-search", {"name": "Sprott"})
+        assert (status, d["started"], d["name"]) == (202, True, "Sprott")
+
+    def test_a_missing_name_is_refused(self, client: Client):
+        status, d = client.post("/api/insider-search", {})
+        assert status == 400 and d["started"] is False
+
+    def test_a_blank_name_is_refused(self, client: Client):
+        # " " would otherwise open a browser and search SEDI for nothing.
+        status, d = client.post("/api/insider-search", {"name": "   "})
+        assert status == 400 and d["started"] is False
+
+    def test_it_will_not_run_alongside_a_refresh(self, client: Client, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(app, "_do_refresh", lambda discover, source: release.wait(timeout=5))
+        assert client.post("/api/refresh")[0] == 202
+        try:
+            status, d = client.post("/api/insider-search", {"name": "Sprott"})
+            assert status == 409 and d["started"] is False
+        finally:
+            release.set()
+            with app._refresh_lock:
+                app._refresh.update(running=False)
+
+    def test_the_result_starts_empty_for_a_new_search(self, client: Client):
+        app._insider_result.update(name="Old", companies=[{"issuer_name": "stale"}])
+        client.post("/api/insider-search", {"name": "Sprott"})
+        status, d = client.get("/api/insider-search")
+        assert status == 200
+        assert (d["name"], d["companies"]) == ("Sprott", []), "a new search showed the old result"
+
+    def test_the_result_is_readable_after_the_job_ends(self, client: Client):
+        # Served separately from the job status so a reload still finds it.
+        app._insider_result.update(
+            name="Sprott", companies=[{"issuer_name": "West Red Lake", "ticker": "WRLG"}]
+        )
+        status, d = client.get("/api/insider-search")
+        assert status == 200 and d["companies"][0]["ticker"] == "WRLG"

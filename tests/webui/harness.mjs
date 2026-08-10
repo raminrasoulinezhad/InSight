@@ -42,6 +42,7 @@ const LEXICAL = [
   "STATE",
   "BULLET",
   "NAV_MAX",
+  "insiderFindOpen",
   "personKey",
   "companyKey",
   "noteKey",

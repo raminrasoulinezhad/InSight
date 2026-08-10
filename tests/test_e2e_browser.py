@@ -364,3 +364,90 @@ class TestTheScrapeProgressBar:
             "document.querySelector('#progress').classList.contains('hidden')", timeout=10_000
         )
         assert page.locator("#refresh").is_disabled() is False, "the buttons must come back"
+
+
+class TestFindingAnInsidersCompanies:
+    """The SEDI person lookup, end to end in a real browser.
+
+    The vm harness proves the rendering rules; only a browser proves the button
+    exists on the card, the dialog opens, the poll lands, and Add actually
+    reaches the watchlist.
+    """
+
+    @pytest.fixture
+    def stubbed(self, monkeypatch):
+        """Replace the browser-driving job with one that publishes a result."""
+
+        def fake(name):
+            app._insider_result.update(
+                name=name,
+                companies=[
+                    {
+                        "issuer_name": "ABC Corp",
+                        "exchange": "TSE",
+                        "ticker": "ABC",
+                        "txn_count": 4,
+                        "latest_date": "2026-06-03",
+                        "on_watchlist": True,
+                        "resolved": True,
+                    },
+                    {
+                        "issuer_name": "West Red Lake Gold Mines Ltd.",
+                        "exchange": "TSXV",
+                        "ticker": "WRLG",
+                        "txn_count": 2,
+                        "latest_date": "2026-06-05",
+                        "on_watchlist": False,
+                        "resolved": True,
+                    },
+                ],
+                unresolved=["Tiny Venture Explorations Inc."],
+            )
+            with app._refresh_lock:
+                app._refresh.update(running=False, finished=True, ok=True, message="Done — test")
+
+        with app._refresh_lock:
+            app._refresh.update(running=False, finished=False, ok=False, message="")
+        monkeypatch.setattr(app, "_do_insider_search", fake)
+
+    def _open(self, page):
+        page.click("#tabs button[data-view='insiders']")
+        page.wait_for_selector("[data-find-insider]")
+        page.click("[data-find-insider]")
+        page.wait_for_selector("#insider-find:not(.hidden)", timeout=10_000)
+
+    def test_the_button_is_on_the_insider_card(self, page, stubbed):
+        page.click("#tabs button[data-view='insiders']")
+        page.wait_for_selector(".company")
+        assert page.locator("[data-find-insider]").count() >= 1
+
+    def test_it_opens_a_dialog_and_shows_the_result(self, page, stubbed):
+        self._open(page)
+        page.wait_for_selector(".add-btn", timeout=10_000)
+        rows = page.locator("#insider-find-body tbody tr")
+        assert rows.count() == 2
+        assert "West Red Lake" in page.text_content("#insider-find-body")
+
+    def test_only_the_untracked_company_can_be_added(self, page, stubbed):
+        self._open(page)
+        page.wait_for_selector(".add-btn", timeout=10_000)
+        assert page.locator(".add-btn").count() == 1
+        assert page.locator(".add-btn").get_attribute("data-add-ticker") == "WRLG"
+
+    def test_adding_puts_it_on_the_watchlist(self, page, stubbed, tmp_path: Path):
+        self._open(page)
+        page.wait_for_selector(".add-btn", timeout=10_000)
+        page.click(".add-btn")
+        page.wait_for_function(
+            "!document.querySelector('.add-btn')", timeout=10_000
+        )  # the button becomes an "on watchlist" label
+        saved = json.loads((tmp_path / "companies.json").read_text())
+        assert any(c["ticker"] == "WRLG" for c in saved["companies"]), saved
+
+    def test_escape_closes_it_and_returns_focus(self, page, stubbed):
+        self._open(page)
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "document.getElementById('insider-find').classList.contains('hidden')", timeout=5_000
+        )
+        assert page.evaluate("document.activeElement.dataset.findInsider") is not None

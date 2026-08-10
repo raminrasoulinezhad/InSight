@@ -339,6 +339,14 @@
   .show-all { background:transparent; border:1px solid var(--line); border-radius:6px;
     color:var(--accent); font:inherit; font-size:12px; padding:2px 10px; cursor:pointer; }
   .show-all:hover { border-color:var(--accent); }
+  /* SEDI insider lookup: one row per company the person filed against */
+  .find-msg { color:var(--muted); font-size:13px; margin:0 0 12px; line-height:1.5; }
+  .find-msg b { color:var(--text); }
+  .add-btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:6px;
+    font:inherit; font-size:12px; padding:3px 10px; cursor:pointer; }
+  .add-btn:hover:not(:disabled) { filter:brightness(1.1); }
+  .add-btn:disabled { opacity:.6; cursor:progress; }
+  .muted-cell { color:var(--muted); font-size:12px; }
   .txn-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
   .txn-table { width:100%; border-collapse:collapse; font-size:13px; }
   .txn-table th, .txn-table td { padding:7px 10px; text-align:left; white-space:nowrap;
@@ -510,6 +518,16 @@
 
 <footer id="foot"></footer>
 
+<div class="modal hidden" id="insider-find">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="insider-find-title">
+    <div class="modal-head">
+      <h2 id="insider-find-title">Companies on SEDI</h2>
+      <button class="modal-x" id="insider-find-close" title="Close (Esc)">✕ Close</button>
+    </div>
+    <div class="modal-body"><div id="insider-find-body"></div></div>
+  </div>
+</div>
+
 <div class="modal hidden" id="settings">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="modal-head">
@@ -555,6 +573,9 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // the per-mode picks used when following the system
               themeCfg:{theme:"dark", auto:false, auto_dark:"dark", auto_light:"light"},
               settingsPage:"theme", settingsOpener:null, autostart:null,
+              // the insider whose SEDI lookup is in flight, so the shared
+              // refresh poll knows to show results instead of reloading the feed
+              pendingInsider:null, insiderFindOpener:null,
               expanded:new Set() };   // companies showing their full row list
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -930,9 +951,20 @@ function renderPerson(p){
       <span class="sub">${esc(roles)} · ${nCo} · ${p.txn_count} txns${p.latest_date? " · latest "+p.latest_date : ""}
         · net ${p.net_value>=0?'+':''}${fmtMoney(p.net_value, cur)}</span>
       ${bellBtn("person", {name:p.insider_name, label:p.insider_name})}
+      ${sediFindBtn(p)}
     </div>
     <div class="grid">${p.companies.map(renderPersonCompany).join("")}</div>
   </section>`;
+}
+
+// Individuals only. The lookup drives SEDI's "Insider family name" search, which
+// is the wrong field for a fund or holding company — those file under "Insider
+// company name" instead, so offering the button there would just return nothing.
+function sediFindBtn(p){
+  const name = p.insider_name;
+  if (!name || name === "Unknown" || p.entity_type === "institution") return "";
+  return `<button class="sedi-link" data-find-insider="${esc(name)}"
+    title="Ask SEDI which companies this person has filed against — including ones not on your watchlist. Opens a browser; solve the CAPTCHA once if prompted.">⛏ Find companies</button>`;
 }
 
 function renderInsiders(){
@@ -1353,9 +1385,10 @@ function focusablesIn(el){
 // A dialog that lets Tab wander onto the page behind it is a trap of a different
 // kind: keyboard and screen-reader users end up operating a feed they cannot
 // see while a modal covers it. Cycle within the card instead.
-function trapFocus(e){
+function trapFocus(e, modalId = "settings"){
   if (e.key !== "Tab") return;
-  const card = document.querySelector("#settings .modal-card");
+  const card = document.querySelector(`#${modalId} .modal-card`);
+  if (!card) return;
   const items = focusablesIn(card);
   if (!items.length) return;
   const first = items[0], last = items[items.length - 1];
@@ -1390,6 +1423,142 @@ function closeSettings(){
 
 const settingsOpen = () =>
   !document.getElementById("settings").classList.contains("hidden");
+
+/* ---- find an insider's companies on SEDI -------------------------------- */
+// The app is company-first everywhere else: an insider is only visible because a
+// company they traded in was scraped. So someone trading in a company you do not
+// track is invisible — there is no signal to act on. SEDI's family-name search
+// is the one place that signal exists, and this is its front end.
+
+const insiderFindOpen = () =>
+  !document.getElementById("insider-find").classList.contains("hidden");
+
+function openInsiderFind(name){
+  STATE.insiderFindOpener = document.activeElement;
+  document.getElementById("insider-find-title").textContent = `Companies on SEDI — ${name}`;
+  document.getElementById("insider-find").classList.remove("hidden");
+  document.getElementById("insider-find-close").focus();
+}
+
+function closeInsiderFind(){
+  document.getElementById("insider-find").classList.add("hidden");
+  const opener = STATE.insiderFindOpener;
+  STATE.insiderFindOpener = null;
+  if (opener && typeof opener.focus === "function") opener.focus();
+}
+
+function insiderFindBody(html){
+  document.getElementById("insider-find-body").innerHTML = html;
+}
+
+// One row per company the person filed against, newest-heaviest first.
+function renderInsiderFind(d){
+  const cos = d.companies || [];
+  if (!cos.length){
+    insiderFindBody(`<div class="find-msg">No SEDI filings found for ${esc(d.name)}.
+      Try a shorter family name — SEDI matches on "starts with".</div>`);
+    return;
+  }
+  const rows = cos.map(c => {
+    const key = c.resolved ? `${esc(c.exchange)}:${esc(c.ticker)}` : "—";
+    let action;
+    if (c.on_watchlist){
+      action = `<span class="muted-cell">on watchlist</span>`;
+    } else if (c.resolved){
+      action = `<button class="add-btn" data-add-exch="${esc(c.exchange)}"
+        data-add-ticker="${esc(c.ticker)}" data-add-name="${esc(c.issuer_name)}">+ Add</button>`;
+    } else {
+      // The resolver could not map the legal name to a ticker — usually the
+      // obscure venture names this whole feature exists to surface, so say so
+      // rather than silently dropping the row.
+      action = `<span class="muted-cell" title="No ticker match; add it by hand">no ticker</span>`;
+    }
+    return `<tr>
+      <td>${esc(c.issuer_name)}</td>
+      <td>${key}</td>
+      <td class="t-num">${c.txn_count}</td>
+      <td>${esc(c.latest_date || "—")}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join("");
+  const missing = cos.filter(c => !c.on_watchlist && c.resolved).length;
+  const lead = missing
+    ? `<b>${missing}</b> of these ${cos.length} are not on your watchlist yet.`
+    : `All ${cos.length} are already on your watchlist.`;
+  insiderFindBody(`
+    <p class="find-msg">${lead} Adding one only puts it on the list — click
+      <b>↻ Refresh data</b> afterwards to pull its history.</p>
+    <div class="txn-table-wrap"><table class="txn-table">
+      <thead><tr><th>Company</th><th>Ticker</th><th class="t-num">Filings</th>
+        <th>Latest</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`);
+}
+
+async function startInsiderFind(name){
+  openInsiderFind(name);
+  insiderFindBody(`<div class="find-msg">Opening SEDI for ${esc(name)}…
+    A browser window will open — solve the CAPTCHA there if prompted.
+    This takes a couple of minutes.</div>`);
+  STATE.pendingInsider = name;
+  try {
+    const r = await fetch("/api/insider-search", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({name}),
+    });
+    const d = await r.json();
+    if (r.status === 409){
+      STATE.pendingInsider = null;
+      insiderFindBody(`<div class="find-msg">Another SEDI job is already running. Wait for it to
+        finish, then try again — they share one browser.</div>`);
+      return;
+    }
+    if (!d.started){
+      STATE.pendingInsider = null;
+      insiderFindBody(`<div class="find-msg">Could not start: ${esc(d.msg || "unknown error")}</div>`);
+      return;
+    }
+    setRefreshing(true, `Searching SEDI for ${name}…`);
+    setProgress(true, 0, 0);
+    if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
+  } catch(e){
+    STATE.pendingInsider = null;
+    insiderFindBody(`<div class="find-msg">Could not start: ${esc(e.message)}</div>`);
+  }
+}
+
+async function showInsiderFindResult(){
+  try {
+    const d = await (await fetch("/api/insider-search")).json();
+    renderInsiderFind(d);
+  } catch(e){
+    insiderFindBody(`<div class="find-msg">Could not read the result: ${esc(e.message)}</div>`);
+  }
+}
+
+async function addFoundCompany(btn){
+  const exchange = btn.dataset.addExch, ticker = btn.dataset.addTicker;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/watchlist", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        legal_name: btn.dataset.addName, exchange, ticker, country: "CA",
+      }),
+    });
+    const d = await r.json();
+    toast(d.msg || (d.added ? "Added." : "Not added."));
+    if (d.added){
+      btn.outerHTML = `<span class="muted-cell">on watchlist</span>`;
+      await load();          // the Companies tab gains an (empty) card right away
+    } else {
+      btn.disabled = false;
+    }
+  } catch(e){
+    btn.disabled = false;
+    toast("Add failed: " + e.message);
+  }
+}
 
 async function load(){
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
@@ -1603,6 +1772,8 @@ const feed = document.getElementById("feed");
 feed.addEventListener("click", e => {
   const bell = e.target.closest(".bell");
   if (bell){ toggleAlarm(bell.dataset); return; }
+  const find = e.target.closest("[data-find-insider]");
+  if (find){ startInsiderFind(find.dataset.findInsider); return; }
   const showAll = e.target.closest(".show-all");
   if (showAll){
     const k = showAll.dataset.key;
@@ -1757,14 +1928,20 @@ async function pollRefresh(){
     if (d.running){ setProgress(true, d.done, d.total); return; }   // keep polling
     clearInterval(pollTimer); pollTimer = null;
     setRefreshing(false, d.message);
+    const insider = STATE.pendingInsider;
+    STATE.pendingInsider = null;
     if (d.ok){
       // Land on full and hold a beat, so the bar is seen finishing rather than
       // vanishing at whatever the last poll happened to catch (e.g. 11 of 12).
       setProgress(true, 1, 1);
       hideTimer = setTimeout(()=>{ setProgress(false); }, 900);
-      await load();                            // show freshly scraped data
+      if (insider) await showInsiderFindResult();
+      else await load();                       // show freshly scraped data
     } else {
       setProgress(false);                      // failed: don't imply completion
+      if (insider){
+        insiderFindBody(`<div class="find-msg">${esc(d.message || "The search failed.")}</div>`);
+      }
     }
     setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
   } catch(e){
@@ -1861,7 +2038,20 @@ document.getElementById("settings").addEventListener("click", e => {
   if (e.target.id === "settings") closeSettings();
 });
 
+document.getElementById("insider-find-close")
+  .addEventListener("click", closeInsiderFind);
+document.getElementById("insider-find").addEventListener("click", e => {
+  if (e.target.id === "insider-find") closeInsiderFind();
+  const add = e.target.closest(".add-btn");
+  if (add) addFoundCompany(add);
+});
+
 document.addEventListener("keydown", e => {
+  if (insiderFindOpen()){
+    if (e.key === "Escape"){ closeInsiderFind(); return; }
+    trapFocus(e, "insider-find");
+    return;   // the dialog owns the keyboard while it is up
+  }
   if (settingsOpen()){
     if (e.key === "Escape"){ closeSettings(); return; }
     trapFocus(e);
