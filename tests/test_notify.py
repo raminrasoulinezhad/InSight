@@ -295,8 +295,10 @@ class TestTitleAndLog:
 class TestDescribeAndConfig:
     def test_describe_sentence(self):
         # Brief, to the point: who + action + shares + issuer + per-share price + date.
+        # The verb is upper-cased: this text goes to phone push and the log, and
+        # capitals are the only emphasis plain text has.
         s = notify._describe(rec("HYMC", "Eric Sprott", "Buy", 24000, 200000.0, "2026-06-16"))
-        assert s == "Eric Sprott bought 24,000 shares of HYMC Inc (~8.33 CAD each) on 2026-06-16"
+        assert s == "Eric Sprott BOUGHT 24,000 shares of HYMC Inc (~8.33 CAD each) on 2026-06-16"
         # the terse format drops the exchange:ticker but always keeps the buy/sell date
         assert "TSE:HYMC" not in s
         assert "2026-06-16" in s
@@ -304,8 +306,49 @@ class TestDescribeAndConfig:
     def test_describe_without_date(self):
         # No transaction_date -> no trailing " on ..." clause.
         s = notify._describe(rec("HYMC", "Eric Sprott", "Buy", 24000, 200000.0, None))
-        assert s == "Eric Sprott bought 24,000 shares of HYMC Inc (~8.33 CAD each)"
+        assert s == "Eric Sprott BOUGHT 24,000 shares of HYMC Inc (~8.33 CAD each)"
         assert " on " not in s
+
+
+class TestTheVerbIsEmphasised:
+    """Buy vs sell is what an alert is actually about, so it must be what the eye
+    lands on — in whatever way each medium allows."""
+
+    def test_the_email_bolds_the_verb_in_normal_case(self):
+        # Real emphasis is available here, so shouting would be redundant.
+        r = rec("HYMC", "Eric Sprott", "Buy", 24000, 200000.0, "2026-06-16")
+        html = notify._describe_html(r)
+        assert "<b>bought</b>" in html
+        assert "BOUGHT" not in html
+
+    def test_a_sell_is_emphasised_in_both_media(self):
+        r = rec("HYMC", "Eric Sprott", "Sell", 5000, 40000.0, "2026-06-16")
+        assert "<b>sold</b>" in notify._describe_html(r)
+        assert "SOLD" in notify._describe(r)
+
+    def test_an_unusual_transaction_type_still_gets_emphasised(self):
+        # Anything that isn't a plain buy/sell falls back to the raw type; it
+        # must not quietly lose its emphasis.
+        r = rec("HYMC", "Eric Sprott", "Redemption", 100, 500.0, "2026-06-16")
+        assert "<b>Redemption</b>" in notify._describe_html(r)
+
+    def test_the_html_stays_escaped_around_the_bold(self):
+        # Bolding must not become an injection hole: an issuer or person named
+        # with a tag has to stay inert.
+        r = rec("HYMC", "<script>alert(1)</script>", "Buy", 10, 100.0, "2026-06-16")
+        html = notify._describe_html(r)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+        assert "<b>bought</b>" in html, "escaping must not eat the emphasis"
+
+    def test_the_email_body_carries_the_markup_through(self):
+        html = notify._email_html("Eric Sprott", ["plain"], 7, ["Eric Sprott <b>bought</b> x"])
+        assert "<b>bought</b>" in html
+
+    def test_the_email_falls_back_to_escaping_when_given_no_markup(self):
+        # The test alert has no records behind it, so it sends plain lines only.
+        html = notify._email_html("Eric Sprott", ["a <tag> & more"], 7)
+        assert "a &lt;tag&gt; &amp; more" in html
 
     def test_public_config_masks_password(self, tmp_path):
         p = tmp_path / "notify.json"

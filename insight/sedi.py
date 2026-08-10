@@ -18,11 +18,21 @@ the session cookie persists, and subsequent runs reuse it. If the wall is up and
 nobody can solve it (headless), the fetch raises BotBlocked and the batch falls
 back to cache — exactly like the MarketBeat path.
 
+Two ways in, sharing one form and one parser:
+  * `fetch(exchange, ticker)` — search by issuer name (SELECT_TYPE=8). One
+    company's report, grouped by insider. This is what a normal scrape uses.
+  * `fetch_insider(family_name)` — search by insider family name
+    (SELECT_TYPE=5). One person's filings across EVERY issuer, which is the only
+    way to discover a company you are not already tracking: the rest of the app
+    is company-first, so a person trading off-watchlist is otherwise invisible.
+    Records come back without tickers (SEDI reports legal names), so run
+    `resolve_tickers` over them.
+
 Design split (mirrors marketbeat.py):
-  * Pure, unit-tested parsing — `_map_columns`, `_row_to_record`,
+  * Pure, unit-tested parsing — `_parse_report_rows`, `_report_row_to_record`,
     `_transaction_type`, `_parse_sedi_date` — turns the ITD results grid into
-    `InsiderTransaction`s. Header-*driven* (columns matched by header keyword,
-    not fixed position) so it survives SEDI reordering columns.
+    `InsiderTransaction`s. Rows are anchored by their transaction id and grouped
+    by "Label: value" header rows, so one parser reads both report shapes.
   * Browser glue — `SediScraper` — drives the public ITD wizard. Its selectors
     are best-effort (SEDI is a legacy Struts app); run once with `capture_dir`
     set to dump the live HTML if a selector needs adjusting.
@@ -32,8 +42,10 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -127,6 +139,10 @@ def _transaction_type(nature: str, acquired: int | None, disposed: int | None) -
 _TXN_ID_RE = re.compile(r"^\d{6,}$")  # SEDI transaction IDs are 7-ish digit numbers
 _LABEL_INSIDER = "insider name"
 _LABEL_RELATION = "insider's relationship to issuer"
+# An issuer search groups by insider; an insider search groups by issuer. Both
+# grids use the same "Label: value" header rows, so tracking all three labels
+# lets one parser read either report.
+_LABEL_ISSUER = "issuer name"
 
 
 _CA_EXCHANGES = {"TSE", "TSX", "TSXV", "CSE", "NEO", "CNSX"}
@@ -214,10 +230,26 @@ def _parse_report_rows(
     url: str,
     now: str,
 ) -> list[InsiderTransaction]:
-    """Walk the report's rows in order, carrying the current insider/role from
-    group-header rows onto the transaction rows beneath them."""
+    """Walk the report's rows in order, carrying the current issuer/insider/role
+    from group-header rows onto the transaction rows beneath them.
+
+    `issuer`/`exchange`/`ticker` are *fallbacks*, used until (or unless) the grid
+    names an issuer itself. That is what lets one parser read both reports:
+
+      * an **issuer search** returns one company grouped by insider, and names no
+        issuer in the body — so the passed-in company stands for every row;
+      * an **insider search** returns one person across many companies, grouped by
+        issuer — so each "Issuer name:" header switches the company mid-report.
+
+    A row's exchange/ticker are only carried over while the issuer still matches
+    the one passed in. Once the grid moves to a different company, they are
+    cleared rather than guessed: SEDI reports issuer *names*, not tickers, and
+    stamping company A's ticker onto company B's trades would silently corrupt
+    the data. `resolve_tickers` fills them in afterwards.
+    """
     insider = ""
     role = ""
+    current_issuer = issuer
     out: list[InsiderTransaction] = []
     for row in rows:
         label = _group_label(row)
@@ -227,17 +259,91 @@ def _parse_report_rows(
                 insider = value
             elif key == _LABEL_RELATION:
                 role = _clean_relationship(value)
+            elif key == _LABEL_ISSUER and value:
+                current_issuer = value
             continue
-        rec = _report_row_to_record(row, insider, role, issuer, exchange, ticker, url, now)
+        same = _same_issuer(current_issuer, issuer)
+        rec = _report_row_to_record(
+            row,
+            insider,
+            role,
+            current_issuer,
+            exchange if same else "",
+            ticker if same else "",
+            url,
+            now,
+        )
         if rec:
             out.append(rec.classify())
     return out
+
+
+def resolve_tickers(
+    records: list[InsiderTransaction],
+    resolver: Callable[[str], list[dict[str, Any]]] | None = None,
+) -> tuple[list[InsiderTransaction], list[str]]:
+    """Fill in exchange/ticker on records that only carry an issuer name.
+
+    An insider search gives legal names ('West Red Lake Gold Mines Ltd.') where
+    the rest of the app is keyed on EXCH:TICKER, so each distinct name is looked
+    up once through the same resolver the "Add a company by name" box uses.
+
+    Returns `(records, unresolved_names)`. Records whose issuer could not be
+    resolved are **returned unchanged, not dropped** — a name that TradingView
+    does not carry is exactly the obscure venture company this whole feature
+    exists to surface, and silently discarding it would defeat the point. The
+    caller reports them so they can be added by hand.
+
+    Only Canadian listings are accepted: SEDI is a Canadian system, and a
+    same-named US issuer would be the wrong company.
+    """
+    if resolver is None:
+        from .issuers import search_issuers  # imported late: it does network I/O
+
+        resolver = search_issuers
+
+    resolved: dict[str, tuple[str, str]] = {}
+    unresolved: list[str] = []
+    for name in dict.fromkeys(r.issuer_name for r in records if r.issuer_name and not r.ticker):
+        try:
+            candidates = resolver(name)
+        except Exception:
+            candidates = []
+        pick = next((c for c in candidates if (c.get("country") or "").upper() == "CA"), None)
+        if pick and pick.get("ticker") and pick.get("exchange"):
+            resolved[name] = (str(pick["exchange"]).upper(), str(pick["ticker"]).upper())
+        else:
+            unresolved.append(name)
+
+    for rec in records:
+        if rec.ticker or rec.issuer_name not in resolved:
+            continue
+        rec.exchange, rec.ticker = resolved[rec.issuer_name]
+    return records, unresolved
+
+
+def _same_issuer(a: str, b: str) -> bool:
+    """Loose issuer-name equality, for deciding whether a passed-in ticker still
+    applies. SEDI writes the full legal name ('Athabasca Oil Corporation') where
+    the watchlist may hold a shorter one ('Athabasca Oil'), so compare on the
+    normalized search form and accept either being a prefix of the other."""
+    x, y = _search_query(a).lower(), _search_query(b).lower()
+    if not x or not y:
+        return False
+    return x.startswith(y) or y.startswith(x)
 
 
 # ---- browser glue (best-effort selectors; confirm live with capture_dir) ------
 
 _ACCESS_URL = "https://www.sedi.ca/sedi/SVTReportsAccessController?locale=en_CA"
 _ITD_URL = "https://www.sedi.ca/sedi/SVTItdController?locale=en_CA"
+
+# SELECT_TYPE values, read off the live ITD form. "5 = Insider family name" is
+# what makes a person-first search possible at all: it spans every issuer the
+# person has filed against, including the TSX-V/CSE micro-caps MarketBeat does
+# not list. (The form also offers "4 = Insider company name", unused here.)
+_SELECT_TYPE_ISSUER = "8"
+_SELECT_TYPE_INSIDER = "5"
 
 # SEDI sits behind Radware Bot Manager (formerly ShieldSquare / PerfDrive). When
 # it decides the browser is a bot it serves a hard "403 Forbidden" block page
@@ -456,6 +562,80 @@ class SediScraper:
             self._dump(f"itd_results_{ticker}")  # leave HTML so parsing can be fixed
         return records
 
+    # ------------------------------------------------------------------
+    def fetch_insider(self, family_name: str) -> list[InsiderTransaction]:
+        """Every filing by one person, across every issuer — the company-first
+        model turned around.
+
+        This is the search that finds companies you are not already tracking. The
+        rest of the app can only surface an insider because a company they traded
+        in was scraped first, so a person trading somewhere off your watchlist is
+        invisible — there is no signal to act on. SEDI's family-name search is the
+        one place that signal exists.
+
+        Records come back with `issuer_name` set but **no exchange/ticker**: SEDI
+        reports legal names, not tickers. Run `resolve_tickers` over the result to
+        fill those in before writing a snapshot.
+        """
+        page = self._page
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", family_name).strip("_")[:40] or "insider"
+
+        page.goto(_ITD_URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1500)
+        self._clear_wall_or_raise("opening ITD search")
+
+        try:
+            self._fill_insider_search(family_name)
+        except Exception as e:
+            print(f"  SEDI [insider:{family_name}] could not drive the search form: {e}")
+            self._dump(f"itd_insider_form_error_{slug}")
+            return []
+
+        page.wait_for_timeout(2500)
+        self._clear_wall_or_raise("running ITD insider search")
+
+        # A family-name search can match several people (and SEDI lists one row
+        # per insider); pick the one whose name we asked for.
+        self._select_insider_if_needed(family_name)
+
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        rows = self._extract_rows()
+        # No issuer/exchange/ticker fallback: every company must come from the
+        # grid's own "Issuer name:" headers. Passing one in would stamp it on
+        # rows belonging to other companies.
+        records = _parse_report_rows(rows, "", "", "", _ITD_URL, now)
+        if not records:
+            self._log_page_error("insider", family_name)
+        # Always dump an insider search: the results grid for this search type is
+        # not yet confirmed against a live page, so the HTML is the evidence
+        # needed to fix the parser if the shape differs.
+        self._dump(f"itd_insider_results_{slug}")
+        return records
+
+    def _select_insider_if_needed(self, family_name: str) -> None:
+        """A family-name search lands on a 'Select insider' picker when more than
+        one person matches. Click the best match (else the first); a no-op when
+        SEDI went straight to the report."""
+        page = self._page
+        views = page.locator("a[href*='SVTItdSelectInsider']")
+        n = views.count()
+        if n == 0:
+            return
+        target = views.first
+        q = (family_name or "").strip().lower()
+        for i in range(n):
+            v = views.nth(i)
+            with contextlib.suppress(Exception):
+                row = v.locator("xpath=ancestor::tr[1]").inner_text()
+                if q and q in row.lower():
+                    target = v
+                    break
+        with contextlib.suppress(Exception):
+            target.click(timeout=8000)
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)
+            self._clear_wall_or_raise("opening insider report")
+
     def _extract_rows(self) -> list[list[str]]:
         """Read the report's rows, tolerating a still-settling navigation (the
         large reports can destroy the JS context mid-evaluate)."""
@@ -501,14 +681,24 @@ class SediScraper:
                 print(f"  SEDI [{exchange}:{ticker}] page error: {m.group(1).strip()[:80]}")
 
     def _fill_issuer_search(self, issuer: str) -> None:
-        """Drive SEDI's public ITD form for an issuer-name search over a wide
-        date window, then submit.
+        """ITD search by issuer name — one company, grouped by insider."""
+        self._fill_search(_SELECT_TYPE_ISSUER, _search_query(issuer))
 
-        Real field names from the live form: SELECT_TYPE=8 is 'Issuer name',
-        SELECT_TYPE_VALUE is the name box, DATE_RANGE_TYPE=0 is transaction date,
-        months are 0-indexed, and the day <option>s carry no value attribute (so
-        they're chosen by label). The "to" date is pinned to today — SEDI rejects
-        any future end date.
+    def _fill_insider_search(self, family_name: str) -> None:
+        """ITD search by insider family name — one person, across every issuer
+        they have filed against. This is the only cross-issuer person search in
+        Canadian public data; MarketBeat has no equivalent."""
+        self._fill_search(_SELECT_TYPE_INSIDER, family_name.strip())
+
+    def _fill_search(self, select_type: str, value: str) -> None:
+        """Drive SEDI's public ITD form over a wide date window, then submit.
+
+        The form is the same for every search type — only SELECT_TYPE and the
+        value box change. Real field names from the live form: SELECT_TYPE_VALUE
+        is the shared name box, DATE_RANGE_TYPE=0 is transaction date, months are
+        0-indexed, and the day <option>s carry no value attribute (so they're
+        chosen by label). The "to" date is pinned to today — SEDI rejects any
+        future end date.
         """
         page = self._page
         # Use SEDI's OWN current date as the end of the range. The server runs on
@@ -518,10 +708,13 @@ class SediScraper:
         today = self._sedi_today()
         years_back = max(2, (self._months + 11) // 12)
 
-        # Issuer-name search, typed into the shared name box (Starts-with default).
-        page.select_option("select[name='SELECT_TYPE']", "8", timeout=8000)  # Issuer name
+        page.select_option("select[name='SELECT_TYPE']", select_type, timeout=8000)
         page.wait_for_timeout(300)  # onchange enables the value box
-        page.fill("input[name='SELECT_TYPE_VALUE']", _search_query(issuer), timeout=8000)
+        page.fill("input[name='SELECT_TYPE_VALUE']", value, timeout=8000)
+        # "Starts with" rather than exact: SEDI stores full legal names, so an
+        # exact match fails on the shortened names people actually type.
+        with contextlib.suppress(Exception):
+            page.select_option("select[name='SELECT_TYPE_VALUE_SEARCH_TYPE']", "3", timeout=4000)
 
         # Mandatory date range: Jan 1 (>= 2 years back) .. today, by transaction
         # date. The day <option>s carry no value attribute, so they must be

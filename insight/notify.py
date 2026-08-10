@@ -266,10 +266,12 @@ def _price_suffix(rec: dict[str, Any]) -> str:
     return f" ({_fmt_money(val, cur)})" if val else ""
 
 
-def _describe(rec: dict[str, Any]) -> str:
-    """A brief one-line sentence: who did what, how many shares, at what price, when.
+def _describe_parts(rec: dict[str, Any]) -> tuple[str, str, str]:
+    """Split the sentence around its verb: (before, verb, after).
 
-    The buy/sell date always appears — it's what distinguishes an alert.
+    The verb is what the alert is actually about — bought or sold — so each
+    channel emphasises it with whatever its medium allows. Splitting here means
+    the wording is written once and the two renderers only differ in emphasis.
     """
     ttype = (rec.get("transaction_type") or "").lower()
     if "buy" in ttype:
@@ -284,11 +286,36 @@ def _describe(rec: dict[str, Any]) -> str:
     sh = f"{shares:,} shares of " if shares else ""
     date = rec.get("transaction_date")
     when = f" on {date}" if date else ""
-    return f"{who} {action} {sh}{issuer}{_price_suffix(rec)}{when}"
+    return f"{who} ", action, f" {sh}{issuer}{_price_suffix(rec)}{when}"
 
 
-def _email_html(label: str, lines: list[str], index: int) -> str:
-    items = "".join(f"<li style='margin:6px 0'>{_esc(x)}</li>" for x in lines)
+def _describe(rec: dict[str, Any]) -> str:
+    """A brief one-line sentence: who did what, how many shares, at what price, when.
+
+    The verb is upper-cased because this text goes to phone push and the log,
+    neither of which renders bold — capitals are the only emphasis a plain-text
+    push notification has. The buy/sell date always appears; it's what
+    distinguishes an alert.
+    """
+    before, verb, after = _describe_parts(rec)
+    return f"{before}{verb.upper()}{after}"
+
+
+def _describe_html(rec: dict[str, Any]) -> str:
+    """The same sentence for email, with the verb actually bold and everything
+    escaped. Normal case here — the medium supports real emphasis, so shouting
+    would be redundant."""
+    before, verb, after = _describe_parts(rec)
+    return f"{_esc(before)}<b>{_esc(verb)}</b>{_esc(after)}"
+
+
+def _email_html(
+    label: str, lines: list[str], index: int, html_lines: list[str] | None = None
+) -> str:
+    """`html_lines` carries pre-marked-up sentences (verb bolded). Without them
+    the plain `lines` are escaped as-is, which is what the test alert uses."""
+    body_lines = html_lines if html_lines is not None else [_esc(x) for x in lines]
+    items = "".join(f"<li style='margin:6px 0'>{x}</li>" for x in body_lines)
     wrap = (
         "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"
         "background:#0e1116;color:#e6edf3;padding:24px;border-radius:12px;max-width:600px"
@@ -372,7 +399,12 @@ def _title(label: str) -> str:
 
 
 def _deliver(
-    cfg: dict[str, Any], title: str, lines: list[str], label: str, index: int
+    cfg: dict[str, Any],
+    title: str,
+    lines: list[str],
+    label: str,
+    index: int,
+    html_lines: list[str] | None = None,
 ) -> tuple[bool, str, list[dict[str, Any]]]:
     """Send one notification over every enabled channel.
 
@@ -389,7 +421,7 @@ def _deliver(
     email_cfg = cfg.get("email", {})
     if email_cfg.get("enabled") and email_cfg.get("username") and email_cfg.get("to"):
         try:
-            send_email(email_cfg, title, _email_html(label, lines, index), text)
+            send_email(email_cfg, title, _email_html(label, lines, index, html_lines), text)
             any_ok = True
             channels.append({"channel": "email", "ok": True})
         except Exception as e:  # report, never crash a scrape
@@ -472,9 +504,10 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
             changed = True
             continue
         lines = [_describe(r) for r in recs]
+        html_lines = [_describe_html(r) for r in recs]
         label = alarm.get("label", alarm_key(alarm))
         title = _title(label)
-        ok, err, channels = _deliver(cfg, title, lines, label, index)
+        ok, err, channels = _deliver(cfg, title, lines, label, index, html_lines)
         _append_log(
             log_path,
             {

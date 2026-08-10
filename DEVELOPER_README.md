@@ -73,11 +73,60 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
 Because a human may be needed, SEDI is a deliberate button (**⛏ Fetch from
 SEDI**) and an explicit `--source sedi`, never the daily timer.
 
-`sedi.py` mirrors `marketbeat.py`'s split: pure header-driven parsing
-(`_map_columns`, `_row_to_record`, `_transaction_type`, `_parse_sedi_date`) that
-survives column reordering, plus browser glue whose selectors are best-effort —
-SEDI is a legacy Struts app. Run with `--capture-dir` to dump live HTML when a
-selector needs adjusting.
+`sedi.py` mirrors `marketbeat.py`'s split: pure, unit-tested parsing
+(`_parse_report_rows`, `_report_row_to_record`, `_transaction_type`,
+`_parse_sedi_date`), plus browser glue whose selectors are best-effort — SEDI is
+a legacy Struts app. Run with `--capture-dir` to dump live HTML when a selector
+needs adjusting.
+
+### Searching by person (`--insider`)
+
+Everything else here is company-first, which leaves a real blind spot: you can
+only see an insider because a company they traded in was scraped, so **a person
+trading somewhere off your watchlist is invisible** — there is no signal to act
+on. SEDI's form is the one place that signal exists:
+
+```
+SELECT_TYPE  5 = Insider family name    8 = Issuer name
+```
+
+```bash
+insight-scrape --insider Sprott
+```
+
+It prints every issuer that person has filed against, marks which are missing
+from your watchlist, and stops:
+
+```
+TSE:ATH      Athabasca Oil Corporation      2 txns  latest=2026-06-03  [on watchlist]
+TSXV:WRLG    West Red Lake Gold Mines Ltd.  1 txns  latest=2026-06-05  [NOT on watchlist]
+?            Obscure Venture Explorations   1 txns  latest=2026-06-06  [ticker unresolved]
+```
+
+Four things worth knowing:
+
+- **One parser reads both reports.** An issuer search groups by insider; an
+  insider search groups by issuer. `_parse_report_rows` tracks all three header
+  labels, taking the passed-in company only as a *fallback*.
+- **No ticker is ever invented.** SEDI reports legal names, not tickers, so once
+  the grid moves to another company the passed-in exchange/ticker are cleared
+  rather than carried. Stamping company A's ticker on company B's trades would
+  silently corrupt the store. `_same_issuer` allows for SEDI's longer legal name
+  ("Athabasca Oil Corporation" vs. a watchlist's "Athabasca Oil").
+- **`resolve_tickers` fills them in afterwards**, via the same resolver the "Add
+  a company by name" box uses, one lookup per distinct name. Canadian listings
+  only — a same-named US issuer is a different company. Names it can't match are
+  **reported, not dropped**: those are exactly the obscure venture companies this
+  feature exists to surface.
+- **It deliberately writes no snapshot.** The records are a person-shaped slice,
+  and folding them into a store the app treats as company-shaped would make each
+  company look like it has exactly one insider. This run tells you what to add;
+  the normal scrape then collects it properly.
+
+The results grid for a person search has **not yet been confirmed against a live
+page** (the parser is built from the issuer-search shape plus the captured form),
+so `fetch_insider` always dumps its HTML — that dump is the evidence needed if
+the shape differs.
 
 ### Blocked alternatives
 
@@ -105,6 +154,7 @@ insight-scrape --source sedi                # official SEDI, opens a browser
 | `--config` / `--outdir` | Override the watchlist / output dir (default: app folder) |
 | `--discover [EXCH…]` | Add MarketBeat's exchange listing to the targets (default `TSE`) |
 | `--source {marketbeat,sedi}` | Data source (default `marketbeat`) |
+| `--insider FAMILY_NAME` | Search SEDI by person, report their companies, exit |
 | `--sedi-months N` | SEDI lookback, months back from today (default 24) |
 | `--capture-dir DIR` | (sedi) dump each page's HTML + screenshot for debugging |
 | `--headful` | Visible browser — helps on flagged IPs |

@@ -119,6 +119,29 @@ unattended:
 Both sources merge into the same view, so you can use either or both. Keep
 MarketBeat for the daily habit and reach for SEDI when a company shows up empty.
 
+### Chasing one insider
+
+InSight normally works company-first: you see an insider because a company they
+traded in was collected. So if someone you follow trades in a company you don't
+track, **you can't see it**.
+
+To go the other way — start from the person — ask SEDI directly:
+
+```bash
+insight-scrape --insider Sprott
+```
+
+It lists every company that person has filed against and marks the ones missing
+from your watchlist:
+
+```
+TSE:ATH      Athabasca Oil Corporation      2 txns  latest=2026-06-03  [on watchlist]
+TSXV:WRLG    West Red Lake Gold Mines Ltd.  1 txns  latest=2026-06-05  [NOT on watchlist]
+```
+
+Add the ones you want with **Add a company…** in the app, then refresh to pull
+their history. The search itself only reports — it doesn't change your data.
+
 ---
 
 ## 4. Alerts (optional)

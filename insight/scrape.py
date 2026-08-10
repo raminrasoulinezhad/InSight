@@ -165,6 +165,86 @@ def _prune_browser_caches(*dirs: Path, quiet: bool = False) -> int:
     return 0
 
 
+def summarize_insider(
+    name: str, records: list[InsiderTransaction], unresolved: list[str], config: Path
+) -> None:
+    """Report one person's filings grouped by company, flagging what is missing
+    from the watchlist — the whole reason to run an insider search."""
+    from .issuers import in_watchlist, load_watchlist
+
+    print(f"\n=== {name} — {len(records)} transactions ===")
+    if not records:
+        print("No filings found. Check the spelling, or try a shorter family name.")
+        return
+
+    cfg = load_watchlist(config)
+    by_company: dict[str, list[InsiderTransaction]] = {}
+    for r in records:
+        by_company.setdefault(r.issuer_name or "(unnamed issuer)", []).append(r)
+
+    missing: list[str] = []
+    for issuer, recs in sorted(by_company.items(), key=lambda kv: -len(kv[1])):
+        r = recs[0]
+        key = f"{r.exchange}:{r.ticker}" if r.ticker else "?"
+        if r.ticker and in_watchlist(cfg, r.exchange, r.ticker):
+            mark = "on watchlist"
+        elif r.ticker:
+            mark = "NOT on watchlist"
+            missing.append(f"{key}  {issuer}")
+        else:
+            mark = "ticker unresolved"
+        latest = max((x.transaction_date or "") for x in recs)
+        print(f"  {key:<12} {issuer[:44]:<44} {len(recs):>4} txns  latest={latest}  [{mark}]")
+
+    if missing:
+        print(f"\n{len(missing)} company(ies) this insider filed against are not on your list:")
+        for m in missing:
+            print(f"  + {m}")
+        print("Add one in the app's “Add a company…” box, then re-scrape to pull its history.")
+    if unresolved:
+        print(f"\n{len(unresolved)} issuer name(s) could not be matched to a ticker:")
+        for u in unresolved:
+            print(f"  ? {u}")
+        print("These are usually venture names the resolver does not carry; add them by hand.")
+
+
+def _scrape_insider(args: argparse.Namespace, config: Path) -> int:
+    """Run a SEDI person-search and report which companies it turned up.
+
+    Deliberately does NOT write a snapshot. The records carry only the issuers
+    this person filed against, so folding them into the store would mix a
+    person-shaped slice into a dataset the app treats as company-shaped — a
+    company would appear to have exactly one insider. This run is for discovery:
+    it tells you which companies to add, and the normal scrape then collects them
+    properly.
+    """
+    from .sedi import SediScraper, resolve_tickers
+
+    name = args.insider.strip()
+    print(f"InSight — SEDI insider search: {name}")
+    print("A browser window will open; solve any CAPTCHA once.\n")
+
+    capture = Path(args.capture) if args.capture else None
+    with SediScraper(
+        headless=False,
+        profile_dir=paths.sedi_profile_dir(),
+        months=args.months,
+        capture_dir=capture,
+    ) as sedi:
+        records = sedi.fetch_insider(name)
+
+    unresolved: list[str] = []
+    if records:
+        print(f"Resolving {len({r.issuer_name for r in records})} issuer name(s) to tickers…")
+        records, unresolved = resolve_tickers(records)
+
+    summarize_insider(name, records, unresolved, config)
+    # The browser has closed, so its caches are safe to drop; the cookie holding
+    # the solved CAPTCHA is never touched.
+    _prune_browser_caches(paths.sedi_profile_dir(), quiet=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Collect insider transactions.")
     ap.add_argument("--config", default=None, help="watchlist JSON (default: per-user app folder)")
@@ -237,6 +317,13 @@ def main(argv: list[str] | None = None) -> int:
         "then exit without scraping. Cookies and local storage are kept, so the solved "
         "SEDI CAPTCHA survives. Run this with the app and scraper closed",
     )
+    ap.add_argument(
+        "--insider",
+        metavar="FAMILY_NAME",
+        help="search SEDI by insider family name instead of by company, and report every "
+        "issuer that person has filed against — including companies not on your watchlist. "
+        "Implies --source sedi (a browser window opens; solve any CAPTCHA once)",
+    )
     args = ap.parse_args(argv)
 
     config = Path(args.config) if args.config else paths.config_file()
@@ -248,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.prune_browser_cache:
         return _prune_browser_caches(paths.sedi_profile_dir(), paths.chrome_profile_dir())
+
+    if args.insider:
+        return _scrape_insider(args, config)
 
     targets = load_targets(config, args.tickers)
     run_date = date.today().isoformat()
