@@ -222,7 +222,7 @@ def _scrape_insider(args: argparse.Namespace, config: Path) -> int:
 
     name = args.insider.strip()
     print(f"InSight — SEDI insider search: {name}")
-    print("A browser window will open; solve any CAPTCHA once.\n")
+    print("A browser runs minimized; it pops up if a CAPTCHA needs solving.\n")
 
     capture = Path(args.capture) if args.capture else None
     with SediScraper(
@@ -230,6 +230,7 @@ def _scrape_insider(args: argparse.Namespace, config: Path) -> int:
         profile_dir=paths.sedi_profile_dir(),
         months=args.months,
         capture_dir=capture,
+        start_minimized=not args.sedi_window,
     ) as sedi:
         records = sedi.fetch_insider(name)
 
@@ -283,6 +284,12 @@ def main(argv: list[str] | None = None) -> int:
         "--headful", action="store_true", help="run a visible browser (helps on flagged IPs)"
     )
     ap.add_argument(
+        "--sedi-window",
+        action="store_true",
+        help="(sedi) leave the browser window on screen instead of minimizing it; "
+        "it un-minimizes by itself for a CAPTCHA either way",
+    )
+    ap.add_argument(
         "--max-age",
         type=float,
         default=12.0,
@@ -322,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="FAMILY_NAME",
         help="search SEDI by insider family name instead of by company, and report every "
         "issuer that person has filed against — including companies not on your watchlist. "
-        "Implies --source sedi (a browser window opens; solve any CAPTCHA once)",
+        "Implies --source sedi (a minimized browser; it pops up for a CAPTCHA)",
     )
     args = ap.parse_args(argv)
 
@@ -367,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
 
         capture = Path(args.capture) if args.capture else None
         targets = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
-        print("Source: SEDI (a browser window will open; solve any CAPTCHA once).\n")
+        print("Source: SEDI (a minimized browser; it pops up if a CAPTCHA needs solving).\n")
         results = scrape_many(
             targets,
             cache_dir=cache_dir,
@@ -379,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
                 months=args.months,
                 capture_dir=capture,
                 pages_dir=paths.sedi_pages_dir(),
+                start_minimized=not args.sedi_window,
             ),
             source="sedi",
         )

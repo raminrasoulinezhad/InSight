@@ -100,15 +100,16 @@ for the names MarketBeat misses.
 | | MarketBeat (default) | SEDI |
 |---|---|---|
 | **Covers** | Large and mid-cap TSX / US names | *Every* Canadian filing, incl. TSX-V and CSE micro-caps |
-| **Speed** | Automatic, unattended | Opens a visible browser; may ask you to solve a CAPTCHA once |
+| **Speed** | Automatic, unattended | Drives a minimized browser; may ask you to solve a CAPTCHA once |
 | **Use it** | **↻ Refresh data**, or `insight-scrape` | **⛏ Fetch from SEDI**, or `insight-scrape --source sedi` |
 
 SEDI is Canada's official insider-filing system — the authoritative source, and
 the only one that sees small venture names. It is bot-protected, so it can't run
 unattended:
 
-- A real browser window opens. If a CAPTCHA appears, solve it — **once**. The
-  login is remembered for later runs.
+- A real browser runs it, **minimized** so it stays out of your way. It pops
+  itself up only if a CAPTCHA appears — solve it **once** and the login is
+  remembered for later runs, then it minimizes again.
 - Only Canadian companies on your watchlist are fetched.
 - **A progress bar** under the toolbar tracks it, naming the company being
   fetched (*“Fetching 3 of 7 — West Red Lake Gold”*). It takes a few minutes;
@@ -129,9 +130,9 @@ To go the other way — start from the person:
 
 1. Open the **Insiders** tab and find them.
 2. Click **⛏ Find companies** on their card.
-3. A browser opens (solve the CAPTCHA once if asked). After a couple of minutes
-   you get every company that person has filed against, with **+ Add** on the
-   ones missing from your watchlist.
+3. A minimized browser does the work, popping up only for a CAPTCHA. After a
+   couple of minutes you get every company that person has filed against, with
+   **+ Add** on the ones missing from your watchlist.
 4. Click **↻ Refresh data** afterwards to pull the new company's history.
 
 Adding only puts the company on your list — until you refresh, its card is empty.

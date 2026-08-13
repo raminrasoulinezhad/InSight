@@ -229,3 +229,155 @@ class TestSediPageFilename:
         fn = paths.sedi_page_filename("../etc", "a/b\\c")
         assert "/" not in fn and "\\" not in fn
         assert fn == ".._ETC_A_B_C.html"
+
+
+class FakeCdp:
+    """Records what would have been sent to Chrome's DevTools protocol."""
+
+    def __init__(self, fail: bool = False):
+        self.sent: list[tuple[str, dict]] = []
+        self.fail = fail
+
+    def send(self, method: str, params: dict | None = None) -> dict:
+        if self.fail:
+            raise RuntimeError("no window for target")
+        self.sent.append((method, params or {}))
+        return {"windowId": 7}
+
+    def states(self) -> list[str]:
+        return [p["bounds"]["windowState"] for m, p in self.sent if m == "Browser.setWindowBounds"]
+
+
+class FakePage:
+    def __init__(self):
+        self.fronted = 0
+
+    def bring_to_front(self) -> None:
+        self.fronted += 1
+
+
+def wired(cdp: FakeCdp | None = None, **kw) -> tuple[sedi.SediScraper, FakeCdp, FakePage]:
+    """A scraper with a stub browser attached, without launching one."""
+    cdp = cdp or FakeCdp()
+    page = FakePage()
+    s = sedi.SediScraper(**kw)
+    s._ctx = type("Ctx", (), {"new_cdp_session": lambda self, p: cdp})()
+    s._page = page
+    return s, cdp, page
+
+
+class TestTheWindowKeepsOutOfTheWay:
+    """A SEDI scrape takes minutes and needs a human for perhaps ten seconds of
+    it, so the browser stays minimized and un-minimizes itself for the CAPTCHA.
+    Chrome is asked to move its own window (CDP) rather than the desktop being
+    asked to move Chrome, because the latter has no portable answer: X11 needs
+    wmctrl/xdotool installed and Wayland refuses outright."""
+
+    def test_it_minimizes_itself_once_attached(self):
+        s, cdp, _ = wired()
+        s.hide_window()
+        assert cdp.states() == ["minimized"]
+
+    def test_asking_to_see_it_is_honoured(self):
+        s, cdp, _ = wired(start_minimized=False)
+        s.hide_window()
+        assert cdp.states() == [], "--sedi-window means leave the window alone"
+
+    def test_headless_has_no_window_to_move(self):
+        s, cdp, _ = wired(headless=True)
+        s.hide_window()
+        s.show_window()
+        assert cdp.sent == []
+
+    def test_showing_it_restores_and_raises(self):
+        s, cdp, page = wired()
+        s.show_window()
+        assert cdp.states() == ["normal"]
+        assert page.fronted == 1, "un-minimizing is not enough if it is behind the app"
+
+    def test_showing_it_ignores_start_minimized(self):
+        # A CAPTCHA needs hands whatever the flag said. Only hiding is optional.
+        s, cdp, _ = wired(start_minimized=False)
+        s.show_window()
+        assert cdp.states() == ["normal"]
+
+    def test_the_window_handle_is_looked_up_once(self):
+        s, cdp, _ = wired()
+        for _ in range(3):
+            s.hide_window()
+        assert [m for m, _ in cdp.sent].count("Browser.getWindowForTarget") == 1
+        assert cdp.states() == ["minimized"] * 3
+
+    def test_a_window_that_will_not_move_is_not_fatal(self):
+        # Some desktops refuse the request. Losing the scrape over cosmetics
+        # would be a far worse outcome than a window sitting in the way.
+        s, _cdp, page = wired(FakeCdp(fail=True))
+        s.hide_window()
+        s.show_window()
+        assert page.fronted == 1, "the raise is attempted even if the resize failed"
+
+    def test_nothing_is_sent_before_the_browser_exists(self):
+        s = sedi.SediScraper()
+        s.hide_window()  # __enter__ has not run; must not explode
+
+
+class TestTheBotWallBringsTheWindowBack:
+    def test_a_clear_page_leaves_the_window_alone(self, monkeypatch):
+        s, cdp, _ = wired()
+        monkeypatch.setattr(s, "_walled", lambda: False)
+        s._clear_wall_or_raise("opening ITD search")
+        assert cdp.sent == []
+
+    def test_the_wall_raises_the_window_then_hides_it_again(self, monkeypatch, capsys):
+        s, cdp, page = wired()
+        seen = iter([True, False])  # walled, then solved
+        monkeypatch.setattr(s, "_walled", lambda: next(seen))
+        s._page.wait_for_timeout = lambda ms: None
+        s._clear_wall_or_raise("running ITD search")
+        assert cdp.states() == ["normal", "minimized"]
+        assert page.fronted == 1
+
+    def test_headless_still_fails_fast_rather_than_waiting(self):
+        s, cdp, _ = wired(headless=True)
+        s._walled = lambda: True
+        try:
+            s._clear_wall_or_raise("opening ITD search")
+        except sedi.BotBlocked:
+            pass
+        else:
+            raise AssertionError("headless cannot solve a CAPTCHA; it must not wait")
+        assert cdp.sent == []
+
+
+class TestBackgroundThrottlingIsOff:
+    def test_the_launch_flags_keep_a_hidden_window_running(self):
+        # Chrome throttles background timers to ~1/min. Radware's challenge and
+        # SEDI's own scripts run on timers, so minimizing without these would
+        # trade a window in the way for a scrape that crawls.
+        import inspect
+
+        src = inspect.getsource(sedi.SediScraper._launch)
+        for flag in (
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ):
+            assert flag in src
+
+
+class TestEnteringHidesTheWindow:
+    """The one place hiding has to happen: right after the browser appears."""
+
+    def test_the_window_is_minimized_as_soon_as_it_exists(self, monkeypatch):
+        cdp, page = FakeCdp(), FakePage()
+        ctx = type("Ctx", (), {"new_cdp_session": lambda self, p: cdp, "pages": [page]})()
+        stealth = type("CM", (), {"use_sync": lambda self, pw: pw})()
+        monkeypatch.setattr(sedi, "Stealth", lambda: stealth)
+        monkeypatch.setattr(
+            sedi, "sync_playwright", lambda: type("PW", (), {"__enter__": lambda s: s})()
+        )
+        s = sedi.SediScraper()
+        monkeypatch.setattr(s, "_launch", lambda channel: ctx)
+        with monkeypatch.context():
+            s.__enter__()
+        assert cdp.states() == ["minimized"]

@@ -413,6 +413,7 @@ class SediScraper:
         pages_dir: Path | None = None,
         manual_wait_s: int = 240,
         channel: str | None = "chrome",
+        start_minimized: bool = True,
     ):
         self._headless = headless
         self._profile_dir = profile_dir
@@ -425,9 +426,13 @@ class SediScraper:
         # check and getting a hard 403. Falls back to Chromium if Chrome isn't
         # installed (see __enter__).
         self._channel = channel
+        # The window is only worth looking at when a CAPTCHA is up, and a scrape
+        # takes minutes — so it gets out of the way and comes back on its own.
+        self._start_minimized = start_minimized
         self._pw = None
         self._ctx = None
         self._page = None
+        self._window = None  # cached (CDP session, windowId)
 
     def _launch(self, channel: str | None):
         return self._pw.chromium.launch_persistent_context(
@@ -442,6 +447,13 @@ class SediScraper:
             # this profile faces a bot wall, so it should look ordinary.
             args=[
                 "--disable-blink-features=AutomationControlled",
+                # A minimized window is a backgrounded one, and Chrome throttles
+                # those hard — background timers drop to about one tick a minute.
+                # Radware's challenge and SEDI's own scripts run on timers, so
+                # without these the hidden window would crawl or stall outright.
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
                 *profiles.cache_args(),
             ],
         )
@@ -461,6 +473,7 @@ class SediScraper:
             else:
                 raise
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        self.hide_window()
         return self
 
     def __exit__(self, *exc):
@@ -469,6 +482,38 @@ class SediScraper:
                 self._ctx.close()
         finally:
             self._stealth_cm.__exit__(*exc)
+
+    # ------------------------------------------------------------------
+    # Window state. Asking Chrome to minimize itself, rather than asking the
+    # desktop to minimize Chrome: there is no portable way to move another
+    # program's window. X11 needs wmctrl or xdotool installed, Wayland forbids
+    # it outright, and macOS and Windows each want their own API. Chrome moving
+    # its own window works the same way everywhere.
+    def _set_window_state(self, state: str) -> None:
+        """Best-effort `minimized` / `normal`. A window that will not move is
+        never a reason to fail a scrape, so every failure here is swallowed."""
+        if self._headless or not self._ctx or not self._page:
+            return
+        with contextlib.suppress(Exception):
+            if self._window is None:
+                cdp = self._ctx.new_cdp_session(self._page)
+                self._window = (cdp, cdp.send("Browser.getWindowForTarget")["windowId"])
+            cdp, window_id = self._window
+            cdp.send(
+                "Browser.setWindowBounds", {"windowId": window_id, "bounds": {"windowState": state}}
+            )
+
+    def hide_window(self) -> None:
+        """Drop the browser out of the way. It comes back if a human is needed."""
+        if self._start_minimized:
+            self._set_window_state("minimized")
+
+    def show_window(self) -> None:
+        """Put the browser back in front — something needs a pair of hands."""
+        self._set_window_state("normal")
+        if self._page:
+            with contextlib.suppress(Exception):
+                self._page.bring_to_front()
 
     # ------------------------------------------------------------------
     def _walled(self) -> bool:
@@ -486,10 +531,15 @@ class SediScraper:
             return
         if self._headless:
             raise BotBlocked(f"SEDI bot wall while {ctx} (headless — cannot solve)")
+        # The window has been sitting minimized. This is the one thing it exists
+        # for, so un-minimize it — otherwise the scrape waits four minutes for a
+        # CAPTCHA nobody can see, then fails.
+        self.show_window()
         print(
             f"  SEDI: Radware bot wall while {ctx}. If there's a CAPTCHA, solve it in the "
-            "window. A bare '403 Forbidden / Transaction ID' page is a hard IP/fingerprint "
-            "block with nothing to solve — reloading periodically in case it re-validates…"
+            "browser window (re-opened for you). A bare '403 Forbidden / Transaction ID' "
+            "page is a hard IP/fingerprint block with nothing to solve — reloading "
+            "periodically in case it re-validates…"
         )
         waited = 0
         step = 3000
@@ -499,6 +549,7 @@ class SediScraper:
             waited += step
             if not self._walled():
                 print("  SEDI: wall cleared, continuing.")
+                self.hide_window()  # thanks — back out of the way
                 return
             if waited % reload_every < step:
                 with contextlib.suppress(Exception):
@@ -512,7 +563,11 @@ class SediScraper:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
         (self._capture_dir / f"{safe}.html").write_text(self._page.content(), encoding="utf-8")
         with contextlib.suppress(Exception):
-            self._page.screenshot(path=str(self._capture_dir / f"{safe}.png"), full_page=True)
+            # Bounded: a minimized window has no on-screen surface to capture, so
+            # this can sit on the default 30s timeout for every dumped page.
+            self._page.screenshot(
+                path=str(self._capture_dir / f"{safe}.png"), full_page=True, timeout=10000
+            )
 
     def _save_page(self, exchange: str, ticker: str) -> None:
         """Snapshot the currently-rendered report HTML so the app can serve it as

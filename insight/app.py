@@ -103,7 +103,9 @@ def _do_insider_search(name: str) -> None:
         from .sedi import SediScraper, resolve_tickers
 
         with _refresh_lock:
-            _refresh["message"] = f"Opening SEDI for “{name}” — solve the CAPTCHA if it appears…"
+            _refresh["message"] = (
+                f"Opening SEDI for “{name}” — the browser pops up if a CAPTCHA appears…"
+            )
 
         with SediScraper(
             headless=False,

@@ -64,7 +64,7 @@ uv run insight                 # serve + open browser
 uv run insight --window        # chromeless desktop window
 uv run insight-scrape          # scrape the watchlist (MarketBeat)
 uv run insight-scrape --discover        # + MarketBeat's ~215 TSE universe
-uv run insight-scrape --source sedi     # official SEDI; opens a visible browser
+uv run insight-scrape --source sedi     # official SEDI; minimized browser
 uv run insight-scrape --insider Sprott  # SEDI person search: which companies?
 uv run insight-scrape --prune-snapshots      # drop folded snapshots, keep newest 2
 uv run insight-scrape --prune-browser-cache  # clear Chromium caches (keeps cookies)
@@ -97,7 +97,10 @@ reload, Python edits need an app restart.
   changes. Non-default sources tag their snapshot filename
   (`insider_sedi_*.json`) so they merge without clobbering.
 - **SEDI is deliberately not automatic.** It is bot-walled, so it runs headful with
-  a persistent profile and may need a human to solve one CAPTCHA. Never wire it
+  a persistent profile and may need a human to solve one CAPTCHA. The window is
+  minimized on launch and un-minimizes itself when the wall goes up (CDP
+  `Browser.setWindowBounds`, since no portable way exists to move someone else's
+  window); `--sedi-window` opts out. Never wire it
   into the daily timer, and never delete the profile's cookies — that jar *is* the
   solved challenge.
 - **The watchlist is the source of truth for the Companies tab** (gated). The

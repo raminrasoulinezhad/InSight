@@ -463,7 +463,7 @@
     <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the Insiders tab.">
       <input type="checkbox" id="discover" /> Scan all TSE (~215)
     </label>
-    <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Opens a visible browser; solve the CAPTCHA once if prompted. Not for the daily timer.">⛏ Fetch from SEDI</button>
+    <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Runs a minimized browser that pops up if a CAPTCHA needs solving. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
     <button id="settings-open" class="refresh-btn settings-cog"
       title="Settings — theme and notifications">⚙</button>
@@ -964,7 +964,7 @@ function sediFindBtn(p){
   const name = p.insider_name;
   if (!name || name === "Unknown" || p.entity_type === "institution") return "";
   return `<button class="sedi-link" data-find-insider="${esc(name)}"
-    title="Ask SEDI which companies this person has filed against — including ones not on your watchlist. Opens a browser; solve the CAPTCHA once if prompted.">⛏ Find companies</button>`;
+    title="Ask SEDI which companies this person has filed against — including ones not on your watchlist. Runs a minimized browser that pops up if a CAPTCHA needs solving.">⛏ Find companies</button>`;
 }
 
 function renderInsiders(){
@@ -1498,7 +1498,7 @@ function renderInsiderFind(d){
 async function startInsiderFind(name){
   openInsiderFind(name);
   insiderFindBody(`<div class="find-msg">Opening SEDI for ${esc(name)}…
-    A browser window will open — solve the CAPTCHA there if prompted.
+    A browser runs minimized; it pops up if a CAPTCHA needs solving.
     This takes a couple of minutes.</div>`);
   STATE.pendingInsider = name;
   try {
@@ -1976,7 +1976,7 @@ refreshBtn.addEventListener("click", () => {
 sediBtn.addEventListener("click", () => {
   if (sediBtn.disabled) return;
   startRefresh("/api/refresh?source=sedi",
-    "Starting SEDI… a browser window will open — solve the CAPTCHA there if prompted.");
+    "Starting SEDI… a browser runs minimized; it pops up if a CAPTCHA needs solving.");
 });
 
 let qTimer = null;

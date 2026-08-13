@@ -63,6 +63,8 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
 
 - Runs headful with a **persistent profile** (`paths.sedi_profile_dir()`), so the
   session cookie survives between runs.
+- The window is **minimized on launch** and un-minimizes itself the moment the
+  wall goes up, then hides again once you have solved it. See below.
 - If the wall is up and nobody can solve it, the fetch raises `BotBlocked` and the
   batch falls back to cache — same as the MarketBeat path.
 - Canada-only: non-Canadian targets are filtered out by `is_canadian`.
@@ -72,6 +74,30 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
 
 Because a human may be needed, SEDI is a deliberate button (**⛏ Fetch from
 SEDI**) and an explicit `--source sedi`, never the daily timer.
+
+#### Keeping the window out of the way
+
+A scrape is minutes of browsing that needs a human for maybe ten seconds of it,
+so the window should not own the screen for the other 99%.
+
+- **Chrome minimizes itself** over CDP (`Browser.setWindowBounds`,
+  `windowState: minimized`) rather than the desktop being asked to minimize
+  Chrome. There is no portable way to move another program's window: X11 needs
+  `wmctrl`/`xdotool` installed, Wayland forbids it outright, and macOS and
+  Windows each want their own API. Chrome moving its own window works the same
+  everywhere.
+- `_clear_wall_or_raise` calls `show_window()` before it starts waiting —
+  without that the scrape would sit four minutes on a CAPTCHA nobody can see,
+  then fail. `hide_window()` runs again once the wall clears.
+- Three launch flags come with it: `--disable-background-timer-throttling`,
+  `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`.
+  Chrome throttles background timers to about one tick a minute, and both
+  Radware's challenge and SEDI's own scripts are timer-driven — minimizing
+  without these would trade a window in the way for a scrape that crawls.
+- All of it is best-effort (`contextlib.suppress`): a desktop that refuses the
+  request is a cosmetic problem, not a reason to lose the scrape.
+- `--sedi-window` leaves it on screen. It still un-minimizes for a CAPTCHA
+  either way, since only hiding is optional.
 
 `sedi.py` mirrors `marketbeat.py`'s split: pure, unit-tested parsing
 (`_parse_report_rows`, `_report_row_to_record`, `_transaction_type`,
@@ -174,6 +200,7 @@ insight-scrape --source sedi                # official SEDI, opens a browser
 | `--sedi-months N` | SEDI lookback, months back from today (default 24) |
 | `--capture-dir DIR` | (sedi) dump each page's HTML + screenshot for debugging |
 | `--headful` | Visible browser — helps on flagged IPs |
+| `--sedi-window` | (sedi) leave the window on screen instead of minimizing it |
 | `--max-age H` | Reuse cache younger than H hours (default 12) |
 | `--force` / `--no-cache` | Ignore the cache / don't read or write it |
 | `--keep-snapshots N` | Snapshots to keep after the auto-prune (default 2) |
