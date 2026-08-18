@@ -180,11 +180,13 @@ each company not already on the watchlist.
 **Terms of use:** scraping MarketBeat may conflict with their ToS; SEDI's terms
 bar automated collection. For production, prefer a licensed feed.
 
-### Ideas not yet built
+### Planned, not yet built
 
-- **YouTube interview analysis** — poll a few CEO-interview channels, fetch
-  transcripts, and have an LLM extract insight on watchlist companies. Feasibility
-  probed and both halves work for free, but the design is unsettled. See
+- **YouTube interview analysis.** Poll a few CEO-interview channels, fetch
+  transcripts, and have an LLM extract insight on watchlist companies. Both halves
+  were probed live and both are free: `youtube-transcript-api` for transcripts, and
+  a pool of free-tier LLM keys across providers. Phase 1 ships without any key. Plan
+  and open questions in
   [`docs/youtube-interview-analysis.md`](docs/youtube-interview-analysis.md).
 
 ---

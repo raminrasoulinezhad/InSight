@@ -1,7 +1,8 @@
-# Idea: mine YouTube interviews for insight on watchlist companies
+# Plan: mine YouTube interviews for insight on watchlist companies
 
-_Status: **idea, not built**. Feasibility probed live 2026-08-18 (every number below was
-measured on this machine, not quoted from a blog). Needs design decisions before code._
+_Status: **planned, agreed to build**. Feasibility probed live 2026-08-18 (every number
+below was measured on this machine, not quoted from a blog). Two design decisions are
+still open (see below); phase 1 does not depend on either._
 
 ## The idea
 
@@ -77,9 +78,9 @@ Since it is a middleman for the same caption track `youtube-transcript-api` read
 directly, the middleman adds a dependency and a point of failure while removing nothing.
 **Recommend going direct.**
 
-### The LLM: Groq's free tier fits, with one pinch point
+### The LLM: free tiers cover this comfortably
 
-Measured against Groq's own published limits (`console.groq.com/docs/rate-limits`):
+Verified against Groq's own published limits (`console.groq.com/docs/rate-limits`):
 
 | Model | RPM | RPD | TPM | TPD |
 |---|---|---|---|---|
@@ -87,15 +88,55 @@ Measured against Groq's own published limits (`console.groq.com/docs/rate-limits
 | `openai/gpt-oss-20b` | 30 | 1,000 | 8,000 | 200,000 |
 
 Daily budget: 200,000 tokens against ~5,000 per interview is roughly **40 interviews a
-day**, far past what a few channels produce.
+day** from Groq alone, far past what a few channels produce.
 
-The pinch point is **8,000 tokens per minute**, not the daily cap. A short interview fits
-in one call. A long one does not, so anything past ~40 minutes needs either a
-map-then-reduce pass over chunks or a simple pause between calls. Since this runs
-unattended on a schedule, waiting 60 seconds between chunks costs nothing.
+Groq's pinch point is **8,000 tokens per minute**, not the daily cap. A short interview
+fits in one call; a 60 minute one does not. On a single provider that would force
+chunking. It does not, because of the next section.
 
 Groq also hosts Whisper free (20 RPM, 2,000 requests/day, 7,200 audio-seconds/hour, 25 MB
-per file), which covers the fallback below.
+per file), which covers the caption fallback below.
+
+## The provider pool
+
+**Design premise: several free-tier keys from different companies, not one.** This is a
+decision, not an incidental detail, and it changes the shape of `llm.py`.
+
+Free tiers in 2026 differ in *which* limit binds, and the differences are complementary
+rather than redundant. Reported figures, to be confirmed against each provider's own docs
+before relying on them (only the Groq numbers above were verified directly):
+
+| Provider | Reported free-tier shape | Best used for |
+|---|---|---|
+| Groq | 8K TPM, 200K TPD, very fast | short interviews, the default |
+| Cerebras | ~30K TPM, ~1M tokens/day | long transcripts in one pass |
+| Google AI Studio (Gemini Flash) | 15 RPM, 1,500 RPD, ~1M context | the longest transcripts, whole-batch passes |
+| Mistral | ~1B tokens/month, but ~2 RPM | slow bulk backfill |
+| OpenRouter | one key, 30+ free models, ~10-20 RPM | overflow and model comparison |
+
+Consequences worth designing for:
+
+1. **The per-minute pinch point mostly disappears.** Route by transcript size: a long
+   interview goes to a wide-context provider in one call instead of being chunked and
+   stitched. Chunking becomes a fallback, not the default path, which is a real quality
+   win since map-then-reduce loses cross-answer context in exactly the interviews worth
+   reading.
+2. **A provider going down or changing its terms stops being an outage.** Free tiers are
+   not contractual and have changed before. With a pool, one provider withdrawing its free
+   tier is a config change.
+3. **The interface must be provider-shaped, not Groq-shaped.** Each entry needs its
+   endpoint, model name, key, and declared limits (RPM/TPM/RPD/context). Most expose an
+   OpenAI-compatible chat-completions endpoint, so one client with a per-provider base URL
+   and model covers nearly all of them.
+4. **Rotation needs to be honest about state.** Track spend per provider per window
+   locally, pick the first provider with headroom, and fall through on HTTP 429 rather
+   than guessing. Since runs are scheduled and unattended, waiting is always an acceptable
+   last resort.
+5. **Keys are secrets and follow the pattern already in the codebase.** `notify.py`
+   already stores an SMTP app password in `settings.json` inside the per-user app dir and
+   masks it to the UI with a sentinel, keeping the stored value when the UI sends the mask
+   back. LLM keys do exactly the same. Nothing goes in the repo; gitleaks runs in
+   pre-commit and should stay able to pass.
 
 ## Sketch of how it would fit
 
@@ -103,8 +144,8 @@ Roughly parallel to how `sedi.py` slots in beside `marketbeat.py` today:
 
 - **`insight/interviews.py`**: poll channel feeds, diff against seen video IDs, fetch
   transcripts, cache them.
-- **`insight/llm.py`**: provider-agnostic call behind one interface. Groq first, because
-  it is free, but nothing above depends on it being Groq.
+- **`insight/llm.py`**: the provider pool described above, behind one `complete()`
+  interface. Callers pass a prompt and a token estimate; the pool decides who serves it.
 - **Storage**: a separate `data/interviews.json`, keyed by video ID, holding transcript
   plus extraction plus a `seen`/`analysed` marker. Keeping it out of `store.json` means
   the existing merge and prune logic stays untouched.
@@ -118,10 +159,13 @@ Two properties worth keeping deliberately:
 1. **Transcript and analysis are separate stages.** Transcripts are free and permanent;
    LLM output is rate-limited and will want re-running as prompts improve. Cache the
    transcript, and re-analysis costs nothing extra.
-2. **No key means no LLM, not no feature.** Without a key it can still list new
-   interviews for watchlist companies and link them. That is useful on its own.
+2. **No key means no LLM, not no feature.** With zero keys it can still list new
+   interviews for watchlist companies and link them. That is useful on its own, and it is
+   what phase 1 ships.
 
-## Open questions (decide before writing code)
+## Open questions
+
+Two of these block code (1 and 4); the rest can be settled as the phases arrive.
 
 1. **What should the LLM actually return?** Structured JSON (sentiment, concrete claims,
    guidance with dates, financing plans, stated risks) is queryable, alertable and
@@ -148,20 +192,30 @@ Two properties worth keeping deliberately:
 7. **Alarms.** Should a new interview about a followed company fire the existing
    notification path? Cheap to add, and arguably the strongest reason to have the feature
    at all.
+8. **Provider routing policy.** Cheapest-with-headroom first, or best-model-first and fall
+   back on exhaustion? These give different answers on the same interview, which matters
+   if output is ever compared across days. Leaning cheapest-first with the model recorded
+   alongside each extraction, so a later reader can tell what produced what.
 
-## Suggested phasing
+## Phasing
 
 Each phase is independently useful, which keeps the expensive uncertainty last.
 
-- **Phase 0 (design)**: settle questions 1 and 4 above. Nothing else unblocks without them.
-- **Phase 1 (no LLM)**: feed polling, transcript fetch, caching, title-based watchlist
-  matching. Ship it as "new interviews about your companies" with links. This proves real
-  coverage against a real watchlist and costs no API key.
-- **Phase 2 (LLM)**: extraction behind the provider interface, with chunking for long
-  transcripts. Test against cached transcripts, so tests never touch the network.
-- **Phase 3 (UI)**: surface on the company card; wire alarms if question 7 says yes.
-- **Phase 4 (fallback)**: Whisper for caption-less videos, only if phase 1 shows the gap
-  is worth it.
+- **Phase 0 (design)**: settle questions 1 and 4. Nothing after phase 1 unblocks without
+  them, and neither is a question code can answer.
+- **Phase 1 (no LLM, no keys)**: feed polling, transcript fetch, caching, title-based
+  watchlist matching. Ship it as "new interviews about your companies" with links. This
+  proves real coverage against a real watchlist before any key exists, and it is the phase
+  that tells us whether the idea is worth the rest.
+- **Phase 2 (the provider pool)**: `llm.py` with the key list, declared limits, local
+  spend tracking, size-based routing and 429 fallthrough. Worth building before the
+  prompts, because it is the part that has to be right and the part that is pure logic:
+  testable against fakes with no network at all.
+- **Phase 3 (extraction)**: the prompt and its output schema, run over cached transcripts.
+  Cached input means prompts can be re-run and compared for free.
+- **Phase 4 (UI)**: surface on the company card; wire alarms if question 7 says yes.
+- **Phase 5 (fallback)**: Whisper for caption-less videos, only if phase 1 shows the gap
+  is worth the `ffmpeg` dependency.
 
 ## Caveats
 
@@ -174,8 +228,12 @@ Each phase is independently useful, which keeps the expensive uncertainty last.
 - YouTube's terms address automated access. This is one user, on their own machine,
   reading public captions for personal research, which is the same posture the app
   already takes with SEDI. Worth a conscious decision rather than an assumption.
-- Groq's free-tier limits are not contractual and have changed before. The provider
-  interface in `llm.py` is the hedge.
+- Free-tier limits are not contractual and have changed before, at every provider. The
+  pool is the hedge, and the reason the non-Groq figures above are marked as reported
+  rather than verified: check each one against its own docs when its key is added.
+- A pool of free tiers is still a set of terms of service. Each provider's free tier has
+  its own rules about what the output may be used for, and they are not identical. Worth
+  reading once per key rather than assuming.
 
 ## Primary sources
 
@@ -184,3 +242,5 @@ Each phase is independently useful, which keeps the expensive uncertainty last.
 - [Groq rate limits](https://console.groq.com/docs/rate-limits) and
   [speech-to-text docs](https://console.groq.com/docs/speech-to-text)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- Other free tiers, secondhand and unverified:
+  [OpenRouter's comparison](https://openrouter.ai/blog/tutorials/free-llm-apis-compared/)
