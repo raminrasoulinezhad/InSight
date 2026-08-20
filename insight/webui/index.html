@@ -261,6 +261,7 @@
   .iv-applied { color:var(--muted); font-size:12px; }
   .iv-suggested { margin-top:14px; border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
   .iv-suggested h4 { margin:0 0 4px 0; font-size:13px; }
+  .iv-error { border-left:3px solid var(--sell); }
 
   /* cross-links between the Companies and Insiders tabs */
   .xnav { background:none; border:0; padding:0; font:inherit; color:inherit;
@@ -614,7 +615,7 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // the insider whose SEDI lookup is in flight, so the shared
               // refresh poll knows to show results instead of reloading the feed
               pendingInsider:null, insiderFindOpener:null,
-              interviews:[], pendingInterview:false, suggest:null,
+              interviews:[], pendingInterview:false, suggest:null, interviewError:null,
               expanded:new Set() };   // companies showing their full row list
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -1093,11 +1094,16 @@ function renderInterviews(){
       <button id="iv-go" class="primary">Analyse</button>
     </div>`;
 
+  const err = STATE.interviewError
+    ? `<div class="panel iv-error"><h3>⚠ That interview could not be read</h3>
+         <p class="hint">${esc(STATE.interviewError)}</p></div>`
+    : "";
+
   const body = vids.length
     ? vids.map(interviewCard).join("")
     : `<div class="nodata">No interviews yet. Paste a YouTube link above to read one.</div>`;
 
-  document.getElementById("feed").innerHTML = adder + body;
+  document.getElementById("feed").innerHTML = adder + err + body;
   wireInterviews();
 }
 
@@ -1168,14 +1174,21 @@ async function startInterview(url){
       body: JSON.stringify({url})
     });
     const d = await r.json();
-    if (!d.started){ toast(d.msg || "Something else is running right now."); return; }
+    if (!d.started){
+      STATE.interviewError = d.msg || d.message
+        || "Another job (a refresh or a SEDI fetch) is running. Wait for it to finish.";
+      render();
+      return;
+    }
+    STATE.interviewError = null;
     STATE.pendingInterview = true;
     setRefreshing(true, "Reading the interview…");
     setProgress(true, 0, 3);
     if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
     document.getElementById("iv-url").value = "";
   } catch(e){
-    toast("Could not start: " + e.message);
+    STATE.interviewError = "Could not reach the app: " + e.message;
+    render();
   }
 }
 
@@ -2147,9 +2160,12 @@ async function pollRefresh(){
       if (insider){
         insiderFindBody(`<div class="find-msg">${esc(d.message || "The search failed.")}</div>`);
       }
-      // The interview tab shows the failure in the toast: the message names the
-      // real cause (no captions, no key, every route rate-limited).
-      if (interview) toast(d.message || "Could not read that interview.");
+      // The message names the real cause (no captions, no LLM key, every route
+      // rate-limited), so it is kept on screen rather than flashed in a toast.
+      if (interview){
+        STATE.interviewError = d.message || "Could not read that interview.";
+        if (STATE.view === "interviews") render();
+      }
     }
     setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
   } catch(e){
