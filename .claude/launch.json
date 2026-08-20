@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "insight",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "insight", "--no-browser", "--port", "8756"],
+      "port": 8756
+    }
+  ]
+}

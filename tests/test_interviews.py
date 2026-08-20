@@ -137,14 +137,9 @@ class TestExtracting:
                 "name": "Pan American Silver",
                 "ticker": "",
                 "exchange": "",
-                "stance": "bullish",
-                "bullets": ["Rule: free is a really good price for a billion ounces"],
+                "bullets": ["Free is a really good price for a billion ounces"],
             },
-            {
-                "name": "Southern Copper",
-                "stance": "cautious",
-                "bullets": ["Rule: political risk"],
-            },
+            {"name": "Southern Copper", "bullets": ["Political risk"]},
             {"name": "", "bullets": ["nameless, should be dropped"]},
         ],
     }
@@ -156,6 +151,7 @@ class TestExtracting:
             watchlist=TestMatchingCompanyNames.WATCHLIST,
             url="https://youtu.be/i25DJxYcDGw",
             vid="i25DJxYcDGw",
+            resolve=False,
         )
 
     def test_it_keeps_the_speaker_and_drops_nameless_rows(self):
@@ -170,7 +166,7 @@ class TestExtracting:
     def test_the_speakers_words_survive_into_the_bullet(self):
         # The whole point of an interview over a filing is the opinion in it.
         e = self.extraction()
-        assert "free is a really good price" in e.mentions[0].bullets[0]
+        assert "Free is a really good price" in e.mentions[0].bullets[0]
 
     def test_the_route_that_answered_is_recorded(self):
         e = self.extraction()
@@ -185,6 +181,7 @@ class TestTheReport:
             watchlist=TestMatchingCompanyNames.WATCHLIST,
             url="https://youtu.be/i25DJxYcDGw",
             vid="i25DJxYcDGw",
+            resolve=False,
         )
         return interviews.render_report([e])
 
@@ -202,3 +199,143 @@ class TestTheReport:
         assert "TOTAL 2 companies discussed across 1 video(s): 1 already followed, 1 new." in (
             self.report()
         )
+
+
+class TestBulletsCarryTheSpeaker:
+    """A note that does not say who said it reads as InSight's own view later."""
+
+    def test_each_bullet_is_prefixed_with_the_speaker(self):
+        m = interviews.Mention(name="X", bullets=["Cheap.", "Execution superb."])
+        assert interviews.note_bullets(m, "Rick Rule") == [
+            "[Rick Rule] Cheap.",
+            "[Rick Rule] Execution superb.",
+        ]
+
+    def test_an_unknown_speaker_is_labelled_not_omitted(self):
+        m = interviews.Mention(name="X", bullets=["Cheap."])
+        assert interviews.note_bullets(m, "") == ["[Unattributed] Cheap."]
+
+    def test_the_report_uses_the_same_bullets_the_app_would_write(self):
+        e = interviews.extract(
+            _router(TestExtracting.PAYLOAD),
+            "t",
+            watchlist=TestMatchingCompanyNames.WATCHLIST,
+            resolve=False,
+        )
+        assert "[Rick Rule] Political risk" in interviews.render_report([e])
+
+
+class TestSpeakerFromTitle:
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Rick Rule: gold is cheap", "Rick Rule"),
+            ("Rick Rule - why he is buying", "Rick Rule"),
+            ("Uranium outlook with Julian Treger", "Julian Treger"),
+            ("Why gold is going up", ""),  # no name to be confident about
+            ("", ""),
+        ],
+    )
+    def test_only_the_confident_shapes_yield_a_name(self, title, expected):
+        # A wrong guess puts the wrong person's name on every bullet, which is
+        # worse than leaving it blank.
+        assert interviews.speaker_from_title(title) == expected
+
+
+class TestResolvingAListing:
+    """The issuer search is the authority on tickers; the model only guesses."""
+
+    def stub(self, monkeypatch, hits):
+        from insight import issuers
+
+        monkeypatch.setattr(issuers, "search_issuers", lambda name, limit=5: hits)
+
+    def test_the_searches_ticker_replaces_the_models_guess(self, monkeypatch):
+        # The model offered CTEK for CoTec; the real listing is CTH.
+        self.stub(
+            monkeypatch,
+            [{"legal_name": "CoTec Holdings Corp", "ticker": "CTH", "exchange": "TSXV"}],
+        )
+        out = interviews.resolve_listing(interviews.Mention(name="CoTec Holdings", ticker="CTEK"))
+        assert out.resolved and (out.ticker, out.exchange) == ("CTH", "TSXV")
+
+    def test_an_unrelated_hit_is_not_accepted(self, monkeypatch):
+        self.stub(
+            monkeypatch,
+            [{"legal_name": "Kioxia Holdings Corporation", "ticker": "285A", "exchange": "TSE"}],
+        )
+        out = interviews.resolve_listing(interviews.Mention(name="CoTec Holdings"))
+        assert not out.resolved and out.ticker == ""
+
+    def test_a_company_already_followed_is_left_alone(self, monkeypatch):
+        self.stub(monkeypatch, [{"legal_name": "Anything", "ticker": "X", "exchange": "Y"}])
+        m = interviews.Mention(name="Capstone", on_watchlist=True)
+        assert not interviews.resolve_listing(m).resolved
+
+    def test_a_search_that_fails_is_not_fatal(self, monkeypatch):
+        from insight import issuers
+
+        def boom(name, limit=5):
+            raise OSError("offline")
+
+        monkeypatch.setattr(issuers, "search_issuers", boom)
+        assert not interviews.resolve_listing(interviews.Mention(name="X")).resolved
+
+
+class TestSavedInterviews:
+    """Storage keyed by video, with the note text frozen at extraction time."""
+
+    def entry(self, vid="v1", company="Pan American Silver", applied=False):
+        return {
+            "video_id": vid,
+            "url": f"https://youtu.be/{vid}",
+            "speaker": "Rick Rule",
+            "companies": [{"name": company, "bullets": ["[Rick Rule] Cheap."], "applied": applied}],
+        }
+
+    def test_a_run_can_be_saved_and_read_back(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        interviews.save_extraction(self.entry(), p)
+        assert [r["video_id"] for r in interviews.load_saved(p)] == ["v1"]
+
+    def test_the_newest_run_comes_first(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        interviews.save_extraction(self.entry("old"), p)
+        interviews.save_extraction(self.entry("new"), p)
+        assert [r["video_id"] for r in interviews.load_saved(p)] == ["new", "old"]
+
+    def test_rerunning_a_video_replaces_it_rather_than_duplicating(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        interviews.save_extraction(self.entry("v1", "First"), p)
+        interviews.save_extraction(self.entry("v1", "Second"), p)
+        rows = interviews.load_saved(p)
+        assert len(rows) == 1 and rows[0]["companies"][0]["name"] == "Second"
+
+    def test_forgetting_reports_whether_it_removed_anything(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        interviews.save_extraction(self.entry("v1"), p)
+        assert interviews.forget("v1", p) is True
+        assert interviews.forget("v1", p) is False
+
+    def test_applying_is_remembered_so_it_is_not_offered_twice(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        interviews.save_extraction(self.entry(), p)
+        interviews.mark_applied("v1", "Pan American Silver", p)
+        assert interviews.load_saved(p)[0]["companies"][0]["applied"] is True
+
+    def test_an_unreadable_file_yields_nothing_rather_than_raising(self, tmp_path):
+        p = tmp_path / "interviews.json"
+        p.write_text("{not json")
+        assert interviews.load_saved(p) == []
+
+    def test_the_stored_bullets_already_carry_the_speaker(self):
+        # Frozen at extraction time: what the user approves in the UI is exactly
+        # what later lands in the notes, even if the prompt changes underneath.
+        e = interviews.extract(
+            _router(TestExtracting.PAYLOAD),
+            "t",
+            watchlist=TestMatchingCompanyNames.WATCHLIST,
+            resolve=False,
+        )
+        stored = interviews.as_dict(e)
+        assert stored["companies"][0]["bullets"][0].startswith("[Rick Rule] ")

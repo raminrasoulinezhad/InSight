@@ -48,7 +48,7 @@ test("every range option maps to a query the loader understands", () => {
   }
 });
 
-test("the tabs read Companies / Insiders / Alarms", () => {
+test("the tabs read Companies / Insiders / Interviews / Alarms", () => {
   const tabs = [...html.matchAll(/<button data-view="(\w+)"[^>]*>([^<]+)<\/button>/g)].map((m) => [
     m[1],
     m[2],
@@ -56,6 +56,7 @@ test("the tabs read Companies / Insiders / Alarms", () => {
   assert.deepEqual(tabs, [
     ["companies", "Companies"],
     ["insiders", "Insiders"],
+    ["interviews", "Interviews"],
     ["alarms", "Alarms"],
   ]);
 });

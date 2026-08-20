@@ -89,6 +89,16 @@ def notes_file() -> Path:
     return app_dir() / "notes.json"
 
 
+def interviews_file() -> Path:
+    """Interviews the user has run, with what was extracted from each.
+
+    Keyed by video id. Kept beside the watchlist rather than in the data
+    snapshots: it is user-curated input, not collected market data, and it must
+    survive `--prune-snapshots`.
+    """
+    return app_dir() / "interviews.json"
+
+
 def notify_file() -> Path:
     """Notification settings + alarms (email/ntfy config, watched companies/people).
 

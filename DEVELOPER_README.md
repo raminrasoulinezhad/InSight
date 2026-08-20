@@ -230,9 +230,9 @@ what was said, and matches those against the watchlist.
 uv run python -m insight.interviews <youtube-url> [...] -o interview-report.txt
 ```
 
-It writes a `.txt` and stops. Nothing reaches the app's notes yet, on purpose:
-the extraction has to be read and judged first. Two things the first live run
-taught, both now covered by tests:
+The CLI writes a `.txt` and stops; the **Interviews tab** is the same pipeline
+with somewhere to put the result. Three things the live runs taught, all now
+covered by tests:
 
 - **Names must match on whole words, anchored at the front.** Substring matching
   paired "Royal Gold" with "Elemental Royalty" and "Silver Mines" with "West Red
@@ -241,6 +241,41 @@ taught, both now covered by tests:
 - **An example in a prompt is an instruction.** Attributing bullets with the
   sample text `"Rule: ..."` made the model label a completely different speaker
   "Rule". Examples now carry no name.
+- **Giving the model the watchlist made it snap onto the watchlist.** Offered as
+  a spelling reference, it turned "Free Gold" (Freegold Ventures) into Freehold
+  Royalties, which is a *followed* company: a wrong note on a name the user
+  actually holds. The watchlist is no longer in the prompt. Correction works
+  without it, from the model's own knowledge plus context: "Kotekch" resolves to
+  CoTec Holdings, "wheat and precious" to Wheaton Precious Metals.
+
+Names the model corrects are then checked against `issuers.search_issuers`, the
+same lookup behind "Add a company by name". That search is the authority on the
+ticker, and it has to be: the model offered CTEK for CoTec, which is really CTH.
+A company that resolves to nothing is shown as such rather than being offered
+for adding, and `heard_as` keeps the transcript's spelling on screen so a wrong
+correction is visible rather than buried.
+
+### The Interviews tab
+
+Shaped like the Companies tab: one card per interview, with what was found
+inside it.
+
+- `POST /api/interviews {url}` runs one, on the **shared refresh job slot** (as
+  the SEDI insider search does), so the one progress bar stays honest.
+- A company **already on the watchlist** gets *+ Add comments to notes*.
+- One that is **not** lives in its own **Add suggested companies** box, and its
+  button opens a dialog showing the exact bullets that would be written before
+  anything is added. `POST /api/interviews/add` puts it on the watchlist and
+  files the comments in one call, because the two halves are useless apart.
+- Bullets are **appended, never replacing**: the notes are the user's own
+  writing, and an interview is one more voice in them rather than the last word.
+  Re-applying does not duplicate them, and `applied` is stored so the UI stops
+  offering.
+- Every bullet is prefixed `[Speaker]`. A note that does not say who said it
+  reads as InSight's own view a month later. The prefix is frozen into storage
+  at extraction time, so what the user approves is what gets written even if the
+  prompt changes underneath.
+
 
 ### Planned, not yet built
 

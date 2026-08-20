@@ -26,6 +26,7 @@ anything of this shape is allowed near the notes a user relies on.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Sequence
@@ -36,6 +37,11 @@ from typing import Any
 
 from .llm import Completion, LLMRouter, estimate_tokens
 
+_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+)
+
 _VIDEO_ID = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
 # Room for a long list of companies. An 11k-token transcript of a wide-ranging
@@ -44,45 +50,55 @@ _MAX_OUTPUT = 4096
 
 SYSTEM = (
     "You extract what was said about specific public companies in an investing "
-    "interview. You are precise, you never invent a company that was not "
-    "discussed, and you preserve the speaker's own stance and phrasing rather "
-    "than neutralising it. You reply with JSON only."
+    "interview. The transcript is auto-generated captions, so company names are "
+    "often misheard: you correct them. You never invent a company that was not "
+    "discussed. You reply with JSON only."
 )
 
 PROMPT = """Below is the transcript of an investing interview or Q&A.
 
-Find every publicly traded company the speaker actually gives a VIEW ON or \
-material information about. For each one, summarise what they said.
+Find every publicly traded company the speaker gives a VIEW ON or material \
+information about, and summarise what they said.
+
+THE TRANSCRIPT IS AUTO-GENERATED CAPTIONS. Company names in it are frequently \
+misheard: "Kotekch" for CoTec, "Macango" for Mkango, "East Cole" for Eastcoal. \
+Use the surrounding context (the exchange, the projects, the commodity, the \
+people) to work out which company is meant, and put the CORRECT legal name in \
+"name". Put the transcript's spelling in "heard_as" whenever the two differ, so \
+a human can check you. If you genuinely cannot tell which company is meant, put \
+the transcript's spelling in both. NEVER correct a name into a different \
+company because it sounds similar: "Free Gold" is Freegold Ventures, not \
+Freehold Royalties. When in doubt, keep what you heard.
 
 EXCLUDE a company when it is only:
 - background for a person ("our chairman used to run X"),
 - a generic industry example ("the majors like X and Y"),
 - named in passing with nothing said about it,
 - the interviewer's own firm, channel, newsletter or conference.
-If nothing was said about the company itself, leave it out. A short list of real \
-opinions is worth more than a long list of name-drops.
+If nothing was said about the company itself, leave it out.
 
-Rules that matter:
-- Keep the speaker's tone and intent. If they are enthusiastic, sceptical, \
-hedging, or warning, that must survive into the bullet. Use their own words for \
-the parts that carry the opinion.
-- One bullet per distinct point. Short. No preamble.
-- Attribute each bullet to the speaker by their surname if you know it from the \
-transcript, otherwise write "Speaker". Never use a name that does not appear in \
-the transcript.
-- If a ticker or exchange is stated in the transcript, record it. If not, leave \
-those empty rather than guessing.
-- stance is one of: bullish, cautious, bearish, neutral.
-- If no company is genuinely discussed, return an empty list.
+BULLETS. This is the part that matters most:
+- SHORT. One clause, ideally under 15 words. No sub-clauses, no "which means".
+- One point per bullet. Split anything compound.
+- Keep the speaker's own judgement words: "cheap", "superb execution", "a \
+mistake", "I don't own it". Strip everything else.
+- No speaker name inside the bullet: it is added later.
+- No preamble, no "the speaker says".
+
+Good:  "Execution superb, stock cheap even allowing for political risk."
+Bad:   "The speaker notes that their execution has been superb and that the \
+stock, even accounting for political risk, appears to be cheap."
+
+If a ticker or exchange is stated, record it; otherwise leave those empty.
 
 Reply with JSON of exactly this shape and nothing else:
 
-{{"speaker": "who is being interviewed, or empty",
+{{"speaker": "the interviewee's full name, or empty",
   "companies": [
-    {{"name": "...", "ticker": "", "exchange": "",
-      "stance": "bullish|cautious|bearish|neutral",
+    {{"name": "correct legal name", "heard_as": "", "ticker": "", "exchange": "",
       "bullets": ["...", "..."]}}
   ]}}
+
 
 TRANSCRIPT:
 {transcript}
@@ -98,6 +114,48 @@ def video_id(url_or_id: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", s):
         return s
     raise ValueError(f"not a YouTube video URL or id: {url_or_id!r}")
+
+
+def fetch_title(vid: str) -> str:
+    """The video's title, best effort.
+
+    Uses YouTube's oEmbed endpoint rather than scraping the watch page: it is a
+    documented JSON API, needs no key, and returns the title directly. Scraping
+    the page for `<title>` worked from curl but not from urllib, which is the
+    kind of difference not worth owning.
+
+    Only a fallback for the speaker's name, so failure is silent.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url = "https://www.youtube.com/oembed?" + urllib.parse.urlencode(
+        {"url": f"https://www.youtube.com/watch?v={video_id(vid)}", "format": "json"}
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return str(json.load(r).get("title") or "").strip()
+    except Exception:
+        return ""
+
+
+def speaker_from_title(title: str) -> str:
+    """The interviewee's name out of a title.
+
+    Only the shapes that are unambiguous: a leading "Name:" or "Name -", a
+    leading possessive ("Rick Rule's 1,500% bet"), or a trailing "with Name".
+    Guessing more loosely would put the wrong person's name on every bullet of
+    an interview, which is worse than leaving it blank.
+    """
+    # Titles use a curly apostrophe as often as a straight one.
+    t = (title or "").strip().replace("\u2019", "'")
+    name = r"[A-Z][\w.'-]+(?: [A-Z][\w.'-]+){1,2}"
+    for pattern in (rf"^({name})'s\b", rf"^({name})\s*[:|-]", rf"\bwith ({name})\b"):
+        m = re.search(pattern, t)
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def fetch_transcript(vid: str) -> str:
@@ -117,12 +175,14 @@ class Mention:
     """One company as an interview discussed it."""
 
     name: str
+    applied: bool = False  # its bullets are already in the company's notes
+    heard_as: str = ""  # the transcript's spelling, when captions mangled it
     ticker: str = ""
     exchange: str = ""
-    stance: str = "neutral"
     bullets: list[str] = field(default_factory=list)
     on_watchlist: bool = False
     matched_name: str = ""  # the watchlist name this was matched to
+    resolved: bool = False  # a real listing was found for a company we don't follow
 
 
 @dataclass
@@ -138,6 +198,8 @@ class Extraction:
     model: str
     input_tokens: int
     output_tokens: int
+    title: str = ""
+    fetched: str = ""  # ISO timestamp of the run
     attempts: list[str] = field(default_factory=list)
 
 
@@ -236,6 +298,35 @@ def match_watchlist(mention: Mention, watchlist: Sequence[dict[str, str]]) -> Me
     return mention
 
 
+def resolve_listing(mention: Mention) -> Mention:
+    """Look a not-yet-followed company up in the issuer search.
+
+    This is the same lookup behind the app's "Add a company by name" box, so a
+    company proposed here can be added on exactly the terms the app already
+    trusts. It also second-guesses the model: a name that resolves to a real
+    listing is a name worth showing, and one that resolves to nothing is a hint
+    that the captions beat us.
+    """
+    from . import issuers
+
+    if mention.on_watchlist or not mention.name:
+        return mention
+    try:
+        hits = issuers.search_issuers(mention.name, limit=5)
+    except Exception:
+        return mention  # offline, or the search is down: not a reason to fail
+    for hit in hits:
+        if _same_company(normalise(mention.name), normalise(str(hit.get("legal_name") or ""))):
+            mention.resolved = True
+            mention.name = str(hit.get("legal_name") or mention.name)
+            # The search is the authority on the ticker. A model-supplied one is
+            # a guess: it offered CTEK for CoTec, which is really CTH.
+            mention.ticker = str(hit.get("ticker") or mention.ticker)
+            mention.exchange = str(hit.get("exchange") or mention.exchange)
+            return mention
+    return mention
+
+
 def extract(
     router: LLMRouter,
     transcript: str,
@@ -243,10 +334,14 @@ def extract(
     watchlist: Sequence[dict[str, str]] | None = None,
     url: str = "",
     vid: str = "",
+    title: str = "",
+    resolve: bool = True,
 ) -> Extraction:
     """Run one transcript through the router and match the result to a watchlist."""
     completion: Completion = router.complete(
-        PROMPT.format(transcript=transcript), system=SYSTEM, max_output=_MAX_OUTPUT
+        PROMPT.format(transcript=transcript),
+        system=SYSTEM,
+        max_output=_MAX_OUTPUT,
     )
     data = _json_from(completion.text)
     mentions = []
@@ -255,15 +350,21 @@ def extract(
             name=str(row.get("name") or "").strip(),
             ticker=str(row.get("ticker") or "").strip(),
             exchange=str(row.get("exchange") or "").strip(),
-            stance=str(row.get("stance") or "neutral").strip().lower(),
+            heard_as=str(row.get("heard_as") or "").strip(),
             bullets=[str(b).strip() for b in (row.get("bullets") or []) if str(b).strip()],
         )
-        if m.name:
-            mentions.append(match_watchlist(m, watchlist or []))
+        if not m.name:
+            continue
+        m = match_watchlist(m, watchlist or [])
+        mentions.append(resolve_listing(m) if resolve else m)
     return Extraction(
         video_id=vid,
         url=url,
-        speaker=str(data.get("speaker") or "").strip(),
+        # The transcript is the better source; the title is the fallback, since
+        # an interview title nearly always names its guest.
+        speaker=str(data.get("speaker") or "").strip() or speaker_from_title(title),
+        title=title,
+        fetched=datetime.now(UTC).isoformat(timespec="seconds"),
         mentions=mentions,
         transcript_chars=len(transcript),
         route=completion.route,
@@ -314,11 +415,11 @@ def render_report(extractions: list[Extraction], when: datetime | None = None) -
 
         out.append(f"ON YOUR WATCHLIST ({len(known)})")
         out.append("")
-        out += _render_group(known) or ["  (none)", ""]
+        out += _render_group(known, e.speaker) or ["  (none)", ""]
 
         out.append(f"NOT ON YOUR WATCHLIST ({len(new)}) — would be proposed as additions")
         out.append("")
-        out += _render_group(new) or ["  (none)", ""]
+        out += _render_group(new, e.speaker) or ["  (none)", ""]
 
     total = sum(len(e.mentions) for e in extractions)
     listed = sum(1 for e in extractions for m in e.mentions if m.on_watchlist)
@@ -330,18 +431,137 @@ def render_report(extractions: list[Extraction], when: datetime | None = None) -
     return "\n".join(out) + "\n"
 
 
-def _render_group(mentions: list[Mention]) -> list[str]:
+def note_bullets(mention: Mention, speaker: str) -> list[str]:
+    """The bullets exactly as they would be appended to a company's notes.
+
+    Every line carries the speaker, because a note that does not say who said it
+    reads as InSight's own view a month later. This is the one function the app
+    and the report share, so what you check in the report is what gets written.
+    """
+    who = (speaker or "Unattributed").strip()
+    return [f"[{who}] {b}" for b in mention.bullets]
+
+
+def _render_group(mentions: list[Mention], speaker: str) -> list[str]:
     lines: list[str] = []
     for m in mentions:
         tag = " ".join(x for x in [m.exchange, m.ticker] if x)
         head = f"  {m.name}" + (f"  [{tag}]" if tag else "")
+        if m.heard_as and normalise(m.heard_as) != normalise(m.name):
+            head += f'  (heard as "{m.heard_as}")'
         if m.matched_name and normalise(m.matched_name) != normalise(m.name):
             head += f"  (watchlist: {m.matched_name})"
+        elif not m.on_watchlist:
+            head += "  [listing found]" if m.resolved else "  [no listing found]"
         lines.append(head)
-        lines.append(f"    stance: {m.stance}")
-        lines += [f"    - {b}" for b in m.bullets]
+        lines += [f"    - {b}" for b in note_bullets(m, speaker)]
         lines.append("")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Saved interviews
+
+
+def as_dict(e: Extraction) -> dict[str, Any]:
+    """One extraction as stored JSON, with the note text already rendered.
+
+    The bullets are frozen at extraction time rather than rebuilt on read, so
+    what the user approved in the UI is exactly what later gets written into a
+    company's notes, even if the prompt changes underneath.
+    """
+    return {
+        "video_id": e.video_id,
+        "url": e.url,
+        "title": e.title,
+        "speaker": e.speaker,
+        "fetched": e.fetched,
+        "route": e.route,
+        "model": e.model,
+        "transcript_chars": e.transcript_chars,
+        "companies": [
+            {
+                "name": m.name,
+                "heard_as": m.heard_as,
+                "ticker": m.ticker,
+                "exchange": m.exchange,
+                "on_watchlist": m.on_watchlist,
+                "matched_name": m.matched_name,
+                "resolved": m.resolved,
+                "applied": m.applied,
+                "bullets": note_bullets(m, e.speaker),
+            }
+            for m in e.mentions
+        ],
+    }
+
+
+def load_saved(path: Path | None = None) -> list[dict[str, Any]]:
+    """Every interview run so far, newest first. Unreadable file yields []."""
+    from .paths import interviews_file
+
+    try:
+        raw = json.loads((path or interviews_file()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = raw.get("videos") if isinstance(raw, dict) else raw
+    return [r for r in (rows or []) if isinstance(r, dict) and r.get("video_id")]
+
+
+def save_extraction(entry: dict[str, Any], path: Path | None = None) -> None:
+    """Store one run, replacing any earlier run of the same video."""
+    from .paths import interviews_file
+
+    target = path or interviews_file()
+    rows = [r for r in load_saved(target) if r.get("video_id") != entry.get("video_id")]
+    rows.insert(0, entry)
+    _write_json(target, {"videos": rows})
+
+
+def forget(video_id: str, path: Path | None = None) -> bool:
+    """Drop one interview. True when something was actually removed."""
+    from .paths import interviews_file
+
+    target = path or interviews_file()
+    rows = load_saved(target)
+    kept = [r for r in rows if r.get("video_id") != video_id]
+    if len(kept) == len(rows):
+        return False
+    _write_json(target, {"videos": kept})
+    return True
+
+
+def mark_applied(video_id: str, company: str, path: Path | None = None) -> None:
+    """Remember that a company's bullets went into the notes, so the UI can stop
+    offering to add them twice."""
+    from .paths import interviews_file
+
+    target = path or interviews_file()
+    rows = load_saved(target)
+    for row in rows:
+        if row.get("video_id") != video_id:
+            continue
+        for c in row.get("companies") or []:
+            if c.get("name") == company:
+                c["applied"] = True
+    _write_json(target, {"videos": rows})
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomic replace, matching how notes.py guards its own file."""
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=1)
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -376,12 +596,13 @@ def main(argv: list[str] | None = None) -> int:
     for url in args.urls:
         vid = video_id(url)
         print(f"\n{vid}: fetching transcript…")
+        title = fetch_title(vid)
         transcript = fetch_transcript(vid)
         print(
             f"{vid}: {len(transcript):,} chars "
             f"(~{estimate_tokens(transcript):,} tokens), extracting…"
         )
-        e = extract(router, transcript, watchlist=watchlist, url=url, vid=vid)
+        e = extract(router, transcript, watchlist=watchlist, url=url, vid=vid, title=title)
         print(f"{vid}: {len(e.mentions)} companies via {e.route} ({e.input_tokens:,} in)")
         extractions.append(e)
 

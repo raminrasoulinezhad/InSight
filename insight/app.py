@@ -44,7 +44,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from . import autostart, notes, notify, paths, profiles, settings
+from . import autostart, interviews, notes, notify, paths, profiles, settings
 from .aggregate import load_insiders_view, load_view
 from .issuers import add_to_watchlist, remove_from_watchlist, search_issuers
 
@@ -325,6 +325,99 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
         traceback.print_exc()
 
 
+def _do_interview(url: str) -> None:
+    """Fetch one interview's transcript and extract it, on the shared job slot.
+
+    Runs on a thread so the UI keeps its progress bar. Every failure is reported
+    through `_refresh` rather than raised: this is a user-initiated fetch of a
+    third-party page, and the ways it can fail (no captions, no LLM key, every
+    route rate-limited) are all ordinary.
+    """
+    from .llm import NoRouteAvailable, default_router
+
+    try:
+        vid = interviews.video_id(url)
+        with _refresh_lock:
+            _refresh.update(message="Fetching the transcript…", done=0, total=3, label="")
+        title = interviews.fetch_title(vid)
+        transcript = interviews.fetch_transcript(vid)
+        if not transcript.strip():
+            raise ValueError("this video has no captions to read")
+
+        router = default_router()
+        if not router.routes:
+            raise ValueError("no LLM key configured — copy .env.example to .env and add one")
+
+        with _refresh_lock:
+            _refresh.update(
+                message=f"Reading “{title or vid}”…", done=1, total=3, label=title or vid
+            )
+        extraction = interviews.extract(
+            router,
+            transcript,
+            watchlist=interviews.load_watchlist(CONFIG),
+            url=url,
+            vid=vid,
+            title=title,
+        )
+        interviews.save_extraction(interviews.as_dict(extraction))
+        found = len(extraction.mentions)
+        with _refresh_lock:
+            _refresh.update(
+                running=False,
+                finished=True,
+                ok=True,
+                done=3,
+                total=3,
+                message=f"{found} companies found in “{title or vid}”",
+            )
+    except NoRouteAvailable as e:
+        _finish_interview(f"every LLM route declined: {str(e).splitlines()[0]}")
+    except Exception as e:
+        _finish_interview(f"{type(e).__name__}: {e}")
+
+
+def _finish_interview(msg: str) -> None:
+    with _refresh_lock:
+        _refresh.update(running=False, finished=True, ok=False, message=msg, label="")
+
+
+def _apply_bullets(video_id: str, company: str) -> tuple[bool, str]:
+    """Append one company's interview bullets to its notes.
+
+    Appended, never replacing: the notes are the user's own writing, and an
+    interview is one more voice in them rather than the last word.
+    """
+    for row in interviews.load_saved():
+        if row.get("video_id") != video_id:
+            continue
+        for c in row.get("companies") or []:
+            if c.get("name") != company:
+                continue
+            bullets = [str(b) for b in (c.get("bullets") or [])]
+            if not bullets:
+                return False, "nothing to add"
+            exchange, ticker = c.get("exchange", ""), c.get("ticker", "")
+            if c.get("matched_name"):
+                # The watchlist entry is the authority on where the note goes.
+                for w in interviews.load_watchlist(CONFIG):
+                    if w.get("name") == c["matched_name"]:
+                        exchange, ticker = w.get("exchange", ""), w.get("ticker", "")
+                        break
+            if not (exchange and ticker):
+                return False, "no exchange/ticker to file this under"
+            existing = notes.load_notes(paths.notes_file()).get(
+                notes.note_key(exchange, ticker), ""
+            )
+            fresh = [b for b in bullets if b not in existing]
+            text = (existing.rstrip() + "\n" if existing.strip() else "") + "\n".join(fresh)
+            saved, msg = notes.save_note(paths.notes_file(), exchange, ticker, text)
+            if saved:
+                interviews.mark_applied(video_id, company)
+            return saved, msg
+    return False, "interview or company not found"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quieter console
         pass
@@ -397,6 +490,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/refresh/status":
             with _refresh_lock:
                 self._send_json(200, dict(_refresh))
+        elif path == "/api/interviews":
+            self._send_json(200, {"videos": interviews.load_saved()})
         elif path == "/api/notes":
             self._send_json(200, {"notes": notes.load_notes(paths.notes_file())})
         elif path == "/api/settings":
@@ -467,6 +562,62 @@ class Handler(BaseHTTPRequestHandler):
             _insider_result.update(name=name, companies=[], unresolved=[])
             threading.Thread(target=_do_insider_search, args=(name,), daemon=True).start()
             self._send_json(202, {"started": True, "name": name})
+        elif parsed.path == "/api/interviews":
+            try:
+                url = str(self._read_json().get("url", "")).strip()
+                interviews.video_id(url)  # reject a non-YouTube link before starting
+            except Exception as e:
+                self._send_json(400, {"started": False, "msg": f"bad request: {e}"})
+                return
+            with _refresh_lock:
+                # Shares the refresh slot, like the insider search: one long job
+                # at a time keeps the single progress bar honest.
+                if _refresh["running"]:
+                    self._send_json(409, {"started": False, **_refresh})
+                    return
+                _refresh.update(
+                    running=True,
+                    finished=False,
+                    ok=False,
+                    message="Starting…",
+                    date=None,
+                    done=0,
+                    total=0,
+                    label="",
+                )
+            threading.Thread(target=_do_interview, args=(url,), daemon=True).start()
+            self._send_json(202, {"started": True})
+        elif parsed.path == "/api/interviews/apply":
+            try:
+                body = self._read_json()
+                ok, msg = _apply_bullets(
+                    str(body.get("video_id", "")), str(body.get("company", ""))
+                )
+                self._send_json(200 if ok else 400, {"saved": ok, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"saved": False, "msg": f"bad request: {e}"})
+        elif parsed.path == "/api/interviews/add":
+            # Add the suggested company, then file its bullets in one go: the
+            # two halves are useless apart, and a half-done add is confusing.
+            try:
+                body = self._read_json()
+                added, msg = add_to_watchlist(
+                    CONFIG,
+                    {
+                        "legal_name": str(body.get("name", "")),
+                        "exchange": str(body.get("exchange", "")),
+                        "ticker": str(body.get("ticker", "")),
+                        "country": str(body.get("country", "CA")),
+                    },
+                )
+                if added:
+                    _, msg2 = _apply_bullets(
+                        str(body.get("video_id", "")), str(body.get("company", ""))
+                    )
+                    msg = f"{msg}; {msg2}"
+                self._send_json(200 if added else 400, {"added": added, "msg": msg})
+            except Exception as e:
+                self._send_json(400, {"added": False, "msg": f"bad request: {e}"})
         elif parsed.path == "/api/notes":
             try:
                 body = self._read_json()
@@ -519,7 +670,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urllib.parse.urlsplit(self.path)
-        if parsed.path == "/api/watchlist":
+        if parsed.path == "/api/interviews":
+            vid = urllib.parse.parse_qs(parsed.query).get("video", [""])[0]
+            removed = interviews.forget(vid)
+            self._send_json(200 if removed else 404, {"removed": removed})
+        elif parsed.path == "/api/watchlist":
             qs = urllib.parse.parse_qs(parsed.query)
             exchange = qs.get("exchange", [""])[0]
             ticker = qs.get("ticker", [""])[0]

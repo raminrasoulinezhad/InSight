@@ -185,7 +185,9 @@
     .progress-fill { transition:none; }
     .progress.indeterminate .progress-fill { animation:none; width:100%; opacity:.45; }
   }
-  .tabs { display:flex; gap:4px; margin-top:12px; border-bottom:1px solid var(--line); }
+  /* Wraps rather than widening the page: a fourth tab pushed the row past a
+     375px phone and gave the whole document a sideways scroll. */
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px; border-bottom:1px solid var(--line); }
   .tabs button {
     background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent;
     padding:8px 16px; font-size:14px; cursor:pointer; margin-bottom:-1px;
@@ -243,6 +245,23 @@
   .sedi-link:hover { border-color:var(--accent); color:var(--accent); }
   .company-head .bell { margin-left:6px; }
   .company-head .del-co { margin-left:8px; }
+  /* Interviews tab */
+  .iv-add { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .iv-add input { flex:1; min-width:260px; }
+  .iv-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .iv-speaker { font-weight:600; }
+  .iv-meta { color:var(--muted); font-size:12px; margin-top:2px; }
+  .iv-co { border-top:1px solid var(--line); padding:10px 0; }
+  .iv-co:last-child { border-bottom:0; }
+  .iv-co-name { font-weight:600; }
+  .iv-heard { color:var(--muted); font-weight:400; font-size:12px; }
+  .iv-bullets { margin:6px 0 0 0; padding-left:18px; }
+  .iv-bullets li { margin:2px 0; }
+  .iv-actions { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  .iv-applied { color:var(--muted); font-size:12px; }
+  .iv-suggested { margin-top:14px; border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
+  .iv-suggested h4 { margin:0 0 4px 0; font-size:13px; }
+
   /* cross-links between the Companies and Insiders tabs */
   .xnav { background:none; border:0; padding:0; font:inherit; color:inherit;
     cursor:pointer; text-align:left; border-bottom:1px dotted var(--line); }
@@ -475,6 +494,7 @@
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
     <button data-view="insiders">Insiders</button>
+    <button data-view="interviews">Interviews</button>
     <button data-view="alarms">Alarms</button>
     <button id="back" class="back-btn" disabled
       title="Go back to where you were (Alt+←)">← Back</button>
@@ -528,6 +548,24 @@
   </div>
 </div>
 
+<div class="modal hidden" id="suggest">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="suggest-title">
+    <div class="modal-head">
+      <h2 id="suggest-title">Company</h2>
+      <button class="modal-x" id="suggest-close" title="Close (Esc)">✕ Close</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint" id="suggest-sub"></p>
+      <p class="hint">These comments will be filed against the company once it is added.
+         They are what the speaker said, not fact.</p>
+      <ul class="iv-bullets" id="suggest-bullets"></ul>
+      <div class="iv-actions">
+        <button class="primary" id="suggest-add">+ Add to watchlist with these comments</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal hidden" id="settings">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="modal-head">
@@ -576,6 +614,7 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // the insider whose SEDI lookup is in flight, so the shared
               // refresh poll knows to show results instead of reloading the feed
               pendingInsider:null, insiderFindOpener:null,
+              interviews:[], pendingInterview:false, suggest:null,
               expanded:new Set() };   // companies showing their full row list
 
 // Alarm identity — must match notify.alarm_key on the backend.
@@ -869,6 +908,7 @@ function setMeta(d){
 }
 
 function render(){
+  if (STATE.view === "interviews") return renderInterviews();
   if (STATE.view === "alarms") return renderAlarms();
   if (STATE.view === "insiders") return renderInsiders();
   return renderCompanies();
@@ -1033,6 +1073,167 @@ function alarmSection(title, rows, empty){
 // The Alarms tab is the list of what you're watching. Setting up *how* you get
 // told (email / push) lives in Settings ▸ Notifications, since that is
 // configured once and then left alone.
+/* ---- Interviews ----------------------------------------------------------
+   Same shape as the Companies tab: one card per thing, with what was found
+   inside it. A company already on the watchlist can take its bullets straight
+   into its notes; one that is not is a *suggestion*, and lives in its own box
+   so it never reads as something already added. */
+function renderInterviews(){
+  const vids = STATE.interviews || [];
+  const found = vids.reduce((n, v) => n + (v.companies || []).length, 0);
+  setStats(vids.length, "interviews", found, "companies discussed",
+           vids.filter(v => (v.companies||[]).some(c => c.on_watchlist)).length, "touch your watchlist");
+  document.getElementById("datameta").textContent = "interviews you have added";
+  document.getElementById("foot").textContent =
+    "Bullets are what the speaker said, not fact. Adding one appends it to that company's notes.";
+
+  const adder = `<div class="iv-add">
+      <input id="iv-url" type="url" placeholder="Paste a YouTube interview link…"
+             aria-label="YouTube interview link" />
+      <button id="iv-go" class="primary">Analyse</button>
+    </div>`;
+
+  const body = vids.length
+    ? vids.map(interviewCard).join("")
+    : `<div class="nodata">No interviews yet. Paste a YouTube link above to read one.</div>`;
+
+  document.getElementById("feed").innerHTML = adder + body;
+  wireInterviews();
+}
+
+function interviewCard(v){
+  const known = (v.companies || []).filter(c => c.on_watchlist);
+  const news  = (v.companies || []).filter(c => !c.on_watchlist);
+  return `<div class="card">
+    <div class="iv-head">
+      <div>
+        <div class="iv-speaker">${esc(v.speaker || "Unattributed")}</div>
+        <div class="iv-meta">${esc(v.title || v.video_id)}</div>
+        <div class="iv-meta">
+          <a href="${esc(v.url)}" target="_blank" rel="noopener">watch ↗</a>
+          · ${esc((v.fetched || "").slice(0, 10))} · ${esc(v.model || "")}
+        </div>
+      </div>
+      <button class="iv-forget" data-video="${esc(v.video_id)}" title="Remove this interview">✕</button>
+    </div>
+    ${known.map(c => companyBlock(v, c, false)).join("")}
+    ${news.length ? `<div class="iv-suggested">
+        <h4>Add suggested companies (${news.length})</h4>
+        <p class="hint">Discussed here but not on your watchlist. Adding one puts it on the
+           watchlist and files these comments against it.</p>
+        ${news.map(c => companyBlock(v, c, true)).join("")}
+      </div>` : ""}
+  </div>`;
+}
+
+function companyBlock(v, c, suggested){
+  const tag = [c.exchange, c.ticker].filter(Boolean).join(":");
+  const heard = c.heard_as && c.heard_as !== c.name ? ` <span class="iv-heard">heard as “${esc(c.heard_as)}”</span>` : "";
+  const label = c.matched_name && c.matched_name !== c.name ? ` <span class="iv-heard">→ ${esc(c.matched_name)}</span>` : "";
+  const btn = c.applied
+    ? `<span class="iv-applied">✓ added to notes</span>`
+    : suggested
+      ? `<button class="iv-suggest-btn" data-video="${esc(v.video_id)}" data-company="${esc(c.name)}"
+                 ${c.exchange && c.ticker ? "" : "disabled title='No listing was found, so there is nothing to add it as'"}>
+           + Add company &amp; comments</button>`
+      : `<button class="iv-apply" data-video="${esc(v.video_id)}" data-company="${esc(c.name)}">
+           + Add comments to notes</button>`;
+  return `<div class="iv-co">
+    <div class="iv-co-name">${esc(c.name)}${tag ? ` <span class="iv-heard">${esc(tag)}</span>` : ""}${heard}${label}</div>
+    <ul class="iv-bullets">${(c.bullets || []).map(b => `<li>${esc(b)}</li>`).join("")}</ul>
+    <div class="iv-actions">${btn}</div>
+  </div>`;
+}
+
+function wireInterviews(){
+  const go = document.getElementById("iv-go");
+  const box = document.getElementById("iv-url");
+  if (go) go.addEventListener("click", () => startInterview(box.value));
+  if (box) box.addEventListener("keydown", e => { if (e.key === "Enter") startInterview(box.value); });
+
+  document.querySelectorAll(".iv-forget").forEach(b => b.addEventListener("click", async () => {
+    await fetch("/api/interviews?video=" + encodeURIComponent(b.dataset.video), {method:"DELETE"});
+    await loadInterviews(); render();
+  }));
+  document.querySelectorAll(".iv-apply").forEach(b => b.addEventListener("click", () => applyBullets(b)));
+  document.querySelectorAll(".iv-suggest-btn").forEach(b =>
+    b.addEventListener("click", () => openSuggest(b.dataset.video, b.dataset.company)));
+}
+
+async function startInterview(url){
+  if (!String(url || "").trim()) { toast("Paste a YouTube link first."); return; }
+  try {
+    const r = await fetch("/api/interviews", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({url})
+    });
+    const d = await r.json();
+    if (!d.started){ toast(d.msg || "Something else is running right now."); return; }
+    STATE.pendingInterview = true;
+    setRefreshing(true, "Reading the interview…");
+    setProgress(true, 0, 3);
+    if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
+    document.getElementById("iv-url").value = "";
+  } catch(e){
+    toast("Could not start: " + e.message);
+  }
+}
+
+async function applyBullets(btn){
+  const r = await fetch("/api/interviews/apply", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({video_id: btn.dataset.video, company: btn.dataset.company})
+  });
+  const d = await r.json();
+  toast(d.msg || (d.saved ? "Added to notes." : "Could not add."));
+  if (d.saved){ await Promise.all([loadInterviews(), loadNotes()]); render(); }
+}
+
+/* The suggestion dialog: name and comments as extracted, so the decision is
+   made looking at what would actually be written, not a summary of it. */
+function openSuggest(videoId, company){
+  const v = (STATE.interviews || []).find(x => x.video_id === videoId);
+  const c = v && (v.companies || []).find(x => x.name === company);
+  if (!c) return;
+  STATE.suggest = {videoId, company};
+  document.getElementById("suggest-title").textContent = c.name;
+  document.getElementById("suggest-sub").textContent =
+    [c.exchange, c.ticker].filter(Boolean).join(":") + (v.speaker ? ` · from ${v.speaker}` : "");
+  document.getElementById("suggest-bullets").innerHTML =
+    (c.bullets || []).map(b => `<li>${esc(b)}</li>`).join("");
+  const dlg = document.getElementById("suggest");
+  dlg.classList.remove("hidden");
+  document.getElementById("suggest-add").focus();
+}
+
+function closeSuggest(){ document.getElementById("suggest").classList.add("hidden"); }
+function suggestOpen(){ return !document.getElementById("suggest").classList.contains("hidden"); }
+
+async function confirmSuggest(){
+  const s = STATE.suggest; if (!s) return;
+  const v = (STATE.interviews || []).find(x => x.video_id === s.videoId);
+  const c = v && (v.companies || []).find(x => x.name === s.company);
+  if (!c) return;
+  const r = await fetch("/api/interviews/add", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      video_id: s.videoId, company: s.company,
+      name: c.name, exchange: c.exchange, ticker: c.ticker
+    })
+  });
+  const d = await r.json();
+  toast(d.msg || (d.added ? "Added." : "Could not add."));
+  closeSuggest();
+  if (d.added){ await Promise.all([loadInterviews(), loadNotes()]); render(); }
+}
+
+async function loadInterviews(){
+  try {
+    const d = await (await fetch("/api/interviews")).json();
+    STATE.interviews = d.videos || [];
+  } catch { STATE.interviews = []; }
+}
+
 function renderAlarms(){
   const n = STATE.notify || {email:{},ntfy:{},alarms:[]};
   const e = n.email || {}, y = n.ntfy || {};
@@ -1561,6 +1762,7 @@ async function addFoundCompany(btn){
 }
 
 async function load(){
+  if (STATE.view === "interviews"){ await loadInterviews(); render(); return; }
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
   try {
     const url = STATE.view === "insiders" ? "/api/insiders" : "/api/data";
@@ -1929,19 +2131,25 @@ async function pollRefresh(){
     clearInterval(pollTimer); pollTimer = null;
     setRefreshing(false, d.message);
     const insider = STATE.pendingInsider;
+    const interview = STATE.pendingInterview;
     STATE.pendingInsider = null;
+    STATE.pendingInterview = false;
     if (d.ok){
       // Land on full and hold a beat, so the bar is seen finishing rather than
       // vanishing at whatever the last poll happened to catch (e.g. 11 of 12).
       setProgress(true, 1, 1);
       hideTimer = setTimeout(()=>{ setProgress(false); }, 900);
       if (insider) await showInsiderFindResult();
+      else if (interview){ await loadInterviews(); render(); }
       else await load();                       // show freshly scraped data
     } else {
       setProgress(false);                      // failed: don't imply completion
       if (insider){
         insiderFindBody(`<div class="find-msg">${esc(d.message || "The search failed.")}</div>`);
       }
+      // The interview tab shows the failure in the toast: the message names the
+      // real cause (no captions, no key, every route rate-limited).
+      if (interview) toast(d.message || "Could not read that interview.");
     }
     setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
   } catch(e){
@@ -2038,6 +2246,12 @@ document.getElementById("settings").addEventListener("click", e => {
   if (e.target.id === "settings") closeSettings();
 });
 
+document.getElementById("suggest-close").addEventListener("click", closeSuggest);
+document.getElementById("suggest-add").addEventListener("click", confirmSuggest);
+document.getElementById("suggest").addEventListener("click", e => {
+  if (e.target.id === "suggest") closeSuggest();
+});
+
 document.getElementById("insider-find-close")
   .addEventListener("click", closeInsiderFind);
 document.getElementById("insider-find").addEventListener("click", e => {
@@ -2047,6 +2261,11 @@ document.getElementById("insider-find").addEventListener("click", e => {
 });
 
 document.addEventListener("keydown", e => {
+  if (suggestOpen()){
+    if (e.key === "Escape"){ closeSuggest(); return; }
+    trapFocus(e, "suggest");
+    return;   // the dialog owns the keyboard while it is up
+  }
   if (insiderFindOpen()){
     if (e.key === "Escape"){ closeInsiderFind(); return; }
     trapFocus(e, "insider-find");
@@ -2065,9 +2284,11 @@ document.addEventListener("keydown", e => {
 // The search/filter/add-company controls only apply to the data tabs; hide them
 // on the Alarms tab, which has its own settings form.
 function applyViewChrome(){
-  const isAlarms = STATE.view === "alarms";
+  // Both of these tabs have their own controls; the shared filter row means
+  // nothing on either.
+  const ownControls = STATE.view === "alarms" || STATE.view === "interviews";
   hideAdder();
-  document.querySelectorAll("header .controls").forEach(el => { el.style.display = isAlarms ? "none" : ""; });
+  document.querySelectorAll("header .controls").forEach(el => { el.style.display = ownControls ? "none" : ""; });
   document.getElementById("q").placeholder = STATE.view === "insiders"
     ? "Filter by insider name, company, or ticker…"
     : "Filter by company, ticker, or insider name…";

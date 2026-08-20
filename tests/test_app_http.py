@@ -101,6 +101,7 @@ def client(tmp_path: Path, monkeypatch) -> Iterator[Client]:
     monkeypatch.setattr(paths, "settings_file", lambda: tmp_path / "settings.json")
     monkeypatch.setattr(paths, "notify_file", lambda: tmp_path / "notify.json")
     monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
+    monkeypatch.setattr(paths, "interviews_file", lambda: tmp_path / "interviews.json")
 
     from insight import aggregate
 
@@ -385,6 +386,7 @@ class TestSediRefreshWiring:
         monkeypatch.setattr(app, "CONFIG", config)
         monkeypatch.setattr(app, "DATA_DIR", tmp_path / "data")
         monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
+        monkeypatch.setattr(paths, "interviews_file", lambda: tmp_path / "interviews.json")
         monkeypatch.setattr(paths, "sedi_profile_dir", lambda: tmp_path / "sedi-profile")
         monkeypatch.setattr(paths, "cache_dir", lambda: tmp_path / "cache")
         monkeypatch.setattr(paths, "app_dir", lambda: tmp_path)
@@ -481,3 +483,116 @@ class TestInsiderSearchRoute:
         )
         status, d = client.get("/api/insider-search")
         assert status == 200 and d["companies"][0]["ticker"] == "WRLG"
+
+
+class TestInterviews:
+    """The Interviews tab's endpoints. No YouTube, no LLM: only the routing,
+    the storage and the two ways an extraction reaches a company's notes."""
+
+    def saved(self, tmp_path, applied=False, **over):
+        from insight import interviews
+
+        entry = {
+            "video_id": "vid123",
+            "url": "https://youtu.be/vid123",
+            "title": "Rick Rule on gold",
+            "speaker": "Rick Rule",
+            "companies": [
+                {
+                    "name": "ABC Corp",
+                    "matched_name": "ABC Corp",
+                    "exchange": "TSE",
+                    "ticker": "ABC",
+                    "on_watchlist": True,
+                    "applied": applied,
+                    "bullets": ["[Rick Rule] Cheap.", "[Rick Rule] Execution superb."],
+                },
+                {
+                    "name": "New Venture Ltd",
+                    "exchange": "TSXV",
+                    "ticker": "NEW",
+                    "on_watchlist": False,
+                    "resolved": True,
+                    "applied": False,
+                    "bullets": ["[Rick Rule] Worth a look."],
+                },
+            ],
+            **over,
+        }
+        interviews.save_extraction(entry, tmp_path / "interviews.json")
+
+    def test_the_list_is_empty_before_anything_is_added(self, client):
+        assert client.get("/api/interviews") == (200, {"videos": []})
+
+    def test_a_link_that_is_not_a_youtube_video_is_refused(self, client):
+        status, body = client.post("/api/interviews", {"url": "https://example.com/x"})
+        assert status == 400 and body["started"] is False
+
+    def test_a_saved_run_is_served_back(self, client, tmp_path):
+        self.saved(tmp_path)
+        status, body = client.get("/api/interviews")
+        assert status == 200
+        assert [v["video_id"] for v in body["videos"]] == ["vid123"]
+
+    def test_bullets_land_in_the_notes_of_a_followed_company(self, client, tmp_path):
+        self.saved(tmp_path)
+        assert (
+            client.post("/api/interviews/apply", {"video_id": "vid123", "company": "ABC Corp"})[0]
+            == 200
+        )
+        note = client.get("/api/notes")[1]["notes"]["TSE:ABC"]
+        assert "[Rick Rule] Cheap." in note and "[Rick Rule] Execution superb." in note
+
+    def test_applying_appends_rather_than_replacing_what_the_user_wrote(self, client, tmp_path):
+        # The notes are the user's own writing; an interview is one more voice
+        # in them, not the last word.
+        self.saved(tmp_path)
+        client.post("/api/notes", {"exchange": "TSE", "ticker": "ABC", "text": "My own thesis."})
+        client.post("/api/interviews/apply", {"video_id": "vid123", "company": "ABC Corp"})
+        note = client.get("/api/notes")[1]["notes"]["TSE:ABC"]
+        assert note.startswith("My own thesis.") and "[Rick Rule] Cheap." in note
+
+    def test_applying_twice_does_not_duplicate_the_bullets(self, client, tmp_path):
+        self.saved(tmp_path)
+        for _ in range(2):
+            client.post("/api/interviews/apply", {"video_id": "vid123", "company": "ABC Corp"})
+        assert client.get("/api/notes")[1]["notes"]["TSE:ABC"].count("[Rick Rule] Cheap.") == 1
+
+    def test_applying_marks_it_so_the_ui_stops_offering(self, client, tmp_path):
+        self.saved(tmp_path)
+        client.post("/api/interviews/apply", {"video_id": "vid123", "company": "ABC Corp"})
+        companies = client.get("/api/interviews")[1]["videos"][0]["companies"]
+        assert companies[0]["applied"] is True
+
+    def test_an_unknown_company_is_a_400_not_a_crash(self, client, tmp_path):
+        self.saved(tmp_path)
+        status, body = client.post(
+            "/api/interviews/apply", {"video_id": "vid123", "company": "Nope"}
+        )
+        assert status == 400 and body["saved"] is False
+
+    def test_adding_a_suggestion_puts_it_on_the_watchlist_with_its_comments(self, client, tmp_path):
+        # The two halves are useless apart, so one call does both.
+        self.saved(tmp_path)
+        status, body = client.post(
+            "/api/interviews/add",
+            {
+                "video_id": "vid123",
+                "company": "New Venture Ltd",
+                "name": "New Venture Ltd",
+                "exchange": "TSXV",
+                "ticker": "NEW",
+            },
+        )
+        assert status == 200 and body["added"] is True
+        cfg = json.loads((tmp_path / "companies.json").read_text())
+        assert "New Venture Ltd" in [c["name"] for c in cfg["companies"]]
+        assert "[Rick Rule] Worth a look." in client.get("/api/notes")[1]["notes"]["TSXV:NEW"]
+
+    def test_an_interview_can_be_forgotten(self, client, tmp_path):
+        self.saved(tmp_path)
+        assert client.delete("/api/interviews?video=vid123")[0] == 200
+        assert client.get("/api/interviews")[1]["videos"] == []
+
+    def test_forgetting_something_that_is_not_there_is_a_404(self, client):
+        assert client.delete("/api/interviews?video=nope")[0] == 404
