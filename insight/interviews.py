@@ -196,8 +196,19 @@ def fetch_transcript(vid: str) -> str:
 
     Imported lazily so the rest of InSight does not need the dependency just to
     start, and so a machine without it still runs everything else.
+
+    An install that predates this dependency raises a bare ModuleNotFoundError,
+    which tells the user nothing they can act on, so it is turned into the
+    command that fixes it.
     """
-    from youtube_transcript_api import YouTubeTranscriptApi
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError as e:
+        raise RuntimeError(
+            "the transcript reader is not installed in this copy of InSight. "
+            "Update it with:  uv tool install --editable . --force  (from a "
+            "checkout), or  uv tool upgrade insight"
+        ) from e
 
     fetched = YouTubeTranscriptApi().fetch(video_id(vid))
     return " ".join(chunk.text for chunk in fetched).strip()

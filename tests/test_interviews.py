@@ -365,3 +365,21 @@ class TestSavedInterviews:
         )
         stored = interviews.as_dict(e)
         assert stored["companies"][0]["bullets"][0].startswith("[Rick Rule] ")
+
+
+class TestAMissingDependencyExplainsItself:
+    def test_the_error_names_the_command_that_fixes_it(self, monkeypatch):
+        # An install predating this dependency raised a bare
+        # ModuleNotFoundError, which tells the user nothing they can act on.
+        import builtins
+
+        real = builtins.__import__
+
+        def no_transcripts(name, *a, **kw):
+            if name == "youtube_transcript_api":
+                raise ImportError("No module named 'youtube_transcript_api'")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", no_transcripts)
+        with pytest.raises(RuntimeError, match="uv tool"):
+            interviews.fetch_transcript("i25DJxYcDGw")

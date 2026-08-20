@@ -139,6 +139,10 @@ This needs a free LLM key: copy `.env.example` to `.env` and add one. Several
 keys from different providers can be listed, and InSight picks whichever has
 room left.
 
+> **Upgrading from an older InSight?** This tab added a dependency, so update
+> the installed copy once (`uv tool upgrade insight`) or the tab will report
+> that the transcript reader is missing.
+
 ### Chasing one insider
 
 InSight normally works company-first: you see an insider because a company they
