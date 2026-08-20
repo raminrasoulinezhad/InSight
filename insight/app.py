@@ -340,6 +340,7 @@ def _do_interview(url: str) -> None:
         with _refresh_lock:
             _refresh.update(message="Fetching the transcript…", done=0, total=3, label="")
         title = interviews.fetch_title(vid)
+        published = interviews.fetch_published(vid)
         transcript = interviews.fetch_transcript(vid)
         if not transcript.strip():
             raise ValueError("this video has no captions to read")
@@ -359,6 +360,7 @@ def _do_interview(url: str) -> None:
             url=url,
             vid=vid,
             title=title,
+            published=published,
         )
         interviews.save_extraction(interviews.as_dict(extraction))
         found = len(extraction.mentions)

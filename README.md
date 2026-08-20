@@ -126,7 +126,8 @@ The **Interviews** tab reads what people *say*, next to what insiders *do*.
 
 1. Paste a YouTube interview link and click **Analyse**.
 2. InSight reads the video's captions and pulls out every company discussed,
-   as short bullets in the speaker's own words, each tagged with their name.
+   as short bullets in the speaker's own words, each tagged with who said it
+   and when: *[Rick Rule - Aug 13 2026] Execution has been superb.*
 3. Companies you already follow get **+ Add comments to notes**.
 4. Companies you don't are listed under **Add suggested companies**, where one
    click adds the company *and* files the comments against it.

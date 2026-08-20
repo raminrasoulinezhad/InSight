@@ -201,15 +201,29 @@ class TestTheReport:
         )
 
 
-class TestBulletsCarryTheSpeaker:
-    """A note that does not say who said it reads as InSight's own view later."""
+class TestBulletsCarryTheSpeakerAndTheDate:
+    """A note that does not say who said it reads as InSight's own view later,
+    and one that does not say when cannot be weighed at all."""
 
-    def test_each_bullet_is_prefixed_with_the_speaker(self):
+    def test_each_bullet_is_prefixed_with_the_speaker_and_date(self):
         m = interviews.Mention(name="X", bullets=["Cheap.", "Execution superb."])
-        assert interviews.note_bullets(m, "Rick Rule") == [
-            "[Rick Rule] Cheap.",
-            "[Rick Rule] Execution superb.",
+        assert interviews.note_bullets(m, "Rick Rule", "2026-05-02") == [
+            "[Rick Rule - May 2 2026] Cheap.",
+            "[Rick Rule - May 2 2026] Execution superb.",
         ]
+
+    def test_an_unknown_date_is_left_off_rather_than_faked(self):
+        # Filling it with the run date would quietly date the opinion to
+        # whenever the video happened to be read.
+        m = interviews.Mention(name="X", bullets=["Cheap."])
+        assert interviews.note_bullets(m, "Rick Rule", "") == ["[Rick Rule] Cheap."]
+
+    def test_a_day_is_not_zero_padded(self):
+        assert interviews.pretty_date("2026-05-02") == "May 2 2026"
+
+    def test_a_date_that_is_not_a_date_yields_nothing(self):
+        assert interviews.pretty_date("not-a-date") == ""
+        assert interviews.pretty_date("") == ""
 
     def test_an_unknown_speaker_is_labelled_not_omitted(self):
         m = interviews.Mention(name="X", bullets=["Cheap."])
@@ -220,9 +234,21 @@ class TestBulletsCarryTheSpeaker:
             _router(TestExtracting.PAYLOAD),
             "t",
             watchlist=TestMatchingCompanyNames.WATCHLIST,
+            published="2026-05-02",
             resolve=False,
         )
-        assert "[Rick Rule] Political risk" in interviews.render_report([e])
+        assert "[Rick Rule - May 2 2026] Political risk" in interviews.render_report([e])
+
+    def test_the_stored_bullets_carry_the_date_too(self):
+        e = interviews.extract(
+            _router(TestExtracting.PAYLOAD),
+            "t",
+            published="2026-05-02",
+            resolve=False,
+        )
+        assert interviews.as_dict(e)["companies"][0]["bullets"][0].startswith(
+            "[Rick Rule - May 2 2026] "
+        )
 
 
 class TestSpeakerFromTitle:

@@ -140,6 +140,39 @@ def fetch_title(vid: str) -> str:
         return ""
 
 
+def fetch_published(vid: str) -> str:
+    """The video's publication date as YYYY-MM-DD, best effort.
+
+    Read from the watch page, since oEmbed does not carry it. The date sits
+    roughly 700 KB in, so the page has to be read whole rather than sampled.
+    That is one 1.2 MB request per interview, which is cheap against a fetch
+    that already pulls a transcript and runs an LLM.
+
+    Worth the trouble because the date is what makes an old opinion legible: an
+    unattributed "cheap" is noise a year later.
+    """
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            f"https://www.youtube.com/watch?v={video_id(vid)}", headers={"User-Agent": _UA}
+        )
+        with urllib.request.urlopen(req, timeout=45) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        m = re.search(r'"uploadDate":"(\d{4}-\d{2}-\d{2})', html)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def pretty_date(iso: str) -> str:
+    """`2026-05-02` as `May 2 2026`. Blank stays blank."""
+    try:
+        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%b %-d %Y")
+    except (ValueError, TypeError):
+        return ""
+
+
 def speaker_from_title(title: str) -> str:
     """The interviewee's name out of a title.
 
@@ -199,6 +232,7 @@ class Extraction:
     input_tokens: int
     output_tokens: int
     title: str = ""
+    published: str = ""  # the video's own date, YYYY-MM-DD
     fetched: str = ""  # ISO timestamp of the run
     attempts: list[str] = field(default_factory=list)
 
@@ -335,6 +369,7 @@ def extract(
     url: str = "",
     vid: str = "",
     title: str = "",
+    published: str = "",
     resolve: bool = True,
 ) -> Extraction:
     """Run one transcript through the router and match the result to a watchlist."""
@@ -364,6 +399,7 @@ def extract(
         # an interview title nearly always names its guest.
         speaker=str(data.get("speaker") or "").strip() or speaker_from_title(title),
         title=title,
+        published=published,
         fetched=datetime.now(UTC).isoformat(timespec="seconds"),
         mentions=mentions,
         transcript_chars=len(transcript),
@@ -401,7 +437,8 @@ def render_report(extractions: list[Extraction], when: datetime | None = None) -
         out += [
             "=" * 78,
             f"VIDEO   {e.url or e.video_id}",
-            f"SPEAKER {e.speaker or '(not identified)'}",
+            f"SPEAKER {e.speaker or '(not identified)'}"
+            + (f"   PUBLISHED {pretty_date(e.published)}" if e.published else ""),
             f"SOURCE  {e.transcript_chars:,} chars of transcript "
             f"(~{estimate_tokens('x' * e.transcript_chars):,} tokens)",
             f"MODEL   {e.route} / {e.model}"
@@ -415,11 +452,11 @@ def render_report(extractions: list[Extraction], when: datetime | None = None) -
 
         out.append(f"ON YOUR WATCHLIST ({len(known)})")
         out.append("")
-        out += _render_group(known, e.speaker) or ["  (none)", ""]
+        out += _render_group(known, e.speaker, e.published) or ["  (none)", ""]
 
         out.append(f"NOT ON YOUR WATCHLIST ({len(new)}) — would be proposed as additions")
         out.append("")
-        out += _render_group(new, e.speaker) or ["  (none)", ""]
+        out += _render_group(new, e.speaker, e.published) or ["  (none)", ""]
 
     total = sum(len(e.mentions) for e in extractions)
     listed = sum(1 for e in extractions for m in e.mentions if m.on_watchlist)
@@ -431,18 +468,25 @@ def render_report(extractions: list[Extraction], when: datetime | None = None) -
     return "\n".join(out) + "\n"
 
 
-def note_bullets(mention: Mention, speaker: str) -> list[str]:
+def note_bullets(mention: Mention, speaker: str, published: str = "") -> list[str]:
     """The bullets exactly as they would be appended to a company's notes.
 
-    Every line carries the speaker, because a note that does not say who said it
-    reads as InSight's own view a month later. This is the one function the app
-    and the report share, so what you check in the report is what gets written.
+    Every line carries who said it and when. Without the name a note reads as
+    InSight's own view a month later; without the date an opinion cannot be
+    weighed at all, since "cheap" in a different market is a different claim.
+    An unknown date is left off rather than filled with the run date, which
+    would quietly date the opinion to whenever the video happened to be read.
+
+    The one function the app and the report share, so what you check in the
+    report is exactly what gets written.
     """
     who = (speaker or "Unattributed").strip()
-    return [f"[{who}] {b}" for b in mention.bullets]
+    when = pretty_date(published)
+    tag = f"{who} - {when}" if when else who
+    return [f"[{tag}] {b}" for b in mention.bullets]
 
 
-def _render_group(mentions: list[Mention], speaker: str) -> list[str]:
+def _render_group(mentions: list[Mention], speaker: str, published: str = "") -> list[str]:
     lines: list[str] = []
     for m in mentions:
         tag = " ".join(x for x in [m.exchange, m.ticker] if x)
@@ -454,7 +498,7 @@ def _render_group(mentions: list[Mention], speaker: str) -> list[str]:
         elif not m.on_watchlist:
             head += "  [listing found]" if m.resolved else "  [no listing found]"
         lines.append(head)
-        lines += [f"    - {b}" for b in note_bullets(m, speaker)]
+        lines += [f"    - {b}" for b in note_bullets(m, speaker, published)]
         lines.append("")
     return lines
 
@@ -475,6 +519,7 @@ def as_dict(e: Extraction) -> dict[str, Any]:
         "url": e.url,
         "title": e.title,
         "speaker": e.speaker,
+        "published": e.published,
         "fetched": e.fetched,
         "route": e.route,
         "model": e.model,
@@ -489,7 +534,7 @@ def as_dict(e: Extraction) -> dict[str, Any]:
                 "matched_name": m.matched_name,
                 "resolved": m.resolved,
                 "applied": m.applied,
-                "bullets": note_bullets(m, e.speaker),
+                "bullets": note_bullets(m, e.speaker, e.published),
             }
             for m in e.mentions
         ],
@@ -597,12 +642,21 @@ def main(argv: list[str] | None = None) -> int:
         vid = video_id(url)
         print(f"\n{vid}: fetching transcript…")
         title = fetch_title(vid)
+        published = fetch_published(vid)
         transcript = fetch_transcript(vid)
         print(
             f"{vid}: {len(transcript):,} chars "
             f"(~{estimate_tokens(transcript):,} tokens), extracting…"
         )
-        e = extract(router, transcript, watchlist=watchlist, url=url, vid=vid, title=title)
+        e = extract(
+            router,
+            transcript,
+            watchlist=watchlist,
+            url=url,
+            vid=vid,
+            title=title,
+            published=published,
+        )
         print(f"{vid}: {len(e.mentions)} companies via {e.route} ({e.input_tokens:,} in)")
         extractions.append(e)
 

@@ -1111,7 +1111,7 @@ function interviewCard(v){
         <div class="iv-meta">${esc(v.title || v.video_id)}</div>
         <div class="iv-meta">
           <a href="${esc(v.url)}" target="_blank" rel="noopener">watch ↗</a>
-          · ${esc((v.fetched || "").slice(0, 10))} · ${esc(v.model || "")}
+          · ${esc(v.published || (v.fetched || "").slice(0, 10))} · ${esc(v.model || "")}
         </div>
       </div>
       <button class="iv-forget" data-video="${esc(v.video_id)}" title="Remove this interview">✕</button>

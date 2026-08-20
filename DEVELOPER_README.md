@@ -271,10 +271,15 @@ inside it.
   writing, and an interview is one more voice in them rather than the last word.
   Re-applying does not duplicate them, and `applied` is stored so the UI stops
   offering.
-- Every bullet is prefixed `[Speaker]`. A note that does not say who said it
-  reads as InSight's own view a month later. The prefix is frozen into storage
-  at extraction time, so what the user approves is what gets written even if the
-  prompt changes underneath.
+- Every bullet is prefixed `[Speaker - Date]`, e.g. `[Rick Rule - Aug 13 2026]`.
+  Without the name a note reads as InSight's own view a month later; without the
+  date the opinion cannot be weighed at all, since "cheap" in a different market
+  is a different claim. The date is the **video's** publication date, read from
+  the watch page (oEmbed does not carry it, and it sits ~700 KB in, so the page
+  is read whole). An unknown date is left off rather than filled with the run
+  date, which would quietly date the opinion to whenever it happened to be read.
+  The whole prefix is frozen into storage at extraction time, so what the user
+  approves is what gets written even if the prompt changes underneath.
 
 
 ### Planned, not yet built
