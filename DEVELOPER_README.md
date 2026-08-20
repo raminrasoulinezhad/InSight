@@ -190,6 +190,58 @@ each company not already on the watchlist.
 **Terms of use:** scraping MarketBeat may conflict with their ToS; SEDI's terms
 bar automated collection. For production, prefer a licensed feed.
 
+## LLM routing (`llm.py`)
+
+Several free-tier keys from different companies, each capped differently. No one
+of them is "best": the right route depends on how big *this* call is and what has
+already been spent today. So the caller states the job and the router decides.
+
+- **Estimate first.** Every limit that matters (context, input tokens/min, daily
+  budget) is checked against a number only knowable in advance, so the prompt and
+  the expected reply are sized before sending. ~4 chars/token, erring high:
+  guessing high picks a roomier route, guessing low gets a 400 mid-batch.
+- **Then choose.** Routes that cannot fit the call or have no headroom are
+  dropped, and the cheapest survivor by `PRIORITY` wins.
+- **Then fall through.** A 429 puts that route on a cooldown (honouring
+  `Retry-After`) and moves on. A 401/402/403/404 disables it for the run: an
+  unpaid account or an invisible model will not fix itself, and retrying costs a
+  round trip on every later call. A 5xx or transport error is a short cooldown.
+- **Spend is on disk** (`llm_usage.json` in the app data folder), because a daily
+  budget that resets with the process is not a budget.
+- Every provider here speaks OpenAI-compatible `/chat/completions`, so one client
+  covers them and a new provider is a config line, not code.
+
+Configuration lives in `.env` (gitignored) and is documented field by field in
+**`.env.example`** (committed, placeholders only). A key is written once at the
+top and referenced as `${NAME}` by each of its routes, so it appears exactly
+once. A limit left blank is *not* enforced locally; the provider's 429 is the
+backstop.
+
+**Keys never enter the repo.** `.gitignore` covers `.env` and `.env.*` with an
+exception for `.env.example`, gitleaks runs in pre-commit, and
+`tests/test_llm.py` asserts the example file holds no key-shaped strings.
+
+### Interview extraction (`interviews.py`)
+
+Fetches a video's caption track, asks the pool which companies were discussed and
+what was said, and matches those against the watchlist.
+
+```bash
+uv run python -m insight.interviews <youtube-url> [...] -o interview-report.txt
+```
+
+It writes a `.txt` and stops. Nothing reaches the app's notes yet, on purpose:
+the extraction has to be read and judged first. Two things the first live run
+taught, both now covered by tests:
+
+- **Names must match on whole words, anchored at the front.** Substring matching
+  paired "Royal Gold" with "Elemental Royalty" and "Silver Mines" with "West Red
+  Lake Gold Mines". And only *legal* suffixes may be stripped: in this sector the
+  commodity word is part of the identity, so removing it leaves a bare "mines".
+- **An example in a prompt is an instruction.** Attributing bullets with the
+  sample text `"Rule: ..."` made the model label a completely different speaker
+  "Rule". Examples now carry no name.
+
 ### Planned, not yet built
 
 - **YouTube interview analysis.** Poll a few CEO-interview channels, fetch

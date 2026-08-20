@@ -13,6 +13,7 @@ authors = [{ name = "Seyedramin Rasoulinezhad" }]
 dependencies = [
     "playwright==1.60.0",
     "playwright-stealth==2.0.3",
+    "youtube-transcript-api>=1.0",
 ]
 
 [project.scripts]
@@ -101,5 +102,5 @@ warn_return_any = false
 disable_error_code = ["type-arg", "union-attr", "no-any-return", "attr-defined"]
 
 [[tool.mypy.overrides]]
-module = ["playwright.*", "playwright_stealth.*"]
+module = ["playwright.*", "playwright_stealth.*", "youtube_transcript_api.*"]
 ignore_missing_imports = true
