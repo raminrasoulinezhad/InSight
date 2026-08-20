@@ -23,6 +23,12 @@ data services.
   from the watchlist. The only way to discover an untracked company; everything
   else here is company-first. Reports only — it writes no snapshot. Shares the
   refresh job slot, since both drive the one SEDI browser.
+- **Interviews tab.** Paste a YouTube interview link; InSight reads the caption
+  track and an LLM extracts what was said about each company, as short bullets
+  tagged `[Speaker - Date]`. Companies already followed take their bullets into
+  their notes; the rest sit under **Add suggested companies**, where one click
+  adds the company *and* files the comments. Shares the refresh job slot. Needs a
+  free LLM key (see `.env.example`); without one the tab says so.
 - **Watchlist** — add by name (TradingView resolver) / remove.
 - **Refresh** — re-scrape from the UI; optional "Scan all TSE (~215)".
 - **Notes** — free-text per company (a bullet list in the UI), shown above that
@@ -66,6 +72,7 @@ uv run insight-scrape          # scrape the watchlist (MarketBeat)
 uv run insight-scrape --discover        # + MarketBeat's ~215 TSE universe
 uv run insight-scrape --source sedi     # official SEDI; minimized browser
 uv run insight-scrape --insider Sprott  # SEDI person search: which companies?
+uv run python -m insight.interviews URL -o report.txt   # interviews, as a dry run
 uv run insight-scrape --prune-snapshots      # drop folded snapshots, keep newest 2
 uv run insight-scrape --prune-browser-cache  # clear Chromium caches (keeps cookies)
 
@@ -103,6 +110,19 @@ reload, Python edits need an app restart.
   window); `--sedi-window` opts out. Never wire it
   into the daily timer, and never delete the profile's cookies — that jar *is* the
   solved challenge.
+- **API keys never enter the repo.** They live in `.env` (gitignored, along with
+  `.env.*`, excepting `.env.example`), and `.env.example` is the committed
+  template holding placeholders only. `llm.py` routes one call across several
+  free-tier keys: it estimates the call, drops routes with no headroom, takes the
+  cheapest, and falls through on refusal. A 429 is a cooldown; a 402/404 disables
+  that route for the run. Spend is tracked on disk so a daily budget survives a
+  restart. Adding a provider is a config block, not code.
+- **Interview extraction never writes without a click.** Captions mishear company
+  names ("Kotekch" for CoTec), so the model corrects them, reports what it heard,
+  and every corrected name is checked against `issuers.search_issuers`, which is
+  the authority on the ticker (the model only guesses). Never put the watchlist in
+  the prompt: offered as a spelling reference it snapped "Free Gold" onto
+  Freehold Royalties, a *followed* company. Notes are appended, never replaced.
 - **The watchlist is the source of truth for the Companies tab** (gated). The
   Insiders tab is intentionally *not* gated — it spans all scraped data. That
   asymmetry is why a cross-link from an insider to a company can land on nothing;
@@ -143,7 +163,8 @@ insight-scrape ──> marketbeat.scrape_many ──> models.InsiderTransaction
 ```
 insight/
   app.py          local HTTP server + API (/api/data, /api/insiders, /api/watchlist,
-                  /api/notes, /api/settings, /api/autostart, /api/sedi-page, /api/refresh)
+                  /api/notes, /api/settings, /api/autostart, /api/sedi-page,
+                  /api/refresh, /api/interviews)
   scrape.py       insight-scrape CLI (targets, output, --discover, --source, prunes)
   marketbeat.py   MarketBeat scraper + discovery + cache/delisted helpers
   sedi.py         SEDI scraper (headful, persistent profile, saved report pages)
@@ -154,6 +175,8 @@ insight/
   profiles.py     Chromium cache caps + pruning (keeps cookies/CAPTCHA)
   autostart.py    per-user 'open at login' entry, per OS convention
   issuers.py      name -> issuer resolver (TradingView) + watchlist add/remove
+  interviews.py   YouTube transcript -> per-company bullets, matched to the watchlist
+  llm.py          routes one LLM call across several free-tier keys (.env-configured)
   notify.py       alarms + notifications (email/ntfy), evaluated after each scrape
   models.py       InsiderTransaction schema + parsing helpers
   paths.py        per-user data/config/cache dirs (cross-platform)
