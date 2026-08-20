@@ -86,6 +86,16 @@ so the window should not own the screen for the other 99%.
   `wmctrl`/`xdotool` installed, Wayland forbids it outright, and macOS and
   Windows each want their own API. Chrome moving its own window works the same
   everywhere.
+- **Clicks are dispatched, not synthesized, while the window is hidden**
+  (`_click`). Chrome restores a minimized window the moment it receives an
+  Input-domain event, and the scrape clicks up to twice per company, so the
+  window jumped to the front over and over for a whole batch.
+  `dispatch_event("click")` never touches that domain, and was verified live to
+  still follow an `<a href>` and still submit the form with the window staying
+  minimized. `select_option`, `fill`, `press`, `screenshot` and `evaluate` were
+  measured too: none of them raise the window, so clicks are the only thing that
+  needs this. Under `--sedi-window` (or headless, where there is no window) the
+  real click is used, being the more faithful input.
 - `_clear_wall_or_raise` calls `show_window()` before it starts waiting —
   without that the scrape would sit four minutes on a CAPTCHA nobody can see,
   then fail. `hide_window()` runs again once the wall clears.

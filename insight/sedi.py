@@ -515,6 +515,32 @@ class SediScraper:
             with contextlib.suppress(Exception):
                 self._page.bring_to_front()
 
+    def _hidden(self) -> bool:
+        """True when the window is deliberately out of sight."""
+        return self._start_minimized and not self._headless
+
+    def _click(self, target: Any, timeout: int = 8000) -> None:
+        """Click without dragging the window back to the front.
+
+        Chrome restores a minimized window the moment it receives an Input-domain
+        event, and a real `click()` is one. The scrape clicks up to twice per
+        company, so the window was popping up again and again for a whole batch.
+
+        Dispatching the event on the element never touches that domain. Measured:
+        it still follows an `<a href>` and still submits a form, with the window
+        staying minimized throughout. `select_option`, `fill`, `press`,
+        `screenshot` and `evaluate` were measured too and none of them raise the
+        window, so clicks are the only thing that needs this.
+
+        When the window is on show anyway (`--sedi-window`, or headless where
+        there is no window at all) a real click costs nothing and is the more
+        faithful input, so that path is left alone.
+        """
+        if self._hidden():
+            target.dispatch_event("click", timeout=timeout)
+        else:
+            target.click(timeout=timeout)
+
     # ------------------------------------------------------------------
     def _walled(self) -> bool:
         title = self._page.title() or ""
@@ -686,7 +712,7 @@ class SediScraper:
                     target = v
                     break
         with contextlib.suppress(Exception):
-            target.click(timeout=8000)
+            self._click(target)
             page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(2000)
             self._clear_wall_or_raise("opening insider report")
@@ -722,7 +748,7 @@ class SediScraper:
                     target = v
                     break
         with contextlib.suppress(Exception):
-            target.click(timeout=8000)
+            self._click(target)
             page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(2000)
             self._clear_wall_or_raise("opening issuer report")
@@ -783,7 +809,7 @@ class SediScraper:
         page.fill("input[name='YEAR_TO_PUBLIC']", str(today.year))
         page.select_option("select[name='DAY_TO_PUBLIC']", label=str(today.day))
 
-        page.click("input[name='Search']", timeout=8000)
+        self._click(page.locator("input[name='Search']"))
 
     def _sedi_today(self) -> date:
         """SEDI prints its current (Eastern-time) date on every page, e.g.

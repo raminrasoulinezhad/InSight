@@ -381,3 +381,68 @@ class TestEnteringHidesTheWindow:
         with monkeypatch.context():
             s.__enter__()
         assert cdp.states() == ["minimized"]
+
+
+class FakeLocator:
+    """Records which flavour of click it was asked for."""
+
+    def __init__(self) -> None:
+        self.clicked: list[int | None] = []
+        self.dispatched: list[tuple[str, int | None]] = []
+
+    def click(self, timeout: int | None = None) -> None:
+        self.clicked.append(timeout)
+
+    def dispatch_event(self, type: str, timeout: int | None = None) -> None:
+        self.dispatched.append((type, timeout))
+
+
+class TestClickingDoesNotPopTheWindowUp:
+    """A real click reaches Chrome's Input domain, and Chrome restores a
+    minimized window when it gets one. With up to two clicks per company, that
+    was the window jumping to the front over and over for a whole batch."""
+
+    def test_a_hidden_window_dispatches_instead_of_clicking(self):
+        s, _cdp, _page = wired()
+        loc = FakeLocator()
+        s._click(loc)
+        assert loc.dispatched == [("click", 8000)]
+        assert loc.clicked == []
+
+    def test_a_visible_window_gets_the_real_click(self):
+        s, _cdp, _page = wired(start_minimized=False)
+        loc = FakeLocator()
+        s._click(loc)
+        assert loc.clicked == [8000]
+        assert loc.dispatched == []
+
+    def test_headless_gets_the_real_click(self):
+        # No window exists to protect, so use the more faithful input.
+        s, _cdp, _page = wired(headless=True)
+        loc = FakeLocator()
+        s._click(loc)
+        assert loc.clicked == [8000]
+        assert loc.dispatched == []
+
+    def test_the_timeout_is_carried_through_either_path(self):
+        hidden, _c, _p = wired()
+        shown, _c2, _p2 = wired(start_minimized=False)
+        a, b = FakeLocator(), FakeLocator()
+        hidden._click(a, timeout=1234)
+        shown._click(b, timeout=1234)
+        assert a.dispatched == [("click", 1234)]
+        assert b.clicked == [1234]
+
+    def test_every_click_in_the_scrape_goes_through_the_helper(self):
+        # A raw .click() anywhere else re-introduces the pop-up, and it would
+        # only show up on a live run.
+        import inspect
+
+        for fn in (
+            sedi.SediScraper._fill_search,
+            sedi.SediScraper._select_issuer_if_needed,
+            sedi.SediScraper._select_insider_if_needed,
+        ):
+            src = inspect.getsource(fn)
+            assert ".click(" not in src, f"{fn.__name__} clicks directly"
+            assert "self._click(" in src, f"{fn.__name__} never clicks at all"
