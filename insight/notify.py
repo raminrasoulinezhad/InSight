@@ -19,6 +19,9 @@ Channels:
                logo embedded via CID.
     - ntfy   — a free push topic (https://ntfy.sh/<topic>), no credentials.
 
+In both, the company name links to a Google search for its stock price, so an
+alert is one tap from the quote instead of a name to go and look up by hand.
+
 State lives in a single JSON file (see paths.notify_file()): {email, ntfy, alarms}.
 Each alarm carries a `seen` set of transaction keys so only genuinely new trades
 fire; the baseline is captured at creation so pre-existing history never alerts.
@@ -41,6 +44,7 @@ from __future__ import annotations
 import json
 import smtplib
 import ssl
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -266,12 +270,57 @@ def _price_suffix(rec: dict[str, Any]) -> str:
     return f" ({_fmt_money(val, cur)})" if val else ""
 
 
-def _describe_parts(rec: dict[str, Any]) -> tuple[str, str, str]:
-    """Split the sentence around its verb: (before, verb, after).
+# A notification names a company but gives the reader no way to act on it, and
+# looking one up by hand on a phone is exactly the friction that makes an alert
+# get ignored. Both channels can carry a link, so the company name becomes one:
+# a Google search for its stock price, which lands on the quote card with the
+# chart and the news under it.
+#
+# A search rather than a direct google.com/finance/quote/TICKER:EXCHANGE URL,
+# because that needs the exchange code *Google* uses (TSE, CVE, CNSX, ...) rather
+# than the one in our records, and a wrong code is a dead page. A search degrades
+# gracefully instead: worst case the reader sees results, not a 404.
+_GOOGLE_SEARCH = "https://www.google.com/search?q="
+
+
+def company_name(rec: dict[str, Any]) -> str:
+    """What to call the company in an alert: its name, or the ticker if unnamed."""
+    return (rec.get("issuer_name") or rec.get("ticker") or "").strip()
+
+
+def company_url(rec: dict[str, Any]) -> str:
+    """A 'NAME stock price' Google search for the company, or '' if unidentified."""
+    name = company_name(rec)
+    if not name:
+        return ""
+    return _GOOGLE_SEARCH + urllib.parse.quote_plus(f"{name} stock price")
+
+
+def company_links(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(name, url) per distinct company in a notification, in first-seen order.
+
+    A company alarm yields one; a person alarm yields one per company they filed
+    against, which is what makes the phone buttons worth having.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for rec in records:
+        url = company_url(rec)
+        if url and url not in seen:
+            seen.add(url)
+            out.append((company_name(rec), url))
+    return out
+
+
+def _describe_parts(rec: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """Split the sentence at the two words a reader acts on: the verb and the
+    company. Returns (before, verb, between, issuer, after).
 
     The verb is what the alert is actually about — bought or sold — so each
-    channel emphasises it with whatever its medium allows. Splitting here means
-    the wording is written once and the two renderers only differ in emphasis.
+    channel emphasises it with whatever its medium allows, and the company name
+    is what the reader wants to look up, so each channel links it. Splitting
+    here means the wording is written once and the renderers only differ in how
+    they mark those two pieces up.
     """
     ttype = (rec.get("transaction_type") or "").lower()
     if "buy" in ttype:
@@ -281,12 +330,12 @@ def _describe_parts(rec: dict[str, Any]) -> tuple[str, str, str]:
     else:
         action = rec.get("transaction_type") or "traded"
     who = rec.get("insider_name") or "An insider"
-    issuer = rec.get("issuer_name") or rec.get("ticker") or ""
+    issuer = company_name(rec)
     shares = rec.get("shares")
     sh = f"{shares:,} shares of " if shares else ""
     date = rec.get("transaction_date")
     when = f" on {date}" if date else ""
-    return f"{who} ", action, f" {sh}{issuer}{_price_suffix(rec)}{when}"
+    return f"{who} ", action, f" {sh}", issuer, f"{_price_suffix(rec)}{when}"
 
 
 def _describe(rec: dict[str, Any]) -> str:
@@ -297,16 +346,22 @@ def _describe(rec: dict[str, Any]) -> str:
     push notification has. The buy/sell date always appears; it's what
     distinguishes an alert.
     """
-    before, verb, after = _describe_parts(rec)
-    return f"{before}{verb.upper()}{after}"
+    before, verb, mid, issuer, after = _describe_parts(rec)
+    return f"{before}{verb.upper()}{mid}{issuer}{after}"
 
 
 def _describe_html(rec: dict[str, Any]) -> str:
-    """The same sentence for email, with the verb actually bold and everything
-    escaped. Normal case here — the medium supports real emphasis, so shouting
-    would be redundant."""
-    before, verb, after = _describe_parts(rec)
-    return f"{_esc(before)}<b>{_esc(verb)}</b>{_esc(after)}"
+    """The same sentence for email, with the verb actually bold, the company name
+    a link to its quote, and everything escaped. Normal case here — the medium
+    supports real emphasis, so shouting would be redundant."""
+    before, verb, mid, issuer, after = _describe_parts(rec)
+    url = company_url(rec)
+    name = (
+        f'<a href="{_esc(url)}" style="color:#58a6ff;text-decoration:underline">{_esc(issuer)}</a>'
+        if url
+        else _esc(issuer)
+    )
+    return f"{_esc(before)}<b>{_esc(verb)}</b>{_esc(mid)}{name}{_esc(after)}"
 
 
 def _email_html(
@@ -375,18 +430,50 @@ def send_email(email_cfg: dict[str, Any], subject: str, html: str, text: str) ->
         s.send_message(msg)
 
 
-def send_ntfy(ntfy_cfg: dict[str, Any], title: str, message: str) -> None:
+# ntfy's own cap: it accepts at most three action buttons per notification.
+_NTFY_MAX_ACTIONS = 3
+
+
+def _ascii(s: str) -> str:
+    """HTTP headers are ASCII; accented issuer names must not break the send."""
+    return s.encode("ascii", "replace").decode("ascii")
+
+
+def _ntfy_actions(links: list[tuple[str, str]]) -> str:
+    """The `Actions` header: one 'view' button per company, up to ntfy's three.
+
+    Labels are quoted because a company name may contain the comma and semicolon
+    that separate the header's own fields; embedded quotes are dropped rather
+    than escaped, since no issuer name needs one.
+    """
+    parts = []
+    for name, url in links[:_NTFY_MAX_ACTIONS]:
+        label = _ascii(name).replace('"', "").strip()[:28] or "Open"
+        parts.append(f'view, "{label}", {url}')
+    return "; ".join(parts)
+
+
+def send_ntfy(
+    ntfy_cfg: dict[str, Any],
+    title: str,
+    message: str,
+    links: list[tuple[str, str]] | None = None,
+) -> None:
+    """Push one alert. `links` turns the notification itself into a shortcut:
+    tapping it opens the first company's quote (`Click`), and when several
+    companies are involved each gets its own button (`Actions`)."""
     server = (ntfy_cfg.get("server") or "https://ntfy.sh").rstrip("/")
     topic = ntfy_cfg["topic"]
-    req = urllib.request.Request(
-        f"{server}/{topic}",
-        data=message.encode("utf-8"),
-        headers={
-            "Title": title.encode("ascii", "replace").decode("ascii"),  # header must be ASCII
-            "Tags": "chart_with_upwards_trend",
-            "User-Agent": "InSight",
-        },
-    )
+    headers = {
+        "Title": _ascii(title),  # header must be ASCII
+        "Tags": "chart_with_upwards_trend",
+        "User-Agent": "InSight",
+    }
+    if links:
+        headers["Click"] = links[0][1]
+        if len(links) > 1:
+            headers["Actions"] = _ntfy_actions(links)
+    req = urllib.request.Request(f"{server}/{topic}", data=message.encode("utf-8"), headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:
         resp.read()
 
@@ -405,6 +492,7 @@ def _deliver(
     label: str,
     index: int,
     html_lines: list[str] | None = None,
+    links: list[tuple[str, str]] | None = None,
 ) -> tuple[bool, str, list[dict[str, Any]]]:
     """Send one notification over every enabled channel.
 
@@ -412,6 +500,8 @@ def _deliver(
     outcome for the notification log. Email subject and ntfy title share `title`;
     the reference index `#N` is carried in the message body (not the title).
     Kept terse: a single transaction stands on its own line; several are bulleted.
+    `links` are the companies involved: email already carries them inside
+    `html_lines`, ntfy takes them as headers since its body is plain text.
     """
     body = lines[0] if len(lines) == 1 else "\n".join("• " + x for x in lines)
     text = f"{body}\n\n#{index}"  # reference index for tracing this notification later
@@ -430,7 +520,7 @@ def _deliver(
     ntfy_cfg = cfg.get("ntfy", {})
     if ntfy_cfg.get("enabled") and ntfy_cfg.get("topic"):
         try:
-            send_ntfy(ntfy_cfg, title, text)
+            send_ntfy(ntfy_cfg, title, text, links)
             any_ok = True
             channels.append({"channel": "ntfy", "ok": True})
         except Exception as e:
@@ -505,9 +595,10 @@ def evaluate_and_notify(path: Path, data_dir: Path) -> dict[str, Any]:
             continue
         lines = [_describe(r) for r in recs]
         html_lines = [_describe_html(r) for r in recs]
+        links = company_links(recs)
         label = alarm.get("label", alarm_key(alarm))
         title = _title(label)
-        ok, err, channels = _deliver(cfg, title, lines, label, index, html_lines)
+        ok, err, channels = _deliver(cfg, title, lines, label, index, html_lines, links)
         _append_log(
             log_path,
             {

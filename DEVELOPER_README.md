@@ -645,6 +645,15 @@ transaction newer than when the alarm was set:
 - **ntfy** — a free push topic, no credentials.
 - No SMS: carrier email gateways are deprecated and unreliable.
 
+**The company name is a link** — to a Google search for `<name> stock price`,
+which is the quote, chart and news in one tap. In email it's an anchor on the
+name itself; ntfy has no markup, so it travels as headers instead: `Click` opens
+the first company, and a person alarm spanning several companies gets one `view`
+button each, up to ntfy's limit of three. A *search* rather than a direct
+`google.com/finance/quote/TICKER:EXCHANGE` URL, because that wants the exchange
+code Google uses (`TSE`, `CVE`, `CNSX`, …) and not the one in our records — a
+wrong guess is a dead page, while a search merely shows results.
+
 State lives in `notify.json` **in the app folder, never the repo** — it holds the
 SMTP password (masked in API responses). Sends are best-effort and wrapped, so a
 notification failure never breaks a scrape, and an alarm's `seen` baseline only

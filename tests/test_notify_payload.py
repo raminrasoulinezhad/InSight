@@ -116,7 +116,7 @@ class TestSeenSetStaysBounded:
 
     def test_an_old_trade_never_fires(self, tmp_path: Path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: sent.append(t))
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: sent.append(t))
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-29", [rec("ATH", "Recent", d=days_ago(5))])
@@ -138,7 +138,7 @@ class TestSeenSetStaysBounded:
 
     def test_a_recent_trade_still_fires(self, tmp_path: Path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: sent.append(t))
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: sent.append(t))
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-29", [rec("ATH", "Old hand", d=days_ago(20))])
@@ -155,7 +155,7 @@ class TestSeenSetStaysBounded:
         assert sent, "a trade inside the horizon must still alert"
 
     def test_seen_is_pruned_as_trades_age_out(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: None)
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: None)
         data = tmp_path / "data"
         data.mkdir()
         p = tmp_path / "notify.json"
@@ -172,7 +172,7 @@ class TestSeenSetStaysBounded:
         assert self._alarm(p)["seen"] == []
 
     def test_an_alarm_bloated_by_an_older_version_is_migrated(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: None)
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: None)
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-30", [rec("ATH", "Recent", d=days_ago(2))])
@@ -194,7 +194,7 @@ class TestSeenSetStaysBounded:
     def test_pruning_does_not_resurrect_old_alerts(self, tmp_path: Path, monkeypatch):
         # The danger of forgetting a key: the same trade alerting twice.
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: sent.append(t))
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: sent.append(t))
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-29", [rec("ATH", "A", d=days_ago(30))])
@@ -212,7 +212,7 @@ class TestSeenSetStaysBounded:
         assert len(sent) == 1
 
     def test_the_stored_file_stays_small_under_heavy_activity(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m: None)
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, t, m, links=None: None)
         data = tmp_path / "data"
         data.mkdir()
         p = tmp_path / "notify.json"

@@ -7,11 +7,24 @@
 """Alarms + notification logic (insight.notify), senders monkeypatched."""
 
 import json
+from datetime import date, timedelta
 
 from insight import notify
 
 
-def rec(ticker, name, ttype="Buy", shares=100, value=1000.0, d="2026-06-01", exch="TSE"):
+def days_ago(n: int) -> str:
+    """Alerting is bounded to a 90-day horizon (ALERT_HORIZON_DAYS), so a test
+    trade must be dated relative to today. Fixed dates here were a time bomb:
+    they aged out of the window and the whole evaluation suite went quiet."""
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+# A month back: inside the alerting horizon, far enough from its edge that a
+# test dating a trade relative to this one stays inside it too.
+_DEFAULT_TRADE_DATE = days_ago(30)
+
+
+def rec(ticker, name, ttype="Buy", shares=100, value=1000.0, d=_DEFAULT_TRADE_DATE, exch="TSE"):
     return {
         "issuer_name": ticker + " Inc",
         "exchange": exch,
@@ -51,7 +64,7 @@ class TestAddRemoveAlarm:
     def test_add_company_baselines_existing(self, tmp_path):
         data = tmp_path / "data"
         data.mkdir()
-        write_snapshot(data, "2026-06-30", [rec("ATH", "Insider A", d="2026-06-01")])
+        write_snapshot(data, "2026-06-30", [rec("ATH", "Insider A", d=days_ago(60))])
         p = tmp_path / "notify.json"
         added, _ = notify.add_alarm(
             p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data
@@ -96,11 +109,13 @@ class TestEvaluate:
 
     def test_fires_only_on_new_transactions(self, tmp_path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append((title, msg)))
+        monkeypatch.setattr(
+            notify, "send_ntfy", lambda cfg, title, msg, links=None: sent.append((title, msg))
+        )
 
         data = tmp_path / "data"
         data.mkdir()
-        write_snapshot(data, "2026-06-30", [rec("ATH", "Insider A", d="2026-06-01")])
+        write_snapshot(data, "2026-06-30", [rec("ATH", "Insider A", d=days_ago(60))])
         p = tmp_path / "notify.json"
         self._enable_ntfy(p)
         notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
@@ -113,7 +128,7 @@ class TestEvaluate:
         write_snapshot(
             data,
             "2026-07-01",
-            [rec("ATH", "Insider A", d="2026-06-01"), rec("ATH", "Insider B", d="2026-06-28")],
+            [rec("ATH", "Insider A", d=days_ago(60)), rec("ATH", "Insider B", d=days_ago(12))],
         )
         res = notify.evaluate_and_notify(p, data)
         assert res["sent"] == 1
@@ -127,7 +142,9 @@ class TestEvaluate:
 
     def test_grants_and_exercises_do_not_alert(self, tmp_path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append(msg))
+        monkeypatch.setattr(
+            notify, "send_ntfy", lambda cfg, title, msg, links=None: sent.append(msg)
+        )
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-30", [])
@@ -140,8 +157,8 @@ class TestEvaluate:
             data,
             "2026-07-01",
             [
-                rec("ATH", "Insider A", ttype="Grant of options", d="2026-06-20"),
-                rec("ATH", "Insider A", ttype="Exercise of rights", d="2026-06-21"),
+                rec("ATH", "Insider A", ttype="Grant of options", d=days_ago(20)),
+                rec("ATH", "Insider A", ttype="Exercise of rights", d=days_ago(19)),
             ],
         )
         assert notify.evaluate_and_notify(p, data)["sent"] == 0
@@ -152,10 +169,10 @@ class TestEvaluate:
             data,
             "2026-07-02",
             [
-                rec("ATH", "Insider A", ttype="Grant of options", d="2026-06-20"),
-                rec("ATH", "Insider A", ttype="Exercise of rights", d="2026-06-21"),
-                rec("ATH", "Insider B", ttype="Grant of rights", d="2026-06-29"),
-                rec("ATH", "Insider C", ttype="Buy", d="2026-06-30"),
+                rec("ATH", "Insider A", ttype="Grant of options", d=days_ago(20)),
+                rec("ATH", "Insider A", ttype="Exercise of rights", d=days_ago(19)),
+                rec("ATH", "Insider B", ttype="Grant of rights", d=days_ago(11)),
+                rec("ATH", "Insider C", ttype="Buy", d=days_ago(10)),
             ],
         )
         res = notify.evaluate_and_notify(p, data)
@@ -166,7 +183,9 @@ class TestEvaluate:
 
     def test_person_alarm_across_companies(self, tmp_path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append(msg))
+        monkeypatch.setattr(
+            notify, "send_ntfy", lambda cfg, title, msg, links=None: sent.append(msg)
+        )
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-30", [])
@@ -174,13 +193,13 @@ class TestEvaluate:
         self._enable_ntfy(p)
         notify.add_alarm(p, {"type": "person", "name": "Eric Sprott"}, data)
         write_snapshot(
-            data, "2026-07-01", [rec("HYMC", "Eric Sprott", d="2026-06-20", exch="NASDAQ")]
+            data, "2026-07-01", [rec("HYMC", "Eric Sprott", d=days_ago(20), exch="NASDAQ")]
         )
         assert notify.evaluate_and_notify(p, data)["sent"] == 1
         assert "Eric Sprott" in sent[0]
 
     def test_failed_send_keeps_baseline_for_retry(self, tmp_path, monkeypatch):
-        def boom(cfg, title, msg):
+        def boom(cfg, title, msg, links=None):
             raise RuntimeError("smtp down")
 
         monkeypatch.setattr(notify, "send_ntfy", boom)
@@ -190,13 +209,13 @@ class TestEvaluate:
         p = tmp_path / "notify.json"
         self._enable_ntfy(p)
         notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
-        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider B", d="2026-06-28")])
+        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider B", d=days_ago(12))])
         res = notify.evaluate_and_notify(p, data)
         assert res["sent"] == 0
         assert res["errors"]  # error recorded
         # baseline NOT advanced -> would retry
         alarm = notify.load_config(p)["alarms"][0]
-        assert notify._key(rec("ATH", "Insider B", d="2026-06-28")) not in alarm["seen"]
+        assert notify._key(rec("ATH", "Insider B", d=days_ago(12))) not in alarm["seen"]
 
 
 class TestTitleAndLog:
@@ -211,7 +230,9 @@ class TestTitleAndLog:
 
     def test_title_names_target_and_index_is_in_body(self, tmp_path, monkeypatch):
         sent = []
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: sent.append((title, msg)))
+        monkeypatch.setattr(
+            notify, "send_ntfy", lambda cfg, title, msg, links=None: sent.append((title, msg))
+        )
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-30", [])
@@ -227,7 +248,7 @@ class TestTitleAndLog:
         write_snapshot(
             data,
             "2026-07-01",
-            [rec("ATH", "Insider A", d="2026-06-27"), rec("ATH", "Insider B", d="2026-06-28")],
+            [rec("ATH", "Insider A", d=days_ago(13)), rec("ATH", "Insider B", d=days_ago(12))],
         )
         assert notify.evaluate_and_notify(p, data)["sent"] == 1
         title, body = sent[0]
@@ -238,7 +259,7 @@ class TestTitleAndLog:
         assert "#1" in body
 
     def test_index_increments_and_persists_in_log(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: None)
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg, links=None: None)
         data = tmp_path / "data"
         data.mkdir()
         write_snapshot(data, "2026-06-30", [])
@@ -246,12 +267,12 @@ class TestTitleAndLog:
         self._enable_ntfy(p)
         notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
 
-        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider A", d="2026-06-27")])
+        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider A", d=days_ago(13))])
         notify.evaluate_and_notify(p, data)
         write_snapshot(
             data,
             "2026-07-02",
-            [rec("ATH", "Insider A", d="2026-06-27"), rec("ATH", "Insider B", d="2026-06-28")],
+            [rec("ATH", "Insider A", d=days_ago(13)), rec("ATH", "Insider B", d=days_ago(12))],
         )
         notify.evaluate_and_notify(p, data)
 
@@ -262,7 +283,7 @@ class TestTitleAndLog:
         assert "Insider B" in " ".join(log[1]["lines"])
 
     def test_failed_delivery_is_logged(self, tmp_path, monkeypatch):
-        def boom(cfg, title, msg):
+        def boom(cfg, title, msg, links=None):
             raise RuntimeError("smtp down")
 
         monkeypatch.setattr(notify, "send_ntfy", boom)
@@ -272,7 +293,7 @@ class TestTitleAndLog:
         p = tmp_path / "notify.json"
         self._enable_ntfy(p)
         notify.add_alarm(p, {"type": "company", "exchange": "TSE", "ticker": "ATH"}, data)
-        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider B", d="2026-06-28")])
+        write_snapshot(data, "2026-07-01", [rec("ATH", "Insider B", d=days_ago(12))])
         notify.evaluate_and_notify(p, data)
 
         log = self._read_log(p)
@@ -282,7 +303,7 @@ class TestTitleAndLog:
         assert "smtp down" in log[0]["channels"][0]["error"]
 
     def test_test_notification_is_indexed_and_logged(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg: None)
+        monkeypatch.setattr(notify, "send_ntfy", lambda cfg, title, msg, links=None: None)
         p = tmp_path / "notify.json"
         self._enable_ntfy(p)
         ok, msg = notify.send_test(p)
@@ -374,3 +395,131 @@ class TestTheVerbIsEmphasised:
         p = tmp_path / "notify.json"
         ok, _ = notify.send_test(p)
         assert ok is False
+
+
+class TestTheCompanyNameIsALink:
+    """An alert that names a company should be one tap from its price, on both
+    channels — looking it up by hand is the friction that gets alerts ignored."""
+
+    def test_the_url_is_a_stock_price_search_for_the_company(self):
+        url = notify.company_url(rec("ATH", "Eric Sprott"))
+        assert url.startswith("https://www.google.com/search?q=")
+        assert "ATH+Inc+stock+price" in url
+
+    def test_an_awkward_name_is_escaped_into_the_query(self):
+        r = rec("ATH", "X")
+        r["issuer_name"] = "Smith & Co. (Canada)"
+        url = notify.company_url(r)
+        assert " " not in url and "&amp;" not in url
+        assert "%26" in url, "a bare & would start another query parameter"
+
+    def test_the_ticker_stands_in_for_a_missing_name(self):
+        r = rec("ATH", "X")
+        r["issuer_name"] = ""
+        assert "ATH+stock+price" in notify.company_url(r)
+
+    def test_an_unidentified_company_gets_no_link(self):
+        r = rec("ATH", "X")
+        r["issuer_name"] = ""
+        r["ticker"] = ""
+        assert notify.company_url(r) == ""
+
+    def test_the_email_links_the_company_name_only(self):
+        html = notify._describe_html(rec("ATH", "Eric Sprott", "Buy", 100, 1000.0, "2026-06-16"))
+        assert '<a href="https://www.google.com/search?q=ATH+Inc+stock+price"' in html
+        assert ">ATH Inc</a>" in html
+        # the rest of the sentence stays plain text, and the verb keeps its bold
+        assert "<b>bought</b>" in html
+        assert html.count("<a ") == 1
+
+    def test_the_email_link_cannot_carry_markup(self):
+        r = rec("ATH", "X")
+        r["issuer_name"] = '"><script>alert(1)</script>'
+        html = notify._describe_html(r)
+        assert "<script>" not in html
+        assert '"><script' not in html
+
+    def test_a_nameless_company_is_not_wrapped_in_an_empty_link(self):
+        r = rec("ATH", "Eric Sprott")
+        r["issuer_name"] = ""
+        r["ticker"] = ""
+        assert "<a " not in notify._describe_html(r)
+
+    def test_the_plain_sentence_is_unchanged_by_linking(self):
+        # The push body and the log stay clean text; the link rides in headers.
+        s = notify._describe(rec("HYMC", "Eric Sprott", "Buy", 24000, 200000.0, "2026-06-16"))
+        assert s == "Eric Sprott BOUGHT 24,000 shares of HYMC Inc (~8.33 CAD each) on 2026-06-16"
+        assert "http" not in s
+
+    def test_one_link_per_company_in_first_seen_order(self):
+        links = notify.company_links(
+            [rec("ATH", "A"), rec("FNV", "A"), rec("ATH", "A", shares=200)]
+        )
+        assert [name for name, _ in links] == ["ATH Inc", "FNV Inc"]
+
+    def test_the_push_opens_the_company_on_tap(self, monkeypatch):
+        sent = {}
+
+        def fake_urlopen(req, timeout=0):
+            sent["headers"] = req.headers
+
+            class R:
+                def read(self):
+                    return b""
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return R()
+
+        monkeypatch.setattr(notify.urllib.request, "urlopen", fake_urlopen)
+        notify.send_ntfy(
+            {"topic": "t"}, "InSight: ATH", "body", notify.company_links([rec("ATH", "A")])
+        )
+        assert sent["headers"]["Click"].endswith("ATH+Inc+stock+price")
+        assert "Actions" not in sent["headers"], "one company needs no buttons"
+
+    def test_several_companies_become_buttons(self):
+        links = notify.company_links(
+            [rec(t, "Eric Sprott") for t in ("ATH", "FNV", "HYMC", "WRLG")]
+        )
+        header = notify._ntfy_actions(links)
+        assert header.count("view,") == 3, "ntfy accepts at most three"
+        assert '"ATH Inc"' in header and '"FNV Inc"' in header
+        assert "WRLG" not in header
+
+    def test_a_button_label_cannot_break_the_header(self):
+        r = rec("ATH", "X")
+        r["issuer_name"] = 'Smith, Jones; "Co" Ünlimited'
+        header = notify._ntfy_actions(notify.company_links([r]))
+        # the label is quoted, so its commas and semicolons stay inside the quotes
+        label = header.split('"')[1]
+        assert '"' not in label
+        assert header.count('"') == 2
+        assert header.isascii(), "ntfy headers are ASCII"
+
+    def test_a_person_alarm_pushes_every_company_they_traded(self, tmp_path, monkeypatch):
+        got = {}
+        monkeypatch.setattr(
+            notify, "send_ntfy", lambda cfg, title, msg, links=None: got.update(links=links)
+        )
+        data = tmp_path / "data"
+        data.mkdir()
+        p = tmp_path / "notify.json"
+        notify.add_alarm(p, {"type": "person", "name": "Eric Sprott"}, data)
+        cfg = notify.load_config(p)
+        cfg["ntfy"] = {"enabled": True, "server": "https://ntfy.sh", "topic": "t"}
+        notify.save_config(p, cfg)
+        write_snapshot(
+            data,
+            "new",
+            [
+                rec("ATH", "Eric Sprott", d=days_ago(2)),
+                rec("FNV", "Eric Sprott", d=days_ago(1)),
+            ],
+        )
+        notify.evaluate_and_notify(p, data)
+        assert [name for name, _ in got["links"]] == ["ATH Inc", "FNV Inc"]
