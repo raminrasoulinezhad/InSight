@@ -77,7 +77,7 @@ uv run insight-scrape --prune-snapshots      # drop folded snapshots, keep newes
 uv run insight-scrape --prune-browser-cache  # clear Chromium caches (keeps cookies)
 
 uv run pytest                  # everything, incl. the UI suite via a bridge
-node --test tests/webui/       # browser-UI tests alone (Node's runner, no npm deps)
+node --test tests/webui/*.test.mjs   # browser-UI tests alone (Node's runner, no npm deps)
 uv run playwright install chromium   # once, for the end-to-end tests
 uv run ruff check insight tests
 uv run ruff format insight tests

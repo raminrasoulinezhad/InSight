@@ -30,8 +30,12 @@ WEBUI_TESTS = Path(__file__).parent / "webui"
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed — UI tests skipped")
 def test_webui_javascript_suite():
+    # Name the files rather than the folder: Node 22 treats a directory argument
+    # as a module to load, not a place to look for tests, and fails outright.
+    files = sorted(str(f) for f in WEBUI_TESTS.glob("*.test.mjs"))
+    assert files, f"no UI tests found under {WEBUI_TESTS}"
     proc = subprocess.run(
-        ["node", "--test", str(WEBUI_TESTS)],
+        ["node", "--test", *files],
         capture_output=True,
         text=True,
         timeout=120,

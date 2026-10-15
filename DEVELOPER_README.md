@@ -811,7 +811,7 @@ The editable watchlist and all output live in the per-user app folder, not the r
 ```bash
 uv sync --group dev            # pytest, ruff, mypy, …
 uv run pytest                  # everything, incl. the Node UI suite via a bridge
-node --test tests/webui/       # the browser-UI suite alone
+node --test tests/webui/*.test.mjs   # the browser-UI suite alone
 uv run ruff check insight tests
 uv run mypy insight            # strict on the pure core; glue modules relaxed
 ```
