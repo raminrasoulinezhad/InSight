@@ -110,6 +110,15 @@ reload, Python edits need an app restart.
   window); `--sedi-window` opts out. Never wire it
   into the daily timer, and never delete the profile's cookies — that jar *is* the
   solved challenge.
+- **When SEDI stops working, check the browser's identity first.** Chrome
+  auto-updates; a hard-coded user agent naming an older version makes the browser
+  contradict its own client hints, which Radware treats as a bot. SEDI launches
+  with Chrome's real UA for that reason; never pin one there again. A block is
+  raised as `BotBlocked`, never returned as zero rows: an empty result is cached
+  as "no insider trades" and saved as the company's SEDI page. If the validator
+  (`validate.perfdrive.com`) does not answer at all, the block is on Radware's
+  side or this IP; only waiting or another network helps, and every retry makes
+  it worse.
 - **API keys never enter the repo.** They live in `.env` (gitignored, along with
   `.env.*`, excepting `.env.example`), and `.env.example` is the committed
   template holding placeholders only. `llm.py` routes one call across several

@@ -47,11 +47,12 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
 from . import profiles
-from .marketbeat import _UA, BotBlocked
+from .marketbeat import BotBlocked
 from .models import InsiderTransaction, parse_int, parse_money
 from .paths import sedi_page_filename
 
@@ -369,6 +370,33 @@ _WALL_BODY_MARKERS = (
 )
 
 
+# Said when the wall cannot be cleared by anyone: SEDI sends the browser to
+# Radware's validator, and the validator never answers.
+_DEAD_WALL = (
+    "SEDI's bot check (validate.perfdrive.com) is not responding, so SEDI is "
+    "refusing this browser. There is nothing to solve: try again later, or from "
+    "another network"
+)
+
+
+def _is_dead_wall(title: str, url: str) -> bool:
+    """True if a page that never finished loading was stuck on Radware's
+    validator. Only meaningful after a navigation has already failed: a
+    validator that *answers* is the normal CAPTCHA case, handled by waiting."""
+    u = (url or "").lower()
+    return "perfdrive" in f"{title} {u}".lower() or u.startswith("chrome-error://")
+
+
+def _is_search_form(body: str) -> bool:
+    """True if the page is still SEDI's search-criteria form.
+
+    After Search, this means the search never went through. Real report pages
+    carry the criteria as fields too, so the field names are no use here; the
+    heading is (checked against 135 saved reports, none of which has it).
+    """
+    return "enter search criteria" in (body or "").lower()
+
+
 def _is_bot_wall(title: str, url: str, body: str = "") -> bool:
     """True if the current page is the Radware/ShieldSquare bot wall. Pure so it
     can be unit-tested; `_walled()` supplies the live title/url/body."""
@@ -435,11 +463,16 @@ class SediScraper:
         self._window = None  # cached (CDP session, windowId)
 
     def _launch(self, channel: str | None):
+        # No user_agent override. It used to claim Chrome 124 while the real
+        # browser is whatever Chrome has auto-updated to (155 by Oct 2026), and
+        # the browser's own client hints and JS features report the real
+        # version. A browser contradicting itself is a classic bot signal to
+        # Radware. Headful Chrome's own UA carries no "Headless" tell, so there
+        # is nothing to hide.
         return self._pw.chromium.launch_persistent_context(
             str(self._profile_dir) if self._profile_dir else "",
             headless=self._headless,
             channel=channel,
-            user_agent=_UA,
             locale="en-CA",
             viewport={"width": 1366, "height": 900},
             # The cache cap keeps this persistent profile from growing without
@@ -582,6 +615,38 @@ class SediScraper:
                     self._page.reload(wait_until="domcontentloaded", timeout=30000)
         raise BotBlocked(f"SEDI bot wall not cleared within {self._manual_wait_s}s while {ctx}")
 
+    def _open_search(self) -> None:
+        """Load the ITD search form, telling a dead bot wall from a slow page."""
+        page = self._page
+        try:
+            page.goto(_ITD_URL, wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightError as e:
+            title = url = ""
+            with contextlib.suppress(Exception):
+                title, url = page.title(), page.url
+            if _is_dead_wall(title, url):
+                raise BotBlocked(_DEAD_WALL, fatal=True) from e
+            raise
+        page.wait_for_timeout(1500)
+        self._clear_wall_or_raise("opening ITD search")
+
+    def _raise_if_not_submitted(self, label: str) -> None:
+        """Fail loudly when Search went nowhere.
+
+        SEDI's bot wall can let the form load and then intercept the submit:
+        Chrome refuses the redirect to the validator (CSP `form-action 'self'`)
+        and the page just sits there. Read as "no rows", that looked like a
+        company with no insider trades, overwrote its good cache with nothing,
+        and saved the blank form as its SEDI page. A SEDI validation error also
+        leaves the form up, but with an "Error:" banner, and is left alone.
+        """
+        body = ""
+        with contextlib.suppress(Exception):
+            body = self._page.inner_text("body")
+        if _is_search_form(body) and not re.search(r"Error:", body):
+            self._dump(f"itd_not_submitted_{label}")
+            raise BotBlocked("SEDI did not accept the search (its bot check intercepted it)")
+
     def _dump(self, label: str) -> None:
         if not self._capture_dir:
             return
@@ -616,9 +681,7 @@ class SediScraper:
         issuer = issuer_hint or ticker
         page = self._page
 
-        page.goto(_ITD_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
-        self._clear_wall_or_raise("opening ITD search")
+        self._open_search()
 
         try:
             self._fill_issuer_search(issuer)
@@ -629,6 +692,7 @@ class SediScraper:
 
         page.wait_for_timeout(2500)
         self._clear_wall_or_raise("running ITD search")
+        self._raise_if_not_submitted(ticker)
 
         # An issuer-name search lands on a "Select issuer" picker; click through
         # to the matching issuer's actual transaction report.
@@ -661,9 +725,7 @@ class SediScraper:
         page = self._page
         slug = re.sub(r"[^A-Za-z0-9]+", "_", family_name).strip("_")[:40] or "insider"
 
-        page.goto(_ITD_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
-        self._clear_wall_or_raise("opening ITD search")
+        self._open_search()
 
         try:
             self._fill_insider_search(family_name)
@@ -674,6 +736,7 @@ class SediScraper:
 
         page.wait_for_timeout(2500)
         self._clear_wall_or_raise("running ITD insider search")
+        self._raise_if_not_submitted(f"insider_{slug}")
 
         # A family-name search can match several people (and SEDI lists one row
         # per insider); pick the one whose name we asked for.

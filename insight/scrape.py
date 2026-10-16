@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
-from .marketbeat import discover_tickers, scrape_many
+from .marketbeat import BotBlocked, discover_tickers, scrape_many
 from .models import InsiderTransaction
 from .sedi import SediScraper
 
@@ -232,7 +232,11 @@ def _scrape_insider(args: argparse.Namespace, config: Path) -> int:
         capture_dir=capture,
         start_minimized=not args.sedi_window,
     ) as sedi:
-        records = sedi.fetch_insider(name)
+        try:
+            records = sedi.fetch_insider(name)
+        except BotBlocked as e:
+            print(f"SEDI refused the search: {e}", file=sys.stderr)
+            return 1
 
     unresolved: list[str] = []
     if records:

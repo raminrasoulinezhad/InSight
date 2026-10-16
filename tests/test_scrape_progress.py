@@ -161,3 +161,47 @@ class TestItNeverBreaksTheScrape:
     def test_omitting_the_callback_is_fine(self):
         got = scrape_many([target("A")], scraper_factory=lambda: FakeScraper())
         assert list(got) == ["TSE:A"]
+
+
+class TestABlockedSessionStopsTheBatch:
+    """Once a site is refusing the whole session, every further company is a
+    wasted round trip that deepens its suspicion of this connection."""
+
+    def scrape(self, targets, fail_on):
+        fake = FakeScraper(fail_on)
+        got = scrape_many(targets, scraper_factory=lambda: fake)
+        return fake.fetched, got
+
+    def test_a_fatal_block_stops_at_once(self):
+        fetched, got = self.scrape(
+            [target(t) for t in "ABCD"], {"B": BotBlocked("validator dead", fatal=True)}
+        )
+        assert fetched == ["A", "B"], "nothing after the fatal block is attempted"
+        assert set(got) == {"TSE:A", "TSE:B", "TSE:C", "TSE:D"}, "every target still answered"
+        assert got["TSE:C"] == [] and got["TSE:D"] == []
+
+    def test_one_block_is_shrugged_off(self):
+        # SEDI has refused single searches before and served the next one fine.
+        fetched, _ = self.scrape([target(t) for t in "ABCD"], {"B": BotBlocked("walled")})
+        assert fetched == ["A", "B", "C", "D"]
+
+    def test_three_in_a_row_is_a_wall(self):
+        walled = {t: BotBlocked("walled") for t in "BCD"}
+        fetched, _ = self.scrape([target(t) for t in "ABCDEF"], walled)
+        assert fetched == ["A", "B", "C", "D"], "gives up after the third in a row"
+
+    def test_a_success_resets_the_streak(self):
+        walled = {t: BotBlocked("walled") for t in "ABDE"}
+        fetched, _ = self.scrape([target(t) for t in "ABCDEF"], walled)
+        assert fetched == list("ABCDEF"), "two, a success, two: never three in a row"
+
+    def test_skipped_companies_keep_their_cache(self, tmp_path: Path):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        targets = [target(t) for t in "AB"]
+        scrape_many(targets, scraper_factory=lambda: FakeScraper(), cache_dir=cache)
+        fake = FakeScraper({"A": BotBlocked("dead", fatal=True)})
+        got = scrape_many(targets, scraper_factory=lambda: fake, cache_dir=cache, force=True)
+        assert fake.fetched == ["A"]
+        assert [r.ticker for r in got["TSE:B"]] == ["B"], "B was not fetched, so its cache stands"
+        assert [r.ticker for r in got["TSE:A"]] == ["A"], "a block never empties the cache"

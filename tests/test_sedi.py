@@ -10,6 +10,8 @@ rows captured from a live SEDI Insider Transaction Detail report."""
 
 from __future__ import annotations
 
+import pytest
+
 from insight import paths, sedi
 
 
@@ -446,3 +448,49 @@ class TestClickingDoesNotPopTheWindowUp:
             src = inspect.getsource(fn)
             assert ".click(" not in src, f"{fn.__name__} clicks directly"
             assert "self._click(" in src, f"{fn.__name__} never clicks at all"
+
+
+class TestABlockedSearchIsNotAnEmptyResult:
+    """Radware can let the form load and then swallow the submit. Read as "no
+    rows", that wiped the company's cache and saved a blank form as its page."""
+
+    def test_a_navigation_stuck_on_the_validator_is_a_dead_wall(self):
+        assert sedi._is_dead_wall("Loading http://validate.perfdrive.com/c2", "about:blank")
+        assert sedi._is_dead_wall("validate.perfdrive.com", "chrome-error://chromewebdata/")
+
+    def test_a_slow_sedi_page_is_not_a_dead_wall(self):
+        url = "https://www.sedi.ca/sedi/SVTItdController?locale=en_CA"
+        assert not sedi._is_dead_wall("SEDI", url)
+
+    def test_the_criteria_heading_marks_the_form(self):
+        assert sedi._is_search_form("Insider transaction detail - Enter Search criteria ...")
+        assert not sedi._is_search_form("Issuer name: Franco-Nevada Corporation ...")
+
+    def wired_to(self, body: str) -> sedi.SediScraper:
+        s = sedi.SediScraper()
+        s._page = type("P", (), {"inner_text": lambda self, sel: body})()
+        return s
+
+    def test_still_on_the_form_after_search_raises(self):
+        s = self.wired_to("Insider transaction detail - Enter Search criteria")
+        with pytest.raises(sedi.BotBlocked):
+            s._raise_if_not_submitted("FNV")
+
+    def test_a_sedi_validation_error_is_left_to_the_normal_path(self):
+        # SEDI re-shows the form with a banner for its own errors; that is a
+        # real answer about the query, not a block.
+        s = self.wired_to("Enter Search criteria  Error: Date cannot be future dated")
+        s._raise_if_not_submitted("FNV")
+
+    def test_a_report_page_passes(self):
+        self.wired_to("Issuer name: Franco-Nevada Corporation")._raise_if_not_submitted("FNV")
+
+
+class TestTheBrowserDoesNotLieAboutItsVersion:
+    def test_no_user_agent_override_at_launch(self):
+        # Claiming Chrome 124 from Chrome 155 makes the browser contradict its
+        # own client hints, which bot walls notice.
+        import inspect
+
+        src = inspect.getsource(sedi.SediScraper._launch)
+        assert "user_agent=" not in src.replace("No user_agent override", "")

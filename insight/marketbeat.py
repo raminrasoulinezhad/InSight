@@ -213,7 +213,23 @@ class MarketBeatScraper:
 
 
 class BotBlocked(RuntimeError):
-    """Raised when a page is intercepted by anti-bot protection."""
+    """Raised when a page is intercepted by anti-bot protection.
+
+    `fatal` marks a block that will hit every remaining company the same way,
+    because the whole session is walled rather than one page. The batch then
+    stops instead of knocking on the same wall once per company, which only
+    deepens the site's suspicion of this connection.
+    """
+
+    def __init__(self, msg: str, *, fatal: bool = False) -> None:
+        super().__init__(msg)
+        self.fatal = fatal
+
+
+# Blocks in a row before a batch gives up. One block can be a fluke (SEDI has
+# refused single searches before and then served the next company fine), but a
+# streak means the session is walled, and every further attempt is wasted.
+_MAX_CONSECUTIVE_BLOCKS = 3
 
 
 class CompanyDelisted(RuntimeError):
@@ -416,6 +432,7 @@ def scrape_many(
         return results
 
     factory = scraper_factory or (lambda: MarketBeatScraper(headless=headless))
+    blocked_in_a_row = 0
     with factory() as mb:
         for done, (key, t, entry) in enumerate(to_fetch):
             # Announced before the fetch, not after: a bar that only moves on
@@ -430,6 +447,7 @@ def scrape_many(
                     _write_cache(cache_dir, key, recs)
                 status = f"{len(recs)} transactions" if recs else "NOT COVERED"
                 print(f"  [{key}] {t.get('name', '')}: {status}")
+                blocked_in_a_row = 0
             except CompanyDelisted as e:
                 results[key] = []
                 delisted.add(key)
@@ -440,6 +458,21 @@ def scrape_many(
                 results[key] = _records_from_cache(entry) if entry else []
                 note = " (using stale cache)" if entry else ""
                 print(f"  [{key}] BLOCKED: {e}{note}")
+                blocked_in_a_row += 1
+                if e.fatal or blocked_in_a_row >= _MAX_CONSECUTIVE_BLOCKS:
+                    rest = to_fetch[done + 1 :]
+                    for rkey, _rt, rentry in rest:
+                        results[rkey] = _records_from_cache(rentry) if rentry else []
+                    why = (
+                        "the site is refusing this session"
+                        if e.fatal
+                        else (f"{blocked_in_a_row} blocks in a row")
+                    )
+                    print(
+                        f"  Stopping early ({why}): {len(rest)} companies left untouched, "
+                        "their cached data kept. Try again later."
+                    )
+                    break
             except Exception as e:  # keep the batch alive
                 results[key] = _records_from_cache(entry) if entry else []
                 note = " (using stale cache)" if entry else ""
