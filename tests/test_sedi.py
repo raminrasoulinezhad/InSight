@@ -494,3 +494,11 @@ class TestTheBrowserDoesNotLieAboutItsVersion:
 
         src = inspect.getsource(sedi.SediScraper._launch)
         assert "user_agent=" not in src.replace("No user_agent override", "")
+
+
+class TestAClosedBrowserIsNamed:
+    def test_opening_a_search_in_a_closed_browser_says_so(self):
+        s = sedi.SediScraper()
+        s._page = type("P", (), {"is_closed": lambda self: True})()
+        with pytest.raises(sedi.BrowserGone):
+            s._open_search()

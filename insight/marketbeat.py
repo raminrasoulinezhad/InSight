@@ -226,6 +226,14 @@ class BotBlocked(RuntimeError):
         self.fatal = fatal
 
 
+class BrowserGone(RuntimeError):
+    """The scraper's browser closed mid-batch: its window was shut, or the app
+    is shutting down. Every later fetch would fail instantly against nothing,
+    so this always stops the batch."""
+
+    fatal = True
+
+
 # Blocks in a row before a batch gives up. One block can be a fluke (SEDI has
 # refused single searches before and then served the next company fine), but a
 # streak means the session is walled, and every further attempt is wasted.
@@ -368,6 +376,7 @@ def scrape_many(
     scraper_factory: Callable[[], Any] | None = None,
     source: str = "marketbeat",
     on_progress: Callable[[int, int, str], None] | None = None,
+    outcome: dict[str, Any] | None = None,
 ) -> dict[str, list[InsiderTransaction]]:
     """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
 
@@ -395,7 +404,19 @@ def scrape_many(
     progress would sit at 93% before the slow part even began. `label` names the
     company being fetched *now* (empty at the end). Exceptions from the callback
     are never allowed to break a scrape.
+
+    `outcome`, when given, is filled with what actually happened: `fetched`
+    (companies that answered), `failed` (blocked or errored, served from stale
+    cache), `untouched` (skipped after a stop) and `stopped` (why the batch gave
+    up early, else ""). The results alone cannot say this: a failed company is
+    returned with its *cached* records, so a run that fetched nothing at all
+    looks the same as one that fetched everything.
     """
+    tally: dict[str, Any] = {"fetched": 0, "failed": 0, "untouched": 0, "stopped": ""}
+    if outcome is not None:
+        outcome.clear()
+        outcome.update(tally)
+        tally = outcome
     targets = list(targets)
     results: dict[str, list[InsiderTransaction]] = {}
     to_fetch: list[tuple[str, dict, dict | None]] = []
@@ -439,6 +460,7 @@ def scrape_many(
             # completion shows nothing at all for the first (slowest) company,
             # which is exactly when the user is wondering if it hung.
             progress(done, str(t.get("name") or key))
+            stop = ""
             try:
                 recs = mb.fetch(t["exchange"], t["ticker"], t.get("name", ""))
                 results[key] = recs
@@ -447,6 +469,7 @@ def scrape_many(
                     _write_cache(cache_dir, key, recs)
                 status = f"{len(recs)} transactions" if recs else "NOT COVERED"
                 print(f"  [{key}] {t.get('name', '')}: {status}")
+                tally["fetched"] += 1
                 blocked_in_a_row = 0
             except CompanyDelisted as e:
                 results[key] = []
@@ -454,29 +477,35 @@ def scrape_many(
                 if cache_dir:
                     _delete_cache(cache_dir, key)
                 print(f"  [{key}] DELISTED — dropped from cache: {e}")
+                tally["fetched"] += 1  # the site answered; the answer was "gone"
             except BotBlocked as e:
                 results[key] = _records_from_cache(entry) if entry else []
                 note = " (using stale cache)" if entry else ""
                 print(f"  [{key}] BLOCKED: {e}{note}")
+                tally["failed"] += 1
                 blocked_in_a_row += 1
-                if e.fatal or blocked_in_a_row >= _MAX_CONSECUTIVE_BLOCKS:
-                    rest = to_fetch[done + 1 :]
-                    for rkey, _rt, rentry in rest:
-                        results[rkey] = _records_from_cache(rentry) if rentry else []
-                    why = (
-                        "the site is refusing this session"
-                        if e.fatal
-                        else (f"{blocked_in_a_row} blocks in a row")
-                    )
-                    print(
-                        f"  Stopping early ({why}): {len(rest)} companies left untouched, "
-                        "their cached data kept. Try again later."
-                    )
-                    break
-            except Exception as e:  # keep the batch alive
+                if e.fatal:
+                    stop = str(e)
+                elif blocked_in_a_row >= _MAX_CONSECUTIVE_BLOCKS:
+                    stop = f"blocked {blocked_in_a_row} times in a row"
+            except Exception as e:  # keep the batch alive, unless it cannot live
                 results[key] = _records_from_cache(entry) if entry else []
                 note = " (using stale cache)" if entry else ""
                 print(f"  [{key}] ERROR: {type(e).__name__}: {str(e)[:120]}{note}")
+                tally["failed"] += 1
+                if getattr(e, "fatal", False):
+                    stop = str(e)
+            if stop:
+                rest = to_fetch[done + 1 :]
+                for rkey, _rt, rentry in rest:
+                    results[rkey] = _records_from_cache(rentry) if rentry else []
+                tally["untouched"] = len(rest)
+                tally["stopped"] = stop
+                print(
+                    f"  Stopping early ({stop}): {len(rest)} companies left untouched, "
+                    "their cached data kept."
+                )
+                break
             time.sleep(1.0)  # be polite between requests
 
     progress(len(to_fetch), "")

@@ -22,6 +22,7 @@ import urllib.request
 from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -596,3 +597,43 @@ class TestInterviews:
 
     def test_forgetting_something_that_is_not_there_is_a_404(self, client):
         assert client.delete("/api/interviews?video=nope")[0] == 404
+
+
+class TestARefreshThatFetchedNothingSaysSo:
+    """Failed companies come back with cached records, so counting the results
+    reported "Done" for a run that reached the site zero times."""
+
+    results: ClassVar = {"TSE:A": ["r1", "r2"], "TSE:B": ["r3"]}
+    targets: ClassVar = [{"ticker": "A"}, {"ticker": "B"}]
+
+    def test_a_stopped_run_is_a_failure_with_its_reason(self):
+        ok, msg = app._refresh_summary(
+            self.results,
+            self.targets,
+            {
+                "fetched": 0,
+                "failed": 1,
+                "untouched": 1,
+                "stopped": "the SEDI browser window was closed",
+            },
+        )
+        assert ok is False
+        assert "Stopped after 1 of 2 companies" in msg
+        assert "the SEDI browser window was closed" in msg
+        assert "Done" not in msg
+
+    def test_all_failed_is_a_failure(self):
+        out = {"fetched": 0, "failed": 2, "untouched": 0, "stopped": ""}
+        ok, msg = app._refresh_summary(self.results, self.targets, out)
+        assert ok is False and "Nothing fetched" in msg
+
+    def test_partial_failure_is_done_but_says_how_many(self):
+        out = {"fetched": 1, "failed": 1, "untouched": 0, "stopped": ""}
+        ok, msg = app._refresh_summary(self.results, self.targets, out)
+        assert ok is True and "1 failed" in msg
+
+    def test_a_clean_run_reads_as_before(self):
+        out = {"fetched": 2, "failed": 0, "untouched": 0, "stopped": ""}
+        ok, msg = app._refresh_summary(self.results, self.targets, out)
+        assert ok is True
+        assert msg == "Done — 3 transactions across 2/2 companies."

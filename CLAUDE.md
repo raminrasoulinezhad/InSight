@@ -118,7 +118,10 @@ reload, Python edits need an app restart.
   as "no insider trades" and saved as the company's SEDI page. If the validator
   (`validate.perfdrive.com`) does not answer at all, the block is on Radware's
   side or this IP; only waiting or another network helps, and every retry makes
-  it worse.
+  it worse. Quick triage: open sedi.ca in the user's own Chrome and Firefox. In
+  Oct 2026 their Chrome was walled while their Firefox worked, yet Playwright's
+  Firefox was walled too (even with `navigator.webdriver` hidden), so switching
+  the automated browser is not a fix by itself.
 - **API keys never enter the repo.** They live in `.env` (gitignored, along with
   `.env.*`, excepting `.env.example`), and `.env.example` is the committed
   template holding placeholders only. `llm.py` routes one call across several

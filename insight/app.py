@@ -203,7 +203,33 @@ def _read_sedi_page(exchange: str, ticker: str) -> bytes | None:
     return html.encode("utf-8")
 
 
-def _finish_refresh(results, targets, run_date: str) -> None:
+def _refresh_summary(results, targets, outcome: dict[str, Any] | None) -> tuple[bool, str]:
+    """(ok, message) for the end of a refresh.
+
+    Counted from `outcome`, not from the results: a company that failed comes
+    back with its cached records, so a run that fetched nothing used to report
+    "Done" over a screen of old data.
+    """
+    covered = sum(1 for v in results.values() if v)
+    total = sum(len(v) for v in results.values())
+    done = f"Done — {total} transactions across {covered}/{len(targets)} companies."
+    if not outcome:
+        return True, done
+    fetched, failed = int(outcome.get("fetched", 0)), int(outcome.get("failed", 0))
+    stopped = str(outcome.get("stopped") or "")
+    if stopped:
+        return False, (
+            f"Stopped after {fetched + failed} of {len(targets)} companies: {stopped}. "
+            "Cached data was kept for the rest."
+        )
+    if failed and not fetched:
+        return False, f"Nothing fetched: all {failed} companies failed. Cached data was kept."
+    if failed:
+        return True, f"{done[:-1]} ({failed} failed, shown from cache)."
+    return True, done
+
+
+def _finish_refresh(results, targets, run_date: str, outcome=None) -> None:
     """Shared refresh tail: fire alarms, then mark the job done with a summary."""
     # Fire alarms for newly-seen transactions (never let this break refresh).
     try:
@@ -212,15 +238,14 @@ def _finish_refresh(results, targets, run_date: str) -> None:
         evaluate_and_notify(paths.notify_file(), DATA_DIR)
     except Exception:
         traceback.print_exc()
-    covered = sum(1 for v in results.values() if v)
-    total = sum(len(v) for v in results.values())
+    ok, message = _refresh_summary(results, targets, outcome)
     with _refresh_lock:
         _refresh.update(
             running=False,
             finished=True,
-            ok=True,
+            ok=ok,
             date=run_date,
-            message=f"Done — {total} transactions across {covered}/{len(targets)} companies.",
+            message=message,
             # Full, not cleared: the bar reads 100% for the moment before it is
             # hidden, rather than snapping back to empty on the last poll.
             done=_refresh["total"],
@@ -253,6 +278,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             for c in json.loads(CONFIG.read_text())["companies"]
             if not str(c.get("name", "")).startswith("_")
         ]
+        outcome: dict[str, Any] = {}
 
         if source == "sedi":
             from .sedi import SediScraper, is_canadian
@@ -281,10 +307,11 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                     capture_dir=paths.app_dir() / "sedi-debug",
                 ),
                 source="sedi",
+                outcome=outcome,
             )
             run_date = date.today().isoformat()
             write_outputs(results, DATA_DIR, run_date, source="sedi")
-            _finish_refresh(results, targets, run_date)
+            _finish_refresh(results, targets, run_date, outcome)
             return
 
         if discover:
@@ -310,10 +337,11 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             force=not discover,
             delisted_path=paths.delisted_file(),
             on_progress=_progress,
+            outcome=outcome,
         )
         run_date = date.today().isoformat()
         write_outputs(results, DATA_DIR, run_date)
-        _finish_refresh(results, targets, run_date)
+        _finish_refresh(results, targets, run_date, outcome)
     except Exception as e:
         with _refresh_lock:
             _refresh.update(

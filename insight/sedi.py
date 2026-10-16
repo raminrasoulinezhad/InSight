@@ -52,7 +52,7 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
 from . import profiles
-from .marketbeat import BotBlocked
+from .marketbeat import BotBlocked, BrowserGone
 from .models import InsiderTransaction, parse_int, parse_money
 from .paths import sedi_page_filename
 
@@ -615,12 +615,22 @@ class SediScraper:
                     self._page.reload(wait_until="domcontentloaded", timeout=30000)
         raise BotBlocked(f"SEDI bot wall not cleared within {self._manual_wait_s}s while {ctx}")
 
+    def _browser_gone(self) -> bool:
+        with contextlib.suppress(Exception):
+            return bool(self._page.is_closed())
+        return True
+
     def _open_search(self) -> None:
-        """Load the ITD search form, telling a dead bot wall from a slow page."""
+        """Load the ITD search form, telling a dead bot wall from a slow page,
+        and both from a browser that is no longer there."""
         page = self._page
+        if self._browser_gone():
+            raise BrowserGone("the SEDI browser window was closed")
         try:
             page.goto(_ITD_URL, wait_until="domcontentloaded", timeout=60000)
         except PlaywrightError as e:
+            if self._browser_gone():
+                raise BrowserGone("the SEDI browser window was closed") from e
             title = url = ""
             with contextlib.suppress(Exception):
                 title, url = page.title(), page.url

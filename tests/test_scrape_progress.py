@@ -205,3 +205,34 @@ class TestABlockedSessionStopsTheBatch:
         assert fake.fetched == ["A"]
         assert [r.ticker for r in got["TSE:B"]] == ["B"], "B was not fetched, so its cache stands"
         assert [r.ticker for r in got["TSE:A"]] == ["A"], "a block never empties the cache"
+
+
+class TestAClosedBrowserStopsTheBatch:
+    def test_nothing_after_the_browser_closes_is_attempted(self):
+        # It used to fail all 131 remaining companies, instantly, one by one.
+        fake = FakeScraper({"B": marketbeat.BrowserGone("the SEDI browser window was closed")})
+        out: dict = {}
+        scrape_many([target(t) for t in "ABCD"], scraper_factory=lambda: fake, outcome=out)
+        assert fake.fetched == ["A", "B"]
+        assert out == {
+            "fetched": 1,
+            "failed": 1,
+            "untouched": 2,
+            "stopped": "the SEDI browser window was closed",
+        }
+
+
+class TestTheOutcomeSaysWhatReallyHappened:
+    def test_a_clean_run(self):
+        out: dict = {}
+        scrape_many([target(t) for t in "AB"], scraper_factory=lambda: FakeScraper(), outcome=out)
+        assert out == {"fetched": 2, "failed": 0, "untouched": 0, "stopped": ""}
+
+    def test_failures_are_counted_even_though_cache_fills_them_in(self):
+        out: dict = {}
+        scrape_many(
+            [target(t) for t in "ABC"],
+            scraper_factory=lambda: FakeScraper({"B": RuntimeError("boom")}),
+            outcome=out,
+        )
+        assert (out["fetched"], out["failed"], out["stopped"]) == (2, 1, "")
