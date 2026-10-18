@@ -407,12 +407,19 @@ def scrape_many(
 
     `outcome`, when given, is filled with what actually happened: `fetched`
     (companies that answered), `failed` (blocked or errored, served from stale
-    cache), `untouched` (skipped after a stop) and `stopped` (why the batch gave
-    up early, else ""). The results alone cannot say this: a failed company is
-    returned with its *cached* records, so a run that fetched nothing at all
-    looks the same as one that fetched everything.
+    cache), `cached` (fresh enough that no fetch was needed), `untouched`
+    (skipped after a stop) and `stopped` (why the batch gave up early, else "").
+    The results alone cannot say this: a failed company is returned with its
+    *cached* records, so a run that fetched nothing at all looks the same as one
+    that fetched everything.
     """
-    tally: dict[str, Any] = {"fetched": 0, "failed": 0, "untouched": 0, "stopped": ""}
+    tally: dict[str, Any] = {
+        "fetched": 0,
+        "failed": 0,
+        "cached": 0,
+        "untouched": 0,
+        "stopped": "",
+    }
     if outcome is not None:
         outcome.clear()
         outcome.update(tally)
@@ -437,6 +444,7 @@ def scrape_many(
             delisted.discard(key)  # a live cache entry means it is not delisted
             age = _cache_age_hours(entry)
             print(f"  [{key}] {t.get('name', '')}: cached ({len(recs)} txns, {age:.1f}h old)")
+            tally["cached"] += 1
         else:
             to_fetch.append((key, t, entry))
 

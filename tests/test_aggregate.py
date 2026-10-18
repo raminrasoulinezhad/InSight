@@ -9,6 +9,7 @@
 import json
 from datetime import date
 
+from insight import aggregate
 from insight.aggregate import (
     _avg_price,
     _delisted_keys,
@@ -323,3 +324,52 @@ class TestViewCache:
         (tmp_path / "delisted.json").write_text(json.dumps(["TSE:ABC"]))
         v = load_view(tmp_path, cfg, months=None)
         assert v["total_transactions"] == 0  # ABC now filtered out
+
+
+class TestATradeBothSourcesReportIsShownOnce:
+    """MarketBeat and SEDI word the same filing differently, so exact-match
+    dedup kept both: 485 trades were showing twice."""
+
+    def rec(self, source, name="Gordon D. Giffin", ttype="Sell", role="Director", shares=25000):
+        return {
+            "source": source,
+            "exchange": "TSE",
+            "ticker": "CNQ",
+            "insider_name": name,
+            "insider_role": role,
+            "transaction_date": "2026-03-24",
+            "transaction_type": ttype,
+            "shares": shares,
+        }
+
+    def test_the_marketbeat_copy_of_a_sedi_trade_goes(self):
+        mb = self.rec("marketbeat", name="Gordon D Giffin", role="Insider")
+        sedi = self.rec("sedi", role="Senior Officer of Issuer")
+        assert aggregate.drop_cross_source_twins([mb, sedi]) == [sedi]
+
+    def test_middle_names_and_initials_do_not_matter(self):
+        mb = self.rec("marketbeat", name="Gordon David Giffin")
+        sedi = self.rec("sedi", name="Gordon Giffin")
+        assert aggregate.drop_cross_source_twins([mb, sedi]) == [sedi]
+
+    def test_a_marketbeat_trade_sedi_lacks_is_kept(self):
+        # SEDI's report for a large issuer can miss officers MarketBeat lists.
+        mb = self.rec("marketbeat", name="Brenda Gayle Balog", shares=2252)
+        sedi = self.rec("sedi")
+        assert aggregate.drop_cross_source_twins([mb, sedi]) == [mb, sedi]
+
+    def test_a_different_direction_is_a_different_trade(self):
+        mb = self.rec("marketbeat", ttype="Buy")
+        sedi = self.rec("sedi", ttype="Sell")
+        assert len(aggregate.drop_cross_source_twins([mb, sedi])) == 2
+
+    def test_an_option_exercise_does_not_swallow_the_sale(self):
+        # SEDI files an exercise and a sale with the same share count on one day;
+        # only the sale is MarketBeat's twin, and the exercise stays either way.
+        mb = self.rec("marketbeat")
+        exercise = self.rec("sedi", ttype="Exercise of options")
+        assert aggregate.drop_cross_source_twins([mb, exercise]) == [mb, exercise]
+
+    def test_without_sedi_nothing_changes(self):
+        mb = [self.rec("marketbeat"), self.rec("marketbeat", shares=1)]
+        assert aggregate.drop_cross_source_twins(mb) == mb

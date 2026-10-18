@@ -637,3 +637,86 @@ class TestARefreshThatFetchedNothingSaysSo:
         ok, msg = app._refresh_summary(self.results, self.targets, out)
         assert ok is True
         assert msg == "Done — 3 transactions across 2/2 companies."
+
+
+class TestOneFetchButtonForBothSources:
+    """The UI's single Fetch button: MarketBeat, then SEDI, in one job."""
+
+    @pytest.fixture
+    def run(self, tmp_path: Path, monkeypatch):
+        from insight import marketbeat, scrape, sedi
+
+        config = tmp_path / "companies.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "companies": [
+                        {"name": "ABC Corp", "exchange": "TSE", "ticker": "ABC"},
+                        {"name": "Apple", "exchange": "NASDAQ", "ticker": "AAPL"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(app, "CONFIG", config)
+        monkeypatch.setattr(app, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(paths, "cache_dir", lambda: tmp_path / "cache")
+        monkeypatch.setattr(paths, "app_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths, "delisted_file", lambda: tmp_path / "delisted.json")
+        monkeypatch.setattr(scrape, "write_outputs", lambda *a, **k: None)
+        monkeypatch.setattr(app, "_fire_alarms", lambda: None)
+        monkeypatch.setattr(sedi, "SediScraper", lambda **kw: None)
+        calls: list[dict] = []
+
+        def fake_scrape_many(targets, **kw):
+            source = kw.get("source", "marketbeat")
+            calls.append({"source": source, "tickers": [t["ticker"] for t in targets], **kw})
+            out = kw["outcome"]
+            out.update(fetched=len(targets), failed=0, cached=0, untouched=0, stopped="")
+            if source == "sedi" and self.sedi_stops:
+                out.update(fetched=0, failed=1, untouched=0, stopped="SEDI's bot check is down")
+            return {}
+
+        monkeypatch.setattr(marketbeat, "scrape_many", fake_scrape_many)
+        self.sedi_stops = False
+
+        def go(**kw):
+            app._do_refresh(source="all", **kw)
+            return calls, dict(app._refresh)
+
+        return go
+
+    def test_marketbeat_first_then_sedi_for_the_canadian_ones(self, run):
+        calls, _state = run()
+        assert [c["source"] for c in calls] == ["marketbeat", "sedi"]
+        assert calls[0]["tickers"] == ["ABC", "AAPL"]
+        assert calls[1]["tickers"] == ["ABC"], "SEDI is Canada-only"
+
+    def test_recent_fetches_are_reused_not_repeated(self, run):
+        calls, _state = run()
+        for c in calls:
+            assert c["force"] is False
+            assert c["max_age_hours"] == app._FRESH_HOURS
+
+    def test_a_clean_run_reports_both_sources(self, run):
+        _calls, state = run()
+        assert state["ok"] is True and state["warn"] is False
+        assert state["message"] == "Done. MarketBeat: 2 fetched; SEDI: 1 fetched."
+
+    def test_a_sedi_stop_keeps_the_marketbeat_part_and_says_so(self, run):
+        self.sedi_stops = True
+        _calls, state = run()
+        assert state["ok"] is True, "MarketBeat's data is real; the page should reload"
+        assert state["warn"] is True, "and the SEDI failure must stay on screen"
+        assert "SEDI stopped after 1 of 1: SEDI's bot check is down" in state["message"]
+
+    def test_the_endpoint_accepts_the_combined_source(self, client: Client, monkeypatch):
+        got = {}
+        monkeypatch.setattr(app, "_do_refresh", lambda d, s: got.update(source=s))
+        status, _ = client.post("/api/refresh?source=all")
+        assert status == 202
+        for _ in range(50):
+            if got:
+                break
+            threading.Event().wait(0.02)
+        assert got == {"source": "all"}

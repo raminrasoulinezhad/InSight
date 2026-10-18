@@ -55,7 +55,7 @@ insight            # opens in your browser
 insight --window   # opens as its own app window
 ```
 
-To get fresh numbers, click **↻ Refresh data** in the app (or run
+To get fresh numbers, click **↻ Fetch all** in the app (or run
 `insight-scrape`, then reload).
 
 ### What you can do
@@ -101,7 +101,7 @@ for the names MarketBeat misses.
 |---|---|---|
 | **Covers** | Large and mid-cap TSX / US names | *Every* Canadian filing, incl. TSX-V and CSE micro-caps |
 | **Speed** | Automatic, unattended | Drives a minimized browser; may ask you to solve a CAPTCHA once |
-| **Use it** | **↻ Refresh data**, or `insight-scrape` | **⛏ Fetch from SEDI**, or `insight-scrape --source sedi` |
+| **Use it** | **↻ Fetch all**, or `insight-scrape` | **↻ Fetch all** (same button), or `insight-scrape --source sedi` |
 
 SEDI is Canada's official insider-filing system — the authoritative source, and
 the only one that sees small venture names. It is bot-protected, so it can't run
@@ -156,7 +156,7 @@ To go the other way — start from the person:
 3. A minimized browser does the work, popping up only for a CAPTCHA. After a
    couple of minutes you get every company that person has filed against, with
    **+ Add** on the ones missing from your watchlist.
-4. Click **↻ Refresh data** afterwards to pull the new company's history.
+4. Click **↻ Fetch all** afterwards to pull the new company's history.
 
 Adding only puts the company on your list — until you refresh, its card is empty.
 
@@ -272,7 +272,7 @@ insight-scrape --prune-browser-cache  # clear the browser caches
 ## Good to know
 
 - **Coverage** — MarketBeat covers large caps well; small TSX-V names may show as
-  empty cards. Use **⛏ Fetch from SEDI** for those.
+  empty cards. **↻ Fetch all** also asks SEDI, which covers them.
 - **Freshness** — numbers may lag the official source by a day or two. Good for
   spotting trends, not for split-second decisions.
 

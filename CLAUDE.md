@@ -16,7 +16,8 @@ data services.
 - **Cross-links + back-stack** — an insider name opens that insider, a company on
   their card opens that company; Back (and Alt+←) walks up to 10 states.
 - **Two data sources** — MarketBeat by default (unattended); **SEDI** on demand
-  via ⛏ or `--source sedi` for TSXV/CSE names MarketBeat misses. See below.
+  via **↻ Fetch all** or `--source sedi` for TSXV/CSE names MarketBeat misses. See
+  below.
 - **Person-first search** — **⛏ Find companies** on an insider's card (or
   `insight-scrape --insider FAMILY_NAME`) uses SEDI's cross-issuer insider search
   to list every company someone filed against, with **+ Add** on those missing
@@ -30,7 +31,9 @@ data services.
   adds the company *and* files the comments. Shares the refresh job slot. Needs a
   free LLM key (see `.env.example`); without one the tab says so.
 - **Watchlist** — add by name (TradingView resolver) / remove.
-- **Refresh** — re-scrape from the UI; optional "Scan all TSE (~215)".
+- **↻ Fetch all** — one button, one job: MarketBeat, then SEDI for the Canadian
+  companies; optional "Scan all TSE (~215)". Reuses anything fetched in the last
+  hour, and a trade both sources report is shown once (SEDI's copy).
 - **Notes** — free-text per company (a bullet list in the UI), shown above that
   company's activity. User-authored; never touched by the scraper.
 - **History accumulation** — each scrape writes a dated snapshot; `store.py` folds

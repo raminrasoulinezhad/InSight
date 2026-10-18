@@ -479,11 +479,10 @@
   <div class="titlerow">
     <h1>InSight</h1>
     <span class="meta" id="datameta">loading…</span>
-    <button id="refresh" class="refresh-btn">↻ Refresh data</button>
+    <button id="refresh" class="refresh-btn" title="Fetch everything in one go: MarketBeat for your watchlist, then SEDI (Canada's official insider filings, the only source for small TSX-V names) for your Canadian companies. Anything fetched in the last hour is reused, so pressing again only retries what failed, and a trade both sources report is shown once. SEDI runs a minimized browser that pops up if a CAPTCHA needs solving.">↻ Fetch all</button>
     <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the Insiders tab.">
       <input type="checkbox" id="discover" /> Scan all TSE (~215)
     </label>
-    <button id="sedi" class="refresh-btn" title="Fetch your watchlist from SEDI, Canada's official insider-filing system — the only source that covers small TSX-V names (e.g. WRLG). Runs a minimized browser that pops up if a CAPTCHA needs solving. Not for the daily timer.">⛏ Fetch from SEDI</button>
     <span class="meta" id="refreshmsg"></span>
     <button id="settings-open" class="refresh-btn settings-cog"
       title="Settings — theme and notifications">⚙</button>
@@ -2094,7 +2093,6 @@ document.addEventListener("click", e => {
 
 /* ---- refresh (re-scrape) with status polling ---- */
 const refreshBtn = document.getElementById("refresh");
-const sediBtn = document.getElementById("sedi");
 const refreshMsg = document.getElementById("refreshmsg");
 const progressBar = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
@@ -2130,9 +2128,8 @@ function setProgress(on, done, total){
 }
 
 function setRefreshing(on, msg){
-  refreshBtn.disabled = on;                    // both buttons share one job slot
-  sediBtn.disabled = on;
-  refreshBtn.textContent = on ? "↻ Refreshing…" : "↻ Refresh data";
+  refreshBtn.disabled = on;                    // one job slot for every fetch
+  refreshBtn.textContent = on ? "↻ Fetching…" : "↻ Fetch all";
   refreshMsg.textContent = msg || "";
 }
 
@@ -2167,7 +2164,9 @@ async function pollRefresh(){
         if (STATE.view === "interviews") render();
       }
     }
-    setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
+    // A clean run's summary fades; one where something failed stays until the
+    // next job, since "SEDI stopped: …" is the part worth reading.
+    if (d.ok && !d.warn) setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
   } catch(e){
     clearInterval(pollTimer); pollTimer = null;
     setProgress(false);
@@ -2193,14 +2192,8 @@ async function startRefresh(url, startMsg){
 refreshBtn.addEventListener("click", () => {
   if (refreshBtn.disabled) return;
   const discover = document.getElementById("discover").checked;
-  startRefresh("/api/refresh" + (discover ? "?discover=1" : ""),
+  startRefresh("/api/refresh?source=all" + (discover ? "&discover=1" : ""),
     discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
-});
-
-sediBtn.addEventListener("click", () => {
-  if (sediBtn.disabled) return;
-  startRefresh("/api/refresh?source=sedi",
-    "Starting SEDI… a browser runs minimized; it pops up if a CAPTCHA needs solving.");
 });
 
 let qTimer = null;

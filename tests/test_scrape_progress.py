@@ -217,6 +217,7 @@ class TestAClosedBrowserStopsTheBatch:
         assert out == {
             "fetched": 1,
             "failed": 1,
+            "cached": 0,
             "untouched": 2,
             "stopped": "the SEDI browser window was closed",
         }
@@ -226,7 +227,7 @@ class TestTheOutcomeSaysWhatReallyHappened:
     def test_a_clean_run(self):
         out: dict = {}
         scrape_many([target(t) for t in "AB"], scraper_factory=lambda: FakeScraper(), outcome=out)
-        assert out == {"fetched": 2, "failed": 0, "untouched": 0, "stopped": ""}
+        assert out == {"fetched": 2, "failed": 0, "cached": 0, "untouched": 0, "stopped": ""}
 
     def test_failures_are_counted_even_though_cache_fills_them_in(self):
         out: dict = {}

@@ -70,6 +70,9 @@ _refresh = {
     "done": 0,
     "total": 0,
     "label": "",
+    # Which source a combined fetch is on, e.g. "SEDI: ". Shown before the
+    # count, so "Fetching 3 of 107" says whose 107 it is.
+    "phase": "",
 }
 
 
@@ -79,7 +82,8 @@ def _progress(done: int, total: int, label: str) -> None:
         _refresh.update(done=done, total=total, label=label)
         if total:
             where = f" — {label}" if label else ""
-            _refresh["message"] = f"Fetching {min(done + 1, total)} of {total}{where}"
+            phase = _refresh.get("phase") or ""
+            _refresh["message"] = f"{phase}Fetching {min(done + 1, total)} of {total}{where}"
 
 
 # The insider search is a *browser* job, so it shares the refresh job slot rather
@@ -203,6 +207,16 @@ def _read_sedi_page(exchange: str, ticker: str) -> bytes | None:
     return html.encode("utf-8")
 
 
+def _fire_alarms() -> None:
+    """Fire alarms for newly-seen transactions (never let this break a fetch)."""
+    try:
+        from .notify import evaluate_and_notify
+
+        evaluate_and_notify(paths.notify_file(), DATA_DIR)
+    except Exception:
+        traceback.print_exc()
+
+
 def _refresh_summary(results, targets, outcome: dict[str, Any] | None) -> tuple[bool, str]:
     """(ok, message) for the end of a refresh.
 
@@ -231,19 +245,15 @@ def _refresh_summary(results, targets, outcome: dict[str, Any] | None) -> tuple[
 
 def _finish_refresh(results, targets, run_date: str, outcome=None) -> None:
     """Shared refresh tail: fire alarms, then mark the job done with a summary."""
-    # Fire alarms for newly-seen transactions (never let this break refresh).
-    try:
-        from .notify import evaluate_and_notify
-
-        evaluate_and_notify(paths.notify_file(), DATA_DIR)
-    except Exception:
-        traceback.print_exc()
+    _fire_alarms()
     ok, message = _refresh_summary(results, targets, outcome)
     with _refresh_lock:
         _refresh.update(
             running=False,
             finished=True,
             ok=ok,
+            warn=not ok,
+            phase="",
             date=run_date,
             message=message,
             # Full, not cleared: the bar reads 100% for the moment before it is
@@ -253,6 +263,99 @@ def _finish_refresh(results, targets, run_date: str, outcome=None) -> None:
         )
 
 
+# A combined fetch reuses anything fetched successfully this recently, so a
+# second press (or one after a partial failure) only does the work that is
+# actually missing. A failed fetch is never cached, so it is always retried.
+_FRESH_HOURS = 1.0
+
+
+def _watchlist_targets() -> list[dict[str, Any]]:
+    return [
+        c
+        for c in json.loads(CONFIG.read_text())["companies"]
+        if not str(c.get("name", "")).startswith("_")
+    ]
+
+
+def _set_phase(phase: str, message: str) -> None:
+    with _refresh_lock:
+        _refresh.update(phase=phase, message=message, done=0, total=0, label="")
+
+
+def _marketbeat_phase(
+    targets: list[dict[str, Any]],
+    discover: bool,
+    outcome: dict[str, Any],
+    *,
+    force: bool,
+    max_age_hours: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fetch from MarketBeat (headless, unattended). Returns (results, targets)."""
+    from .marketbeat import discover_tickers, scrape_many
+    from .scrape import write_outputs
+
+    targets = list(targets)
+    if discover:
+        with _refresh_lock:
+            _refresh["message"] = "Discovering ticker universe…"
+        seen = {f"{t.get('exchange', '').upper()}:{t.get('ticker', '').upper()}" for t in targets}
+        for d in discover_tickers(["TSE"]):
+            key = f"{d['exchange']}:{d['ticker']}"
+            if key not in seen:
+                targets.append(d)
+                seen.add(key)
+    results = scrape_many(
+        targets,
+        headless=True,
+        cache_dir=paths.cache_dir(),
+        max_age_hours=max_age_hours,
+        force=force,
+        delisted_path=paths.delisted_file(),
+        on_progress=_progress,
+        outcome=outcome,
+    )
+    write_outputs(results, DATA_DIR, date.today().isoformat())
+    return results, targets
+
+
+def _sedi_phase(
+    targets: list[dict[str, Any]],
+    outcome: dict[str, Any],
+    *,
+    force: bool,
+    max_age_hours: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fetch the Canadian companies from SEDI (a minimized, visible browser that
+    pops up for a CAPTCHA). Returns (results, targets)."""
+    from .marketbeat import scrape_many
+    from .scrape import write_outputs
+    from .sedi import SediScraper, is_canadian
+
+    canadian = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
+    results = scrape_many(
+        canadian,
+        cache_dir=paths.cache_dir(),
+        max_age_hours=max_age_hours,
+        force=force,
+        on_progress=_progress,
+        scraper_factory=lambda: SediScraper(
+            headless=False,
+            profile_dir=paths.sedi_profile_dir(),
+            # Snapshot each company's report page. Without this the button
+            # scrapes the data but saves no pages, so the "⛏ SEDI report" link
+            # never appears for anyone who never runs the CLI.
+            pages_dir=paths.sedi_pages_dir(),
+            # dump HTML for any company that yields no rows, so an empty result
+            # can be diagnosed rather than being silent.
+            capture_dir=paths.app_dir() / "sedi-debug",
+        ),
+        source="sedi",
+        outcome=outcome,
+    )
+    write_outputs(results, DATA_DIR, date.today().isoformat(), source="sedi")
+    return results, canadian
+
+
 def _do_refresh(discover: bool = False, source: str = "marketbeat"):
     """Re-scrape and write a new dated snapshot.
 
@@ -260,97 +363,128 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
     UI polls /api/refresh/status. Imports are local so a missing scraper dep
     (e.g. Playwright not installed) surfaces as a job error, not an app crash.
 
-    `source="marketbeat"` (default): fast, headless. When `discover` is set,
-    MarketBeat's ~215-company TSE universe is merged into the watchlist so
-    GUI-only users get the same broad coverage as `insight-scrape --discover`.
+    `source="all"` is what the UI's one Fetch button runs: MarketBeat for the
+    watchlist (plus the ~215-company TSE universe when `discover` is set), then
+    SEDI for the Canadian companies. Both, because neither is complete on its
+    own: SEDI's report for a large issuer can miss officers MarketBeat lists,
+    and MarketBeat misses most small TSX-V names. Trades both report are shown
+    once (`aggregate.drop_cross_source_twins`). Anything fetched successfully
+    within `_FRESH_HOURS` is reused rather than fetched again. MarketBeat goes
+    first because it is quick and never needs a human; a SEDI failure then
+    costs nothing that was already fetched.
 
-    `source="sedi"`: Canada's official SEDI, which covers small TSX-V names
-    MarketBeat misses. SEDI is bot-walled, so this opens a VISIBLE browser and
-    may need the user to solve a CAPTCHA once; the watchlist (never discover) is
-    scraped and written to a source-tagged snapshot that merges into the view.
+    `source="marketbeat"` / `"sedi"` run one source alone, always fresh.
     """
     try:
-        from .marketbeat import discover_tickers, scrape_many
-        from .scrape import write_outputs
+        targets = _watchlist_targets()
+        run_date = date.today().isoformat()
 
-        targets = [
-            c
-            for c in json.loads(CONFIG.read_text())["companies"]
-            if not str(c.get("name", "")).startswith("_")
-        ]
-        outcome: dict[str, Any] = {}
-
-        if source == "sedi":
-            from .sedi import SediScraper, is_canadian
-
-            targets = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
-            with _refresh_lock:
-                _refresh["message"] = (
-                    f"Opening a browser for SEDI — solve the CAPTCHA in that window "
-                    f"if it appears. Fetching {len(targets)} Canadian companies…"
+        if source == "all":
+            mb_out: dict[str, Any] = {}
+            sedi_out: dict[str, Any] = {}
+            mb_targets: list[dict[str, Any]] = []
+            sedi_targets: list[dict[str, Any]] = []
+            mb_age = 12.0 if discover else _FRESH_HOURS  # the universe is ~215 deep
+            _set_phase("MarketBeat: ", "Fetching from MarketBeat…")
+            try:
+                _results, mb_targets = _marketbeat_phase(
+                    targets, discover, mb_out, force=False, max_age_hours=mb_age
                 )
-            results = scrape_many(
-                targets,
-                cache_dir=paths.cache_dir(),
-                force=True,
-                on_progress=_progress,
-                scraper_factory=lambda: SediScraper(
-                    headless=False,
-                    profile_dir=paths.sedi_profile_dir(),
-                    # Snapshot each company's report page. Without this the
-                    # button scrapes the data but saves no pages, so the
-                    # "⛏ SEDI report" link never appears for anyone who never
-                    # runs the CLI — which is most people.
-                    pages_dir=paths.sedi_pages_dir(),
-                    # dump HTML for any company that yields no rows, so an empty
-                    # result can be diagnosed rather than being silent.
-                    capture_dir=paths.app_dir() / "sedi-debug",
-                ),
-                source="sedi",
-                outcome=outcome,
+            except Exception as e:  # SEDI is still worth trying
+                mb_out["error"] = f"{type(e).__name__}: {e}"
+                traceback.print_exc()
+            _set_phase(
+                "SEDI: ",
+                "Opening SEDI… a browser runs minimized; it pops up if a CAPTCHA needs solving.",
             )
-            run_date = date.today().isoformat()
-            write_outputs(results, DATA_DIR, run_date, source="sedi")
-            _finish_refresh(results, targets, run_date, outcome)
+            try:
+                _results, sedi_targets = _sedi_phase(
+                    targets, sedi_out, force=False, max_age_hours=_FRESH_HOURS
+                )
+            except Exception as e:
+                sedi_out["error"] = f"{type(e).__name__}: {e}"
+                traceback.print_exc()
+            ok, warn, message = _fetch_all_summary(
+                [("MarketBeat", mb_out, len(mb_targets)), ("SEDI", sedi_out, len(sedi_targets))]
+            )
+            _fire_alarms()
+            with _refresh_lock:
+                _refresh.update(
+                    running=False,
+                    finished=True,
+                    ok=ok,
+                    warn=warn,
+                    date=run_date,
+                    message=message,
+                    phase="",
+                    done=_refresh["total"],
+                    label="",
+                )
             return
 
-        if discover:
-            with _refresh_lock:
-                _refresh["message"] = "Discovering ticker universe…"
-            seen = {
-                f"{t.get('exchange', '').upper()}:{t.get('ticker', '').upper()}" for t in targets
-            }
-            for d in discover_tickers(["TSE"]):
-                key = f"{d['exchange']}:{d['ticker']}"
-                if key not in seen:
-                    targets.append(d)
-                    seen.add(key)
+        outcome: dict[str, Any] = {}
+        if source == "sedi":
+            _set_phase(
+                "",
+                "Opening a browser for SEDI — solve the CAPTCHA in that window if it appears…",
+            )
+            results, canadian = _sedi_phase(targets, outcome, force=True, max_age_hours=0)
+            _finish_refresh(results, canadian, run_date, outcome)
+            return
+
         with _refresh_lock:
             _refresh["message"] = f"Scraping {len(targets)} companies…"
         # A watchlist-only refresh is an explicit "get fresh data" action, so it
         # bypasses the cache (force=True). A discover run scrapes ~215 companies,
         # so it relies on the cache (force=False) to stay tractable on repeats.
-        results = scrape_many(
-            targets,
-            headless=True,
-            cache_dir=paths.cache_dir(),
-            force=not discover,
-            delisted_path=paths.delisted_file(),
-            on_progress=_progress,
-            outcome=outcome,
+        results, scraped = _marketbeat_phase(
+            targets, discover, outcome, force=not discover, max_age_hours=12.0
         )
-        run_date = date.today().isoformat()
-        write_outputs(results, DATA_DIR, run_date)
-        _finish_refresh(results, targets, run_date, outcome)
+        _finish_refresh(results, scraped, run_date, outcome)
     except Exception as e:
         with _refresh_lock:
             _refresh.update(
                 running=False,
                 finished=True,
                 ok=False,
+                phase="",
                 message=f"Refresh failed: {type(e).__name__}: {e}",
             )
         traceback.print_exc()
+
+
+def _fetch_all_summary(
+    phases: list[tuple[str, dict[str, Any], int]],
+) -> tuple[bool, bool, str]:
+    """(ok, warn, message) for a combined fetch, one clause per source.
+
+    `ok` means something was fetched (or was already fresh), so the UI should
+    reload; `warn` means some part failed, so the UI keeps the message up
+    instead of letting it fade, since "SEDI stopped" is the part that matters.
+    """
+    clauses: list[str] = []
+    got_any = warn = False
+    for name, out, n in phases:
+        if out.get("error"):
+            clauses.append(f"{name} failed ({out['error']})")
+            warn = True
+            continue
+        fetched, failed = int(out.get("fetched", 0)), int(out.get("failed", 0))
+        cached, stopped = int(out.get("cached", 0)), str(out.get("stopped") or "")
+        got_any = got_any or bool(fetched or cached)
+        if stopped:
+            clauses.append(f"{name} stopped after {fetched + failed} of {n}: {stopped}")
+            warn = True
+            continue
+        parts = [f"{fetched} fetched"]
+        if cached:
+            parts.append(f"{cached} already up to date")
+        if failed:
+            parts.append(f"{failed} failed")
+            warn = True
+        clauses.append(f"{name}: {', '.join(parts)}")
+    head = "Done" if got_any else "Nothing fetched"
+    return got_any, warn, f"{head}. {'; '.join(clauses)}."
 
 
 def _do_interview(url: str) -> None:
@@ -546,7 +680,8 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/refresh":
             qs = urllib.parse.parse_qs(parsed.query)
             discover = qs.get("discover", ["0"])[0].lower() in ("1", "true", "yes")
-            source = "sedi" if qs.get("source", [""])[0].lower() == "sedi" else "marketbeat"
+            asked = qs.get("source", [""])[0].lower()
+            source = asked if asked in ("sedi", "all") else "marketbeat"
             with _refresh_lock:
                 if _refresh["running"]:
                     self._send_json(409, {"started": False, **_refresh})
@@ -555,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
                     running=True,
                     finished=False,
                     ok=False,
+                    warn=False,
+                    phase="",
                     message="Starting…",
                     date=None,
                     # without this the new run inherits the last one's bar and
@@ -609,6 +746,8 @@ class Handler(BaseHTTPRequestHandler):
                     running=True,
                     finished=False,
                     ok=False,
+                    warn=False,
+                    phase="",
                     message="Starting…",
                     date=None,
                     done=0,

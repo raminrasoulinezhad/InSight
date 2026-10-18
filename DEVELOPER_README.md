@@ -72,8 +72,31 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   **⛏ SEDI report** link on companies that have one, served by `/api/sedi-page`
   with a `<base>` injected so sedi.ca's relative CSS/images resolve.
 
-Because a human may be needed, SEDI is a deliberate button (**⛏ Fetch from
-SEDI**) and an explicit `--source sedi`, never the daily timer.
+Because a human may be needed, SEDI only runs when asked: the app's **↻ Fetch
+all** button or an explicit `--source sedi`, never the daily timer.
+
+#### One button for both sources
+
+**↻ Fetch all** (`POST /api/refresh?source=all`) runs one job: MarketBeat for the
+watchlist (plus the TSE universe when "Scan all TSE" is ticked), then SEDI for
+the Canadian companies. Both, because neither is complete: MarketBeat misses most
+TSX-V names, and SEDI's report for a large issuer can miss officers MarketBeat
+lists (CNQ: 15 insiders in SEDI's data, several more on MarketBeat). MarketBeat
+goes first because it is quick and never needs a human, so a SEDI failure loses
+nothing already fetched.
+
+Nothing is fetched twice:
+
+- One job slot; a second press while a fetch runs is refused (409).
+- Anything fetched successfully in the last hour (`_FRESH_HOURS`) is reused, so
+  pressing again after a partial failure only retries what failed (failures are
+  never cached).
+- A trade both sources report is kept once, SEDI's copy
+  (`aggregate.drop_cross_source_twins`, keyed on company, date, first and last
+  name, share count and direction). That removed 485 doubled rows.
+
+The run ends with one clause per source ("MarketBeat: 30 fetched; SEDI stopped
+after 1 of 107: …"); a message reporting a failure stays on screen.
 
 #### Keeping the window out of the way
 
@@ -319,8 +342,8 @@ insight-scrape --source sedi                # official SEDI, opens a browser
 | `--prune-browser-cache` | Clear the Chromium caches, keep cookies |
 
 Each company is cached as one JSON per issuer under `cache/`; a re-run only
-launches the browser if something actually needs fetching. The app's **Refresh**
-button always forces a fresh fetch.
+launches the browser if something actually needs fetching. The app's **↻ Fetch
+all** reuses anything fetched in the last hour (12 hours for the TSE universe).
 
 ### Run it daily
 

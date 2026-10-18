@@ -414,6 +414,41 @@ def _txn_key(r: Rec) -> tuple[Any, ...]:
     )
 
 
+def _twin_key(r: Rec) -> tuple[Any, ...]:
+    """The same trade as two sources report it.
+
+    MarketBeat and SEDI word a filing differently ("Insider" vs "Senior Officer
+    of Issuer", "Gordon D Giffin" vs "Gordon D. Giffin"), so `_txn_key` keeps
+    both. This keys on what they agree on: the company, the day, the person by
+    first and last name (letters only, so initials and punctuation do not
+    matter), the share count and the direction.
+    """
+    words = re.sub(r"[^a-z ]", " ", (r.get("insider_name") or "").lower()).split()
+    return (
+        (r.get("exchange") or "").upper(),
+        (r.get("ticker") or "").upper(),
+        r.get("transaction_date"),
+        (words[0], words[-1]) if words else (),
+        abs(r.get("shares") or 0),
+        _side(r.get("transaction_type") or ""),
+    )
+
+
+def drop_cross_source_twins(records: list[Rec]) -> list[Rec]:
+    """Drop a MarketBeat row when SEDI reports the same trade.
+
+    Both sources are fetched for Canadian companies, because neither is
+    complete on its own: SEDI's report for a large issuer can miss officers that
+    MarketBeat lists. Where they overlap, SEDI's copy is the richer one (the
+    filer's real role, the exact nature of the transaction), so it wins, and
+    the trade is shown, counted and alerted on once instead of twice.
+    """
+    sedi = {_twin_key(r) for r in records if r.get("source") == "sedi"}
+    if not sedi:
+        return records
+    return [r for r in records if r.get("source") != "marketbeat" or _twin_key(r) not in sedi]
+
+
 def load_all_records(data_dir: Path) -> list[Rec]:
     """Every dated data file as one deduplicated record set.
 
@@ -438,6 +473,7 @@ def load_all_records(data_dir: Path) -> list[Rec]:
             return hit[1]
 
     records, _manifest = store.sync(data_dir, _txn_key)
+    records = drop_cross_source_twins(records)
 
     with _CACHE_LOCK:
         _records_cache[key] = (sig, records)

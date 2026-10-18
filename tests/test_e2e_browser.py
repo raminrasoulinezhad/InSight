@@ -331,13 +331,13 @@ class TestTheScrapeProgressBar:
         # Between the click and the first status poll the app knows only that
         # work started. A determinate bar frozen at 0% for the minute it takes
         # to open a browser is what users read as a crash.
-        page.click("#sedi")
+        page.click("#refresh")
         page.wait_for_selector("#progress:not(.hidden)", timeout=5_000)
         assert page.locator("#progress").get_attribute("class").find("indeterminate") != -1
         assert page.locator("#progress").get_attribute("aria-valuenow") is None
 
     def test_it_fills_to_the_real_percentage_once_counting_starts(self, page, gate):
-        page.click("#sedi")
+        page.click("#refresh")
         page.wait_for_function(
             "document.querySelector('#progress')?.getAttribute('aria-valuenow') === '33'",
             timeout=10_000,
@@ -348,7 +348,7 @@ class TestTheScrapeProgressBar:
 
     def test_it_says_which_company_is_being_fetched(self, page, gate):
         # "Fetching 2 of 3" alone still leaves the user watching a silent window.
-        page.click("#sedi")
+        page.click("#refresh")
         page.wait_for_function(
             "document.getElementById('refreshmsg').textContent.includes('Beta Inc')",
             timeout=10_000,
@@ -356,7 +356,7 @@ class TestTheScrapeProgressBar:
         assert "2 of 3" in page.text_content("#refreshmsg")
 
     def test_it_goes_away_once_the_fetch_is_done(self, page, gate):
-        page.click("#sedi")
+        page.click("#refresh")
         page.wait_for_selector("#progress:not(.hidden)", timeout=5_000)
         gate.set()
         page.wait_for_selector("#progress.hidden", state="attached", timeout=10_000)
