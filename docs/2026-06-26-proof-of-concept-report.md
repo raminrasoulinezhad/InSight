@@ -47,8 +47,8 @@ machine, so the PoC ran against **MarketBeat**.
 
 ### Root cause for the SEDI block
 
-The egress IP was a **hosting/VPS IP** (Frantech/BuyVM, `198.98.121.x`), which
-anti-bot systems score as high-risk. Both headless *and* headful automation were
+The egress IP looked like a **hosting/VPS IP**, which anti-bot systems score as
+high-risk. Both headless *and* headful automation were
 challenged regardless of stealth (verified: `navigator.webdriver=false` +
 `playwright-stealth` still got captcha'd).
 
