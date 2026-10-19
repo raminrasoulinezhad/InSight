@@ -67,7 +67,20 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   wall goes up, then hides again once you have solved it. See below.
 - If the wall is up and nobody can solve it, the fetch raises `BotBlocked` and the
   batch falls back to cache — same as the MarketBeat path.
-- Canada-only: non-Canadian targets are filtered out by `is_canadian`.
+- Canada-only: non-Canadian targets are filtered out by `is_canadian`, which
+  goes by the exchange when it is a known one and only falls back to the
+  entry's country for an unknown exchange (nine US and Australian companies on
+  one watchlist carried country "CA" and were searched on every run).
+- **SEDI's "starts with" is literal**, and names are often worded differently:
+  the watchlist's "Metalla Royalty & Streaming" is SEDI's "Metalla Royalty and
+  Streaming Ltd.", "Alimentation-Couche Tard" is "Alimentation Couche-Tard".
+  `issuer_queries` drops brackets and "formerly ..." text, then, only while a
+  search finds nothing, retries with "&"/"and" swapped, the first two words, and
+  the first word (6+ letters). After a retry the picker takes only a row whose
+  name matches (`pick_issuer_row`, strict), never the first stranger listed, and
+  `_same_issuer` treats wording differences as one company so rows keep their
+  ticker. This recovered Metalla, Peyto, Couche-Tard, Cardinal, International
+  Petroleum, Fireweed, Cerro de Pasco and Carolina Rush (Oct 2026).
 - Each fetched report page is saved to `paths.sedi_pages_dir()`. The UI shows a
   **⛏ SEDI report** link on companies that have one, served by `/api/sedi-page`
   with a `<base>` injected so sedi.ca's relative CSS/images resolve.

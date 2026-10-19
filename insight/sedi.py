@@ -218,6 +218,54 @@ def pick_insider_row(rows: list[str], name: str, known_issuers: Iterable[str] = 
     return matches[0] if matches else None
 
 
+def issuer_queries(name: str) -> list[str]:
+    """Search texts to try, in order, for one company.
+
+    SEDI's "starts with" compares the text literally, and the watchlist and
+    SEDI often word a name differently: the watchlist's "Metalla Royalty &
+    Streaming" is SEDI's "Metalla Royalty and Streaming Ltd.", so the first try
+    found nothing. Each later text is only tried when the one before found no
+    issuer: "&" and "and" swapped, then the first two words.
+    """
+    # "(formerly Fireweed Zinc Ltd.)", "(British Columbia)", ", formerly X":
+    # history and qualifiers SEDI's name does not start with.
+    plain = re.sub(r"\s*\([^)]*\)", "", name or "")
+    plain = re.split(r"[\s,-]+formerly\b", plain, maxsplit=1, flags=re.I)[0]
+    base = _search_query(plain) or _search_query(name)
+    tries = [base]
+    if " & " in base:
+        tries.append(base.replace(" & ", " and "))
+    if re.search(r"\band\b", base, re.I):
+        tries.append(re.sub(r"\band\b", "&", base, flags=re.I))
+    words = base.split()
+    if len(words) > 2:
+        tries.append(" ".join(words[:2]))
+    # Last, the first word alone, split at a hyphen too: the watchlist's
+    # "Alimentation-Couche Tard" is SEDI's "Alimentation Couche-Tard". Short
+    # first words ("Gold", "Rio") would list half the register, so not those.
+    first = re.split(r"[\s-]+", base)[0]
+    if len(first) >= 6:
+        tries.append(first)
+    return list(dict.fromkeys(t for t in tries if t))
+
+
+def pick_issuer_row(rows: list[str], name: str, strict: bool) -> int | None:
+    """Which of SEDI's 'Select issuer' rows is the company.
+
+    A row reads "View ID Legal Name". The row whose name is the company's
+    (`same_listing_name`) wins. With the full name as the search, SEDI's list
+    can only hold companies starting with it, so the first row is a safe
+    fallback; after a shortened search ("Metalla Royalty") it is not, and
+    `strict` returns None instead of a stranger.
+    """
+    for i, raw in enumerate(rows):
+        words = " ".join((raw or "").split()).split(" ")
+        body = " ".join(words[2:] if words and words[0].lower() == "view" else words)
+        if same_listing_name(name, body):
+            return i
+    return None if strict or not rows else 0
+
+
 def _nature_text(nature: str) -> str:
     """'50 - Grant of options' -> 'Grant of options'."""
     return re.sub(r"^\s*\d+\s*-\s*", "", nature or "").strip()
@@ -259,13 +307,26 @@ _LABEL_ISSUER = "issuer name"
 _CA_EXCHANGES = {"TSE", "TSX", "TSXV", "CSE", "NEO", "CNSX"}
 
 
+# Exchanges that say a listing is not Canadian. Checked before the entry's
+# country field, which proved unreliable: nine US and Australian companies on
+# one watchlist carried country "CA", so every run searched SEDI for them.
+_NON_CA_EXCHANGES = frozenset(
+    {"NYSE", "NASDAQ", "NYSEAMERICAN", "AMEX", "NYSEARCA", "ARCA", "BATS", "CBOE", "OTC",
+     "ASX", "LSE", "AIM", "XETRA", "FWB", "GETTEX", "BMV", "TASE", "BX"}
+)  # fmt: skip
+
+
 def is_canadian(target: dict) -> bool:
-    """SEDI only lists Canadian issuers. Use the explicit country when present,
-    else infer from the exchange, so US names are skipped (no wasted searches)."""
-    country = (target.get("country") or "").upper()
-    if country:
-        return country == "CA"
-    return (target.get("exchange") or "").upper() in _CA_EXCHANGES
+    """SEDI only lists Canadian issuers. The exchange decides when it is a known
+    one; the entry's country only settles an unknown exchange. A wrongly
+    "Canadian" US listing costs a SEDI search per run, and a loose pick could
+    file an unrelated Canadian issuer that starts with the same words."""
+    exchange = (target.get("exchange") or "").upper()
+    if exchange in _CA_EXCHANGES:
+        return True
+    if exchange in _NON_CA_EXCHANGES:
+        return False
+    return (target.get("country") or "").upper() == "CA"
 
 
 def _flip_name(name: str) -> str:
@@ -513,11 +574,16 @@ def _same_issuer(a: str, b: str) -> bool:
     """Loose issuer-name equality, for deciding whether a passed-in ticker still
     applies. SEDI writes the full legal name ('Athabasca Oil Corporation') where
     the watchlist may hold a shorter one ('Athabasca Oil'), so compare on the
-    normalized search form and accept either being a prefix of the other."""
+    normalized search form and accept either being a prefix of the other.
+
+    Wording differences count as the same name too: the watchlist's "Metalla
+    Royalty & Streaming" is SEDI's "Metalla Royalty and Streaming Ltd.", and
+    treating those as two companies stripped the ticker from 278 of Metalla's
+    366 rows."""
     x, y = _search_query(a).lower(), _search_query(b).lower()
     if not x or not y:
         return False
-    return x.startswith(y) or y.startswith(x)
+    return x.startswith(y) or y.startswith(x) or same_listing_name(a, b)
 
 
 # ---- browser glue (best-effort selectors; confirm live with capture_dir) ------
@@ -878,22 +944,26 @@ class SediScraper:
         issuer = issuer_hint or ticker
         page = self._page
 
-        self._open_search()
-
-        try:
-            self._fill_issuer_search(issuer)
-        except Exception as e:
-            print(f"  SEDI [{exchange}:{ticker}] could not drive the search form: {e}")
-            self._dump(f"itd_form_error_{ticker}")
-            return []
-
-        page.wait_for_timeout(2500)
-        self._clear_wall_or_raise("running ITD search")
-        self._raise_if_not_submitted(ticker)
+        queries = issuer_queries(issuer)
+        for attempt, query in enumerate(queries):
+            self._open_search()
+            try:
+                self._fill_search(_SELECT_TYPE_ISSUER, query)
+            except Exception as e:
+                print(f"  SEDI [{exchange}:{ticker}] could not drive the search form: {e}")
+                self._dump(f"itd_form_error_{ticker}")
+                return []
+            page.wait_for_timeout(2500)
+            self._clear_wall_or_raise("running ITD search")
+            self._raise_if_not_submitted(ticker)
+            if not self._found_nothing() or attempt == len(queries) - 1:
+                break
+            print(f"  SEDI [{exchange}:{ticker}] no issuer starts with {query!r}; retrying")
 
         # An issuer-name search lands on a "Select issuer" picker; click through
-        # to the matching issuer's actual transaction report.
-        self._select_issuer_if_needed(issuer)
+        # to the matching issuer's actual transaction report. After a retry the
+        # list is wider than the name, so only a matching name is taken.
+        self._select_issuer_if_needed(issuer, strict=attempt > 0)
 
         now = datetime.now(UTC).isoformat(timespec="seconds")
         rows = self._extract_rows()  # settles the report DOM before we snapshot it
@@ -991,26 +1061,34 @@ class SediScraper:
                 self._page.wait_for_timeout(1500)
         return []
 
-    def _select_issuer_if_needed(self, issuer: str) -> None:
+    def _found_nothing(self) -> bool:
+        """SEDI's banner for a search that matched no issuer or insider."""
+        with contextlib.suppress(Exception):
+            return "found no results" in self._page.inner_text("body").lower()
+        return False
+
+    def _select_issuer_if_needed(self, issuer: str, strict: bool = False) -> None:
         """SEDI's issuer search returns a picker page with a 'View' link per
-        matching issuer. Click the one matching our name (else the first) to
-        open the transaction report. A no-op if there's no picker."""
+        matching issuer. Open the one `pick_issuer_row` names; a no-op if there
+        is no picker. When nothing qualifies (a strict pick found no matching
+        name) the picker is left alone, and the empty result says so."""
         page = self._page
         views = page.locator("a[href*='SVTItdSelectIssuer']")
         n = views.count()
         if n == 0:
             return  # already on the report (or no matches)
-        target = views.first
-        q = _search_query(issuer).lower()
+        rows = []
         for i in range(n):
-            v = views.nth(i)
+            text = ""
             with contextlib.suppress(Exception):
-                row = v.locator("xpath=ancestor::tr[1]").inner_text()
-                if q and q in row.lower():
-                    target = v
-                    break
+                text = views.nth(i).locator("xpath=ancestor::tr[1]").inner_text()
+            rows.append(text)
+        pick = pick_issuer_row(rows, issuer, strict)
+        if pick is None:
+            print(f"  SEDI: none of {n} issuers listed is {issuer!r}")
+            return
         with contextlib.suppress(Exception):
-            self._click(target)
+            self._click(views.nth(pick))
             page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(2000)
             self._clear_wall_or_raise("opening issuer report")
@@ -1022,10 +1100,6 @@ class SediScraper:
             m = re.search(r"Error:\s*(.+)", body)
             if m:
                 print(f"  SEDI [{exchange}:{ticker}] page error: {m.group(1).strip()[:80]}")
-
-    def _fill_issuer_search(self, issuer: str) -> None:
-        """ITD search by issuer name — one company, grouped by insider."""
-        self._fill_search(_SELECT_TYPE_ISSUER, _search_query(issuer))
 
     def _fill_search(self, select_type: str, value: str) -> None:
         """Drive SEDI's public ITD form over a wide date window, then submit.

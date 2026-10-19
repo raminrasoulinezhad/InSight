@@ -64,10 +64,6 @@ class TestTransactionType:
 
 
 class TestIsCanadian:
-    def test_country_takes_precedence(self):
-        assert sedi.is_canadian({"country": "CA", "exchange": "NASDAQ"}) is True
-        assert sedi.is_canadian({"country": "US", "exchange": "TSE"}) is False
-
     def test_infers_from_exchange_when_no_country(self):
         assert sedi.is_canadian({"exchange": "TSXV"}) is True
         assert sedi.is_canadian({"exchange": "NYSE"}) is False
@@ -502,3 +498,83 @@ class TestAClosedBrowserIsNamed:
         s._page = type("P", (), {"is_closed": lambda self: True})()
         with pytest.raises(sedi.BrowserGone):
             s._open_search()
+
+
+class TestACompanyNamedDifferentlyOnSedi:
+    """SEDI's 'starts with' is literal: the watchlist's "Metalla Royalty &
+    Streaming" is SEDI's "Metalla Royalty and Streaming Ltd.", so the company
+    came back NOT COVERED on every run."""
+
+    def test_and_and_ampersand_are_both_tried_then_the_first_two_words(self):
+        assert sedi.issuer_queries("Metalla Royalty & Streaming Ltd.") == [
+            "Metalla Royalty & Streaming",
+            "Metalla Royalty and Streaming",
+            "Metalla Royalty",
+            "Metalla",
+        ]
+        assert sedi.issuer_queries("Americas Gold and Silver Corporation") == [
+            "Americas Gold and Silver",
+            "Americas Gold & Silver",
+            "Americas Gold",
+            "Americas",
+        ]
+
+    def test_history_and_qualifiers_are_not_searched_for(self):
+        assert sedi.issuer_queries("Fireweed Metals Corp. (formerly Fireweed Zinc Ltd.)")[0] == (
+            "Fireweed Metals"
+        )
+        assert sedi.issuer_queries("International Petroleum Corp. (British Columbia)")[0] == (
+            "International Petroleum"
+        )
+        assert sedi.issuer_queries("Emerita Resources Corp. formerly Emerita Gold Corp.")[0] == (
+            "Emerita Resources"
+        )
+
+    def test_a_hyphen_in_another_place_falls_back_to_the_first_word(self):
+        assert sedi.issuer_queries("Alimentation-Couche Tard, Inc.")[-1] == "Alimentation"
+        assert sedi.same_listing_name(
+            "Alimentation-Couche Tard, Inc.", "Alimentation Couche-Tard Inc."
+        )
+
+    def test_a_short_first_word_is_never_searched_alone(self):
+        assert "Gold" not in sedi.issuer_queries("Gold Royalty Corp. Holdings Ltd")
+
+    def test_a_short_name_is_tried_once(self):
+        assert sedi.issuer_queries("Fortis Inc.") == ["Fortis"]
+
+    def test_the_row_with_the_same_name_is_picked(self):
+        rows = [
+            "View 00001234 Metallic Minerals Corp.",
+            "View 00005157 Metalla Royalty and Streaming Ltd.",
+        ]
+        assert sedi.pick_issuer_row(rows, "Metalla Royalty & Streaming Ltd.", strict=True) == 1
+
+    def test_after_a_shortened_search_a_stranger_is_never_picked(self):
+        rows = ["View 00001234 Metalla Holdings Inc."]
+        assert sedi.pick_issuer_row(rows, "Metalla Royalty & Streaming Ltd.", strict=True) is None
+
+    def test_with_the_full_name_the_first_row_is_still_a_safe_fallback(self):
+        rows = ["View 00000001 Athabasca Oil Corporation (formerly X)"]
+        assert sedi.pick_issuer_row(rows, "Athabasca Oil", strict=False) == 0
+
+    def test_rows_under_sedis_spelling_keep_the_ticker(self):
+        # Passed in as "&", reported by SEDI as "and": still the same company.
+        assert sedi._same_issuer(
+            "Metalla Royalty & Streaming Ltd.", "Metalla Royalty and Streaming Ltd."
+        )
+        assert not sedi._same_issuer("Metalla Royalty & Streaming Ltd.", "Metallic Minerals Corp.")
+
+
+class TestWhichCompaniesSediIsAskedAbout:
+    def test_a_us_board_is_not_canadian_whatever_the_country_says(self):
+        # Nine US and Australian companies on one watchlist carried country
+        # "CA", so every run searched SEDI for them.
+        assert sedi.is_canadian({"exchange": "NYSE", "country": "CA"}) is False
+        assert sedi.is_canadian({"exchange": "ASX", "country": "CA"}) is False
+
+    def test_a_canadian_board_is_canadian(self):
+        assert sedi.is_canadian({"exchange": "TSXV", "country": "US"}) is True
+
+    def test_the_country_settles_an_unknown_board(self):
+        assert sedi.is_canadian({"exchange": "", "country": "CA"}) is True
+        assert sedi.is_canadian({"exchange": "XYZ"}) is False
