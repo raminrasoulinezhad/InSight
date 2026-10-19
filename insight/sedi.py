@@ -21,7 +21,7 @@ back to cache — exactly like the MarketBeat path.
 Two ways in, sharing one form and one parser:
   * `fetch(exchange, ticker)` — search by issuer name (SELECT_TYPE=8). One
     company's report, grouped by insider. This is what a normal scrape uses.
-  * `fetch_insider(family_name)` — search by insider family name
+  * `fetch_insider(name)` — search by insider (person or company) name
     (SELECT_TYPE=5). One person's filings across EVERY issuer, which is the only
     way to discover a company you are not already tracking: the rest of the app
     is company-first, so a person trading off-watchlist is otherwise invisible.
@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -106,6 +106,116 @@ def _search_query(name: str) -> str:
         prev = q
         q = _SUFFIX_RE.sub("", q).strip()
     return q or (name or "").strip()
+
+
+# ---- turning a display name into a SEDI insider search ------------------------
+
+# Words that mark an insider as an organisation rather than a person. SEDI
+# searches the two separately ("Insider company name" vs "Insider family name"),
+# and a person search for "Sprott Mining Inc." finds nothing.
+_ORG_WORDS = frozenset(
+    {
+        "inc", "incorporated", "ltd", "limited", "corp", "corporation", "co", "company",
+        "llc", "lp", "l.p", "ulc", "plc", "s.a.r.l", "sarl", "s.a", "sa", "gmbh", "ag",
+        "nv", "trust", "fund", "holdings", "holding", "partnership", "partners",
+        "capital", "ventures", "group", "investments", "investment", "management",
+        "foundation",
+    }
+)  # fmt: skip
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+# Given-name forms that refer to the same person. SEDI files the legal name;
+# the app often knows the everyday one (MarketBeat's "Mike" for SEDI's "Michael").
+_NICKNAMES = {
+    "mike": "michael", "bob": "robert", "rob": "robert", "bill": "william",
+    "will": "william", "jim": "james", "dave": "david", "tom": "thomas",
+    "dan": "daniel", "joe": "joseph", "tony": "anthony", "steve": "stephen",
+    "chris": "christopher", "rick": "richard", "dick": "richard", "ted": "edward",
+    "ed": "edward", "ken": "kenneth", "greg": "gregory", "jeff": "jeffrey",
+    "matt": "matthew", "pat": "patrick", "sam": "samuel", "andy": "andrew",
+    "ben": "benjamin", "nick": "nicholas", "pete": "peter", "ron": "ronald",
+    "don": "donald", "doug": "douglas", "fred": "frederick", "larry": "lawrence",
+}  # fmt: skip
+
+
+def _letters(s: str) -> str:
+    return re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def is_organisation(name: str) -> bool:
+    """True if an insider's name is a company, trust or fund, not a person."""
+    tokens = [t.strip(".") for t in re.split(r"[\s,]+", (name or "").lower()) if t]
+    return any(t in _ORG_WORDS or f"{t}." in _ORG_WORDS for t in tokens)
+
+
+def person_parts(name: str) -> tuple[str, str]:
+    """(family, given) from "Eric Sprott", "Sprott, Eric" or a bare "Sprott".
+
+    The app shows names given-name first; SEDI files them family-name first and
+    searches on the family name alone, so the full name finds nobody.
+    """
+    name = (name or "").strip()
+    if "," in name:
+        family, rest = name.split(",", 1)
+        given = rest.split()[0] if rest.split() else ""
+        return family.strip(), given.strip(".")
+    words = [w for w in name.split() if _letters(w) not in _NAME_SUFFIXES]
+    if not words:
+        return "", ""
+    return words[-1].strip("."), (words[0].strip(".") if len(words) > 1 else "")
+
+
+def insider_query(name: str) -> tuple[str, str]:
+    """(SELECT_TYPE, search text) for an insider's display name."""
+    if is_organisation(name):
+        return _SELECT_TYPE_INSIDER_COMPANY, _search_query(name)
+    return _SELECT_TYPE_INSIDER, person_parts(name)[0]
+
+
+def _same_given_name(a: str, b: str) -> bool:
+    x, y = _letters(a), _letters(b)
+    if not x or not y:
+        return False
+    return x == y or _NICKNAMES.get(x, x) == _NICKNAMES.get(y, y)
+
+
+def pick_insider_row(rows: list[str], name: str, known_issuers: Iterable[str] = ()) -> int | None:
+    """Which of SEDI's 'Select insider' rows is the person (or company) we mean.
+
+    A row reads "View ID Family, Given Middle City Issuer...". A "starts with"
+    search for Rose lists 29 people, Rosen and Rosenthal among them, so nothing
+    here ever falls back to "the first row": a wrong pick files a stranger's
+    trades under someone the user follows. No confident match returns None.
+
+    Several exact matches (two people with one name) are told apart by the
+    companies the user has already seen this insider trade, which a row names.
+    """
+    org = is_organisation(name)
+    family, given = ("", "") if org else person_parts(name)
+    target = _letters(_search_query(name)) if org else ""
+    matches: list[int] = []
+    for i, raw in enumerate(rows):
+        words = " ".join((raw or "").split()).split(" ")
+        if words and words[0].lower() == "view":
+            words = words[2:]  # the "View" link and SEDI's insider ID
+        body = " ".join(words)
+        if org:
+            ok = bool(target) and _letters(body).startswith(target)
+        else:
+            row_family, _, rest = body.partition(",")
+            row_given = rest.split()[0] if rest.split() else ""
+            ok = _letters(row_family) == _letters(family) and (
+                not given or _same_given_name(given, row_given)
+            )
+        if ok:
+            matches.append(i)
+    if len(matches) > 1:
+        known = [_letters(_search_query(k)) for k in known_issuers if k]
+        for i in matches:
+            row = _letters(rows[i])
+            if any(k and k in row for k in known):
+                return i
+    return matches[0] if matches else None
 
 
 def _nature_text(nature: str) -> str:
@@ -310,7 +420,20 @@ def resolve_tickers(
             candidates = resolver(name)
         except Exception:
             candidates = []
-        pick = next((c for c in candidates if (c.get("country") or "").upper() == "CA"), None)
+        # The search is fuzzy and ranks loosely: "Tourmaline Oil Corp." came back
+        # Athabasca Oil first, and "West Red Lake Gold Mines" a George Weston
+        # preferred share. Taking the first Canadian hit filed trades under the
+        # wrong company, so a listing is taken only when its name is the name
+        # SEDI filed. An unmatched name stays unresolved, which says so.
+        pick = next(
+            (
+                c
+                for c in candidates
+                if (c.get("country") or "").upper() == "CA"
+                and same_listing_name(name, str(c.get("legal_name") or c.get("name") or ""))
+            ),
+            None,
+        )
         if pick and pick.get("ticker") and pick.get("exchange"):
             resolved[name] = (str(pick["exchange"]).upper(), str(pick["ticker"]).upper())
         else:
@@ -321,6 +444,69 @@ def resolve_tickers(
             continue
         rec.exchange, rec.ticker = resolved[rec.issuer_name]
     return records, unresolved
+
+
+# Words that differ between how SEDI and a market data site write one company.
+_LISTING_NOISE = frozenset(
+    {
+        "inc", "incorporated", "corp", "corporation", "ltd", "limited", "co", "company",
+        "plc", "the", "sa", "nv", "lp", "ulc", "llc", "registered", "shs", "shares",
+        "common", "class", "a", "new",
+    }
+)  # fmt: skip
+
+
+def _listing_words(name: str) -> list[str]:
+    name = re.sub(r"\([^)]*\)", " ", (name or "").lower())  # "(formerly Genius ...)"
+    name = name.replace("&", " and ")
+    return [w for w in re.sub(r"[^a-z0-9 ]", " ", name).split() if w not in _LISTING_NOISE]
+
+
+def same_listing_name(sedi_name: str, listing_name: str) -> bool:
+    """True if a listing's name is the company SEDI names.
+
+    Equal once legal suffixes, punctuation and "&"/"and" are set aside, or one
+    a whole-word prefix of the other of at least two words ("International
+    Petroleum" for "International Petroleum Corporation (British Columbia)").
+    Deliberately strict: an unmatched company is shown as unmatched, while a
+    loose match files its trades under a stranger.
+    """
+    a, b = _listing_words(sedi_name), _listing_words(listing_name)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    return len(short) >= 2 and long_[: len(short)] == short
+
+
+_CANADIAN_EXCHANGES = frozenset({"TSE", "TSX", "TSXV", "CSE", "NEO", "CNSX"})
+
+
+def align_to_watchlist(
+    records: list[InsiderTransaction], watchlist: Iterable[dict[str, Any]]
+) -> list[InsiderTransaction]:
+    """Give a found company the exchange code it has on the watchlist.
+
+    The listing lookup and the watchlist can disagree on where one Canadian
+    company trades (Blackrock Silver: TSE:BRC from the lookup, TSXV:BRC on the
+    list, after a move between boards). Keyed apart, the same trades showed up
+    under a second company and the watchlist one was suggested as "not on your
+    list". Same ticker, a Canadian board on both sides and the same name is the
+    same company; the watchlist's code wins, since that is what the app shows.
+    """
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for c in watchlist:
+        if str(c.get("exchange") or "").upper() in _CANADIAN_EXCHANGES:
+            by_ticker.setdefault(str(c.get("ticker") or "").upper(), []).append(c)
+    for r in records:
+        if not r.ticker or r.exchange.upper() not in _CANADIAN_EXCHANGES:
+            continue
+        for c in by_ticker.get(r.ticker.upper(), []):
+            if same_listing_name(r.issuer_name, str(c.get("name") or "")):
+                r.exchange = str(c["exchange"]).upper()
+                break
+    return records
 
 
 def _same_issuer(a: str, b: str) -> bool:
@@ -345,6 +531,7 @@ _ITD_URL = "https://www.sedi.ca/sedi/SVTItdController?locale=en_CA"
 # not list. (The form also offers "4 = Insider company name", unused here.)
 _SELECT_TYPE_ISSUER = "8"
 _SELECT_TYPE_INSIDER = "5"
+_SELECT_TYPE_INSIDER_COMPANY = "4"
 
 # SEDI sits behind Radware Bot Manager (formerly ShieldSquare / PerfDrive). When
 # it decides the browser is a bot it serves a hard "403 Forbidden" block page
@@ -718,29 +905,37 @@ class SediScraper:
         return records
 
     # ------------------------------------------------------------------
-    def fetch_insider(self, family_name: str) -> list[InsiderTransaction]:
-        """Every filing by one person, across every issuer — the company-first
+    def fetch_insider(
+        self, name: str, known_issuers: Iterable[str] = ()
+    ) -> list[InsiderTransaction]:
+        """Every filing by one insider, across every issuer — the company-first
         model turned around.
 
         This is the search that finds companies you are not already tracking. The
         rest of the app can only surface an insider because a company they traded
         in was scraped first, so a person trading somewhere off your watchlist is
-        invisible — there is no signal to act on. SEDI's family-name search is the
-        one place that signal exists.
+        invisible — there is no signal to act on. SEDI's insider search is the one
+        place that signal exists.
+
+        `name` is the name as the app shows it ("Eric Sprott", "Nemesia
+        S.a.r.l."); `insider_query` turns it into SEDI's family-name or
+        company-name search, and `pick_insider_row` picks that insider out of the
+        matches. Raises LookupError when SEDI lists candidates but none is them.
 
         Records come back with `issuer_name` set but **no exchange/ticker**: SEDI
         reports legal names, not tickers. Run `resolve_tickers` over the result to
         fill those in before writing a snapshot.
         """
         page = self._page
-        slug = re.sub(r"[^A-Za-z0-9]+", "_", family_name).strip("_")[:40] or "insider"
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")[:40] or "insider"
+        select_type, query = insider_query(name)
 
         self._open_search()
 
         try:
-            self._fill_insider_search(family_name)
+            self._fill_search(select_type, query)
         except Exception as e:
-            print(f"  SEDI [insider:{family_name}] could not drive the search form: {e}")
+            print(f"  SEDI [insider:{name}] could not drive the search form: {e}")
             self._dump(f"itd_insider_form_error_{slug}")
             return []
 
@@ -748,9 +943,7 @@ class SediScraper:
         self._clear_wall_or_raise("running ITD insider search")
         self._raise_if_not_submitted(f"insider_{slug}")
 
-        # A family-name search can match several people (and SEDI lists one row
-        # per insider); pick the one whose name we asked for.
-        self._select_insider_if_needed(family_name)
+        self._select_insider_if_needed(name, known_issuers)
 
         now = datetime.now(UTC).isoformat(timespec="seconds")
         rows = self._extract_rows()
@@ -759,36 +952,32 @@ class SediScraper:
         # rows belonging to other companies.
         records = _parse_report_rows(rows, "", "", "", _ITD_URL, now)
         if not records:
-            self._log_page_error("insider", family_name)
-        # Always dump an insider search: the results grid for this search type is
-        # not yet confirmed against a live page, so the HTML is the evidence
-        # needed to fix the parser if the shape differs.
-        self._dump(f"itd_insider_results_{slug}")
+            self._log_page_error("insider", name)
+            self._dump(f"itd_insider_results_{slug}")
         return records
 
-    def _select_insider_if_needed(self, family_name: str) -> None:
-        """A family-name search lands on a 'Select insider' picker when more than
-        one person matches. Click the best match (else the first); a no-op when
-        SEDI went straight to the report."""
+    def _select_insider_if_needed(self, name: str, known_issuers: Iterable[str] = ()) -> None:
+        """An insider search lands on a 'Select insider' picker when more than
+        one insider matches. Open the one `pick_insider_row` names; a no-op when
+        SEDI went straight to the report. Never guesses (see pick_insider_row)."""
         page = self._page
         views = page.locator("a[href*='SVTItdSelectInsider']")
         n = views.count()
         if n == 0:
             return
-        target = views.first
-        q = (family_name or "").strip().lower()
+        rows = []
         for i in range(n):
-            v = views.nth(i)
+            text = ""
             with contextlib.suppress(Exception):
-                row = v.locator("xpath=ancestor::tr[1]").inner_text()
-                if q and q in row.lower():
-                    target = v
-                    break
-        with contextlib.suppress(Exception):
-            self._click(target)
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-            page.wait_for_timeout(2000)
-            self._clear_wall_or_raise("opening insider report")
+                text = views.nth(i).locator("xpath=ancestor::tr[1]").inner_text()
+            rows.append(text)
+        pick = pick_insider_row(rows, name, known_issuers)
+        if pick is None:
+            raise LookupError(f"SEDI lists {n} insiders for that search, but none is {name}")
+        self._click(views.nth(pick))
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.wait_for_timeout(2000)
+        self._clear_wall_or_raise("opening insider report")
 
     def _extract_rows(self) -> list[list[str]]:
         """Read the report's rows, tolerating a still-settling navigation (the
@@ -837,12 +1026,6 @@ class SediScraper:
     def _fill_issuer_search(self, issuer: str) -> None:
         """ITD search by issuer name — one company, grouped by insider."""
         self._fill_search(_SELECT_TYPE_ISSUER, _search_query(issuer))
-
-    def _fill_insider_search(self, family_name: str) -> None:
-        """ITD search by insider family name — one person, across every issuer
-        they have filed against. This is the only cross-issuer person search in
-        Canadian public data; MarketBeat has no equivalent."""
-        self._fill_search(_SELECT_TYPE_INSIDER, family_name.strip())
 
     def _fill_search(self, select_type: str, value: str) -> None:
         """Drive SEDI's public ITD form over a wide date window, then submit.

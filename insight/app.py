@@ -95,55 +95,47 @@ _insider_result: dict[str, Any] = {"name": "", "companies": [], "unresolved": []
 
 
 def _do_insider_search(name: str) -> None:
-    """Ask SEDI which companies one person has filed against.
+    """Ask SEDI which companies one insider has filed against (⛏ Find companies).
 
-    Reports only — deliberately writes no snapshot. The records are a
-    person-shaped slice of a dataset the rest of the app treats as
-    company-shaped, so folding them into the store would make each company look
-    like it has exactly one insider. The point is to tell the user what to add.
+    Their trades are stored, in every company, the same way a Fetch all stores
+    them for followed insiders: the Insiders tab is not gated by the watchlist,
+    so it shows the person's whole activity, while the Companies tab still shows
+    only watchlist companies. The panel lists what was found, with + Add.
     """
     try:
+        from . import finds
         from .issuers import in_watchlist, load_watchlist
-        from .sedi import SediScraper, resolve_tickers
+        from .scrape import write_outputs
+        from .sedi import SediScraper
 
         with _refresh_lock:
             _refresh["message"] = (
                 f"Opening SEDI for “{name}” — the browser pops up if a CAPTCHA appears…"
             )
-
+        saved = finds.load(paths.insider_finds_file())
         with SediScraper(
             headless=False,
             profile_dir=paths.sedi_profile_dir(),
             capture_dir=paths.app_dir() / "sedi-debug",
         ) as sedi:
-            records = sedi.fetch_insider(name)
+            kept = _search_insider(sedi, name, saved)
+        if kept:
+            by_company: dict[str, list[Any]] = {}
+            for r in kept:
+                by_company.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
+            write_outputs(by_company, DATA_DIR, date.today().isoformat(), source="sedi_people")
 
-        unresolved: list[str] = []
-        if records:
-            with _refresh_lock:
-                _refresh["message"] = "Matching issuer names to tickers…"
-            records, unresolved = resolve_tickers(records)
-
+        result = finds.load(paths.insider_finds_file()).get(name) or finds.summarize([])
         cfg = load_watchlist(CONFIG)
-        grouped: dict[str, dict[str, Any]] = {}
-        for r in records:
-            issuer = r.issuer_name or "(unnamed issuer)"
-            row = grouped.get(issuer)
-            if row is None:
-                row = grouped[issuer] = {
-                    "issuer_name": issuer,
-                    "exchange": r.exchange,
-                    "ticker": r.ticker,
-                    "txn_count": 0,
-                    "latest_date": "",
-                    "on_watchlist": bool(r.ticker) and in_watchlist(cfg, r.exchange, r.ticker),
-                    "resolved": bool(r.ticker),
-                }
-            row["txn_count"] += 1
-            row["latest_date"] = max(row["latest_date"], r.transaction_date or "")
-
-        companies = sorted(grouped.values(), key=lambda c: -int(c["txn_count"]))
-        _insider_result.update(name=name, companies=companies, unresolved=unresolved)
+        companies = [
+            {**c, "on_watchlist": bool(c.get("resolved"))
+             and in_watchlist(cfg, c.get("exchange", ""), c.get("ticker", ""))}
+            for c in result.get("companies") or []
+        ]  # fmt: skip
+        _insider_result.update(
+            name=name, companies=companies, unresolved=result.get("unresolved") or []
+        )
+        filings = sum(int(c["txn_count"]) for c in companies)
         found = sum(1 for c in companies if not c["on_watchlist"] and c["resolved"])
         with _refresh_lock:
             _refresh.update(
@@ -151,9 +143,9 @@ def _do_insider_search(name: str) -> None:
                 finished=True,
                 ok=True,
                 message=(
-                    f"{name}: {len(records)} filings across {len(companies)} company(ies)"
+                    f"{name}: {filings} filings across {len(companies)} company(ies)"
                     + (f" — {found} not on your watchlist." if found else ".")
-                    if records
+                    if companies
                     else f"No SEDI filings found for “{name}”."
                 ),
                 done=_refresh["total"],
@@ -356,6 +348,73 @@ def _sedi_phase(
     return results, canadian
 
 
+def _search_insider(sedi: Any, name: str, saved: dict[str, Any]) -> list[Any]:
+    """One followed insider: search SEDI, match issuers to tickers, save what was
+    found, and return the records that have a ticker (the store is keyed on
+    one). The first search for someone is folded into their alarm's baseline:
+    it brings in trades in companies the alarm never watched, and the recent
+    ones are not news just because the app had not seen them."""
+    from . import finds, notify
+    from .issuers import load_watchlist
+    from .sedi import align_to_watchlist, resolve_tickers
+
+    known = [c.get("issuer_name", "") for c in (saved.get(name) or {}).get("companies") or []]
+    records = sedi.fetch_insider(name, known)
+    records, unresolved = resolve_tickers(records) if records else (records, [])
+    align_to_watchlist(records, load_watchlist(CONFIG).get("companies") or [])
+    finds.save(paths.insider_finds_file(), name, finds.summarize(records, unresolved))
+    kept = [r for r in records if r.ticker]
+    if name not in saved:
+        notify.absorb_into_baselines(paths.notify_file(), [r.to_dict() for r in kept])
+    return kept
+
+
+def _people_phase(outcome: dict[str, Any], *, max_age_hours: float) -> list[str]:
+    """Search SEDI for every followed insider (everyone with a 🔔 alarm) and
+    store their trades in *every* company, watchlist or not.
+
+    That is what makes the Insiders tab show a person's whole activity, and what
+    feeds the suggestions of companies to add. Returns the followed names.
+    """
+    from . import finds, notify
+    from .marketbeat import BotBlocked, BrowserGone
+    from .scrape import write_outputs
+    from .sedi import SediScraper
+
+    names = notify.followed_insiders(paths.notify_file())
+    saved = finds.load(paths.insider_finds_file())
+    due = [n for n in names if finds.age_hours(saved.get(n, {})) >= max_age_hours]
+    outcome.update(fetched=0, failed=0, cached=len(names) - len(due), untouched=0, stopped="")
+    if not due:
+        return names
+    results: dict[str, list[Any]] = {}
+    with SediScraper(
+        headless=False,
+        profile_dir=paths.sedi_profile_dir(),
+        capture_dir=paths.app_dir() / "sedi-debug",
+    ) as sedi:
+        for i, name in enumerate(due):
+            _progress(i, len(due), name)
+            try:
+                for r in _search_insider(sedi, name, saved):
+                    results.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
+                outcome["fetched"] += 1
+                print(f"  [insider:{name}] searched")
+            except (BotBlocked, BrowserGone) as e:
+                outcome["failed"] += 1
+                outcome["untouched"] = len(due) - i - 1
+                outcome["stopped"] = str(e)
+                print(f"  [insider:{name}] BLOCKED: {e}")
+                break
+            except Exception as e:  # one person failing never costs the others
+                outcome["failed"] += 1
+                print(f"  [insider:{name}] ERROR: {type(e).__name__}: {e}")
+    _progress(len(due), len(due), "")
+    if results:
+        write_outputs(results, DATA_DIR, date.today().isoformat(), source="sedi_people")
+    return names
+
+
 def _do_refresh(discover: bool = False, source: str = "marketbeat"):
     """Re-scrape and write a new dated snapshot.
 
@@ -382,8 +441,10 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
         if source == "all":
             mb_out: dict[str, Any] = {}
             sedi_out: dict[str, Any] = {}
+            people_out: dict[str, Any] = {}
             mb_targets: list[dict[str, Any]] = []
             sedi_targets: list[dict[str, Any]] = []
+            people: list[str] = []
             mb_age = 12.0 if discover else _FRESH_HOURS  # the universe is ~215 deep
             _set_phase("MarketBeat: ", "Fetching from MarketBeat…")
             try:
@@ -404,9 +465,20 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             except Exception as e:
                 sedi_out["error"] = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
+            _set_phase("Followed insiders: ", "Searching SEDI for the insiders you follow…")
+            try:
+                people = _people_phase(people_out, max_age_hours=_FRESH_HOURS)
+            except Exception as e:
+                people_out["error"] = f"{type(e).__name__}: {e}"
+                traceback.print_exc()
             ok, warn, message = _fetch_all_summary(
-                [("MarketBeat", mb_out, len(mb_targets)), ("SEDI", sedi_out, len(sedi_targets))]
+                [
+                    ("MarketBeat", mb_out, len(mb_targets)),
+                    ("SEDI", sedi_out, len(sedi_targets)),
+                    ("Followed insiders", people_out, len(people)),
+                ]
             )
+            message += _suggestion_note()
             _fire_alarms()
             with _refresh_lock:
                 _refresh.update(
@@ -451,6 +523,28 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                 message=f"Refresh failed: {type(e).__name__}: {e}",
             )
         traceback.print_exc()
+
+
+def _suggestions() -> list[dict[str, Any]]:
+    from . import finds
+    from .issuers import in_watchlist, load_watchlist
+
+    cfg = load_watchlist(CONFIG)
+    return finds.suggestions(
+        finds.load(paths.insider_finds_file()), lambda e, t: in_watchlist(cfg, e, t)
+    )
+
+
+def _suggestion_note() -> str:
+    """' 12 companies your followed insiders trade are not on your list.'"""
+    try:
+        n = len(_suggestions())
+    except Exception:
+        return ""
+    if not n:
+        return ""
+    noun = "company" if n == 1 else "companies"
+    return f" {n} {noun} your followed insiders trade are not on your list (Insiders tab)."
 
 
 def _fetch_all_summary(
@@ -647,6 +741,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"query": q, "candidates": search_issuers(q)})
             except Exception as e:
                 self._send_json(502, {"error": f"resolver failed: {e}"})
+        elif path == "/api/insider-finds":
+            # Companies the followed insiders trade that are not on the
+            # watchlist, worked out now so a fresh + Add is reflected at once.
+            try:
+                from . import finds
+
+                self._send_json(
+                    200,
+                    {
+                        "suggestions": _suggestions(),
+                        "unmatched": finds.unmatched(finds.load(paths.insider_finds_file())),
+                    },
+                )
+            except Exception as e:
+                self._send_json(500, {"suggestions": [], "unmatched": [], "error": str(e)})
         elif path == "/api/insider-search":
             # The result of the last search. Served separately from the job
             # status so a reload can still see it after the job ended.

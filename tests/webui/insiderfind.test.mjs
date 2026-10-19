@@ -84,7 +84,7 @@ test("it says adding does not fetch the history", () => {
   // Adding only touches the watchlist; without a refresh the new company is an
   // empty card, which looks broken if it was not explained.
   renderInsiderFind({ name: "Sprott", companies: [company()] });
-  assert.match(body(), /Refresh data/);
+  assert.match(body(), /Fetch all/);
 });
 
 test("a hostile issuer name cannot inject markup", () => {

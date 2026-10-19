@@ -103,6 +103,7 @@ def client(tmp_path: Path, monkeypatch) -> Iterator[Client]:
     monkeypatch.setattr(paths, "notify_file", lambda: tmp_path / "notify.json")
     monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
     monkeypatch.setattr(paths, "interviews_file", lambda: tmp_path / "interviews.json")
+    monkeypatch.setattr(paths, "insider_finds_file", lambda: tmp_path / "insider_finds.json")
 
     from insight import aggregate
 
@@ -388,6 +389,7 @@ class TestSediRefreshWiring:
         monkeypatch.setattr(app, "DATA_DIR", tmp_path / "data")
         monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
         monkeypatch.setattr(paths, "interviews_file", lambda: tmp_path / "interviews.json")
+        monkeypatch.setattr(paths, "insider_finds_file", lambda: tmp_path / "insider_finds.json")
         monkeypatch.setattr(paths, "sedi_profile_dir", lambda: tmp_path / "sedi-profile")
         monkeypatch.setattr(paths, "cache_dir", lambda: tmp_path / "cache")
         monkeypatch.setattr(paths, "app_dir", lambda: tmp_path)
@@ -680,28 +682,39 @@ class TestOneFetchButtonForBothSources:
         monkeypatch.setattr(marketbeat, "scrape_many", fake_scrape_many)
         self.sedi_stops = False
 
+        def fake_people(outcome, *, max_age_hours):
+            calls.append({"source": "people", "max_age_hours": max_age_hours})
+            outcome.update(fetched=2, failed=0, cached=1, untouched=0, stopped="")
+            return ["Eric Sprott", "Frank Giustra", "Ross J. Beaty"]
+
+        monkeypatch.setattr(app, "_people_phase", fake_people)
+        monkeypatch.setattr(app, "_suggestion_note", lambda: " 4 companies to consider.")
+
         def go(**kw):
             app._do_refresh(source="all", **kw)
             return calls, dict(app._refresh)
 
         return go
 
-    def test_marketbeat_first_then_sedi_for_the_canadian_ones(self, run):
+    def test_marketbeat_then_sedi_then_the_followed_insiders(self, run):
         calls, _state = run()
-        assert [c["source"] for c in calls] == ["marketbeat", "sedi"]
+        assert [c["source"] for c in calls] == ["marketbeat", "sedi", "people"]
         assert calls[0]["tickers"] == ["ABC", "AAPL"]
         assert calls[1]["tickers"] == ["ABC"], "SEDI is Canada-only"
 
     def test_recent_fetches_are_reused_not_repeated(self, run):
         calls, _state = run()
         for c in calls:
-            assert c["force"] is False
+            assert c.get("force", False) is False
             assert c["max_age_hours"] == app._FRESH_HOURS
 
     def test_a_clean_run_reports_both_sources(self, run):
         _calls, state = run()
         assert state["ok"] is True and state["warn"] is False
-        assert state["message"] == "Done. MarketBeat: 2 fetched; SEDI: 1 fetched."
+        assert state["message"] == (
+            "Done. MarketBeat: 2 fetched; SEDI: 1 fetched; "
+            "Followed insiders: 2 fetched, 1 already up to date. 4 companies to consider."
+        )
 
     def test_a_sedi_stop_keeps_the_marketbeat_part_and_says_so(self, run):
         self.sedi_stops = True

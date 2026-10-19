@@ -78,8 +78,8 @@ all** button or an explicit `--source sedi`, never the daily timer.
 #### One button for both sources
 
 **↻ Fetch all** (`POST /api/refresh?source=all`) runs one job: MarketBeat for the
-watchlist (plus the TSE universe when "Scan all TSE" is ticked), then SEDI for
-the Canadian companies. Both, because neither is complete: MarketBeat misses most
+watchlist, SEDI for the Canadian companies, then a SEDI person search for every
+followed insider (see below). Both company sources, because neither is complete: MarketBeat misses most
 TSX-V names, and SEDI's report for a large issuer can miss officers MarketBeat
 lists (CNQ: 15 insiders in SEDI's data, several more on MarketBeat). MarketBeat
 goes first because it is quick and never needs a human, so a SEDI failure loses
@@ -97,6 +97,22 @@ Nothing is fetched twice:
 
 The run ends with one clause per source ("MarketBeat: 30 fetched; SEDI stopped
 after 1 of 107: …"); a message reporting a failure stays on screen.
+
+#### Followed insiders
+
+A followed insider is anyone with a 🔔 person alarm (`notify.followed_insiders`).
+The third phase (`app._people_phase`) runs `fetch_insider` for each, resolves
+tickers, aligns them to the watchlist, and stores the trades in a
+`insider_sedi_people_<date>.json` snapshot: every company they touch, watchlist
+or not. Per insider, `finds.summarize` saves what was found to
+`insider_finds.json`; `finds.suggestions` turns that into the Insiders tab's
+"not on your list" box (`GET /api/insider-finds`), most recently active first,
+naming who trades each company. Companies that could not be matched to a listing
+are listed by name under it.
+
+The first search for someone brings in trades the alarm never watched, so
+`notify.absorb_into_baselines` marks them seen: they are new to the app, not
+news. Measured on 9 followed insiders: ~90 s, 103 companies, 42 to suggest.
 
 #### Keeping the window out of the way
 
@@ -174,18 +190,30 @@ Four things worth knowing:
   ("Athabasca Oil Corporation" vs. a watchlist's "Athabasca Oil").
 - **`resolve_tickers` fills them in afterwards**, via the same resolver the "Add
   a company by name" box uses, one lookup per distinct name. Canadian listings
-  only — a same-named US issuer is a different company. Names it can't match are
-  **reported, not dropped**: those are exactly the obscure venture companies this
-  feature exists to surface.
-- **It deliberately writes no snapshot.** The records are a person-shaped slice,
-  and folding them into a store the app treats as company-shaped would make each
-  company look like it has exactly one insider. This run tells you what to add;
-  the normal scrape then collects it properly.
+  only — a same-named US issuer is a different company — and only when the
+  listing's name matches (`same_listing_name`): the search ranks loosely, and the
+  first Canadian hit for "Tourmaline Oil Corp." was Athabasca Oil. Names it can't
+  match are **reported, not dropped**: often renamed companies (SEDI keeps the
+  filing-time name), or the obscure venture companies this feature exists to
+  surface.
+- **Its records are stored**, in a `insider_sedi_people_<date>.json` snapshot.
+  This was once avoided because a person-shaped slice makes a company look like
+  it has one insider. That only matters for a company on the Companies tab, which
+  is gated to the watchlist, and a watchlist company is fetched in full anyway.
+  For the rest, the slice is exactly what the Insiders tab should show. A
+  just-added company shows only the followed insider's trades until the next
+  Fetch all fills it in.
+- **Names are turned into the right search.** The app shows "Eric Sprott"; SEDI
+  searches family names ("Sprott") and files "Sprott, Eric", so the full name
+  found nobody (⛏ Find companies never worked before Oct 2026). `insider_query`
+  picks family-name search for people and company-name search (`SELECT_TYPE=4`)
+  for organisations ("Nemesia S.a.r.l."). `pick_insider_row` then requires the
+  family *and* given name to match (nicknames allowed: Mike for Michael), breaks
+  ties with companies already seen, and never falls back to the first row: a
+  "Rose" search lists 29 people.
 
-The results grid for a person search has **not yet been confirmed against a live
-page** (the parser is built from the issuer-search shape plus the captured form),
-so `fetch_insider` always dumps its HTML — that dump is the evidence needed if
-the shape differs.
+Confirmed against live pages in Oct 2026 (Eric Sprott: 477 trades across 69
+companies in 11 s).
 
 **In the app**, the same search sits behind **⛏ Find companies** on any
 individual's card in the Insiders tab, and the results dialog puts **+ Add** on

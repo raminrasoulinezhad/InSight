@@ -89,6 +89,13 @@ def notes_file() -> Path:
     return app_dir() / "notes.json"
 
 
+def insider_finds_file() -> Path:
+    """What each followed insider was last found trading on SEDI, company by
+    company, so the app can suggest companies to add. Rebuilt by every search;
+    kept beside the watchlist because it is about the user's choices."""
+    return app_dir() / "insider_finds.json"
+
+
 def interviews_file() -> Path:
     """Interviews the user has run, with what was extracted from each.
 

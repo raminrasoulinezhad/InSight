@@ -22,8 +22,9 @@ data services.
   `insight-scrape --insider FAMILY_NAME`) uses SEDI's cross-issuer insider search
   to list every company someone filed against, with **+ Add** on those missing
   from the watchlist. The only way to discover an untracked company; everything
-  else here is company-first. Reports only — it writes no snapshot. Shares the
-  refresh job slot, since both drive the one SEDI browser.
+  else here is company-first. Stores the person's trades in *every* company (the
+  Insiders tab is ungated; the Companies tab still shows only the watchlist).
+  Shares the refresh job slot, since both drive the one SEDI browser.
 - **Interviews tab.** Paste a YouTube interview link; InSight reads the caption
   track and an LLM extracts what was said about each company, as short bullets
   tagged `[Speaker - Date]`. Companies already followed take their bullets into
@@ -31,9 +32,14 @@ data services.
   adds the company *and* files the comments. Shares the refresh job slot. Needs a
   free LLM key (see `.env.example`); without one the tab says so.
 - **Watchlist** — add by name (TradingView resolver) / remove.
-- **↻ Fetch all** — one button, one job: MarketBeat, then SEDI for the Canadian
-  companies; optional "Scan all TSE (~215)". Reuses anything fetched in the last
-  hour, and a trade both sources report is shown once (SEDI's copy).
+- **↻ Fetch all** — the only fetch button, one job: MarketBeat, then SEDI for
+  the Canadian companies, then a SEDI person search for every **followed
+  insider** (anyone with a 🔔 person alarm). Their trades are stored in every
+  company they touch, and the companies off the watchlist become the **"not on
+  your list"** box at the top of the Insiders tab, with + Add. Reuses anything
+  fetched in the last hour, and a trade both sources report is shown once (SEDI's
+  copy). The ~215-company TSE scan is no longer in the UI (still
+  `insight-scrape --discover`, which the daily timer runs).
 - **Notes** — free-text per company (a bullet list in the UI), shown above that
   company's activity. User-authored; never touched by the scraper.
 - **History accumulation** — each scrape writes a dated snapshot; `store.py` folds
@@ -132,6 +138,13 @@ reload, Python edits need an app restart.
   cheapest, and falls through on refusal. A 429 is a cooldown; a 402/404 disables
   that route for the run. Spend is tracked on disk so a daily budget survives a
   restart. Adding a provider is a config block, not code.
+- **A SEDI company name only gets a ticker when the names match.** SEDI reports
+  legal names; `resolve_tickers` looks each up and takes a Canadian listing only
+  if `same_listing_name` agrees. Taking the first fuzzy hit filed Tourmaline's
+  trades under ATH and West Red Lake's under a George Weston preferred share.
+  Unmatched names (often renamed since filing) stay unresolved and are listed,
+  never guessed. `align_to_watchlist` then gives a match the watchlist's exchange
+  code (Blackrock Silver: TSE vs TSXV), or one company splits in two.
 - **Interview extraction never writes without a click.** Captions mishear company
   names ("Kotekch" for CoTec), so the model corrects them, reports what it heard,
   and every corrected name is checked against `issuers.search_issuers`, which is

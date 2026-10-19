@@ -227,6 +227,41 @@ def add_alarm(path: Path, spec: dict[str, Any], data_dir: Path) -> tuple[bool, s
     return True, f"Alarm set for {alarm['label']}"
 
 
+def absorb_into_baselines(path: Path, records: list[dict[str, Any]]) -> int:
+    """Mark these trades as already seen by every alarm they match.
+
+    For data that is new to the app but not news: the first search for a
+    followed insider brings in their trades in every company, not only the
+    watchlist ones the alarm has been watching, and the recent ones would all
+    fire at once as a single wall of "new" trades. Only the alerting horizon
+    matters, as anywhere else. Returns how many alarms were touched.
+    """
+    if not path.exists() or not records:
+        return 0
+    cfg = load_config(path)
+    recent = _recent(records)
+    touched = 0
+    for alarm in cfg["alarms"]:
+        keys = _matching_keys(alarm, recent)
+        seen = set(alarm.get("seen", []))
+        if keys - seen:
+            alarm["seen"] = sorted(seen | keys)
+            touched += 1
+    if touched:
+        save_config(path, cfg)
+    return touched
+
+
+def followed_insiders(path: Path) -> list[str]:
+    """The insiders the user follows: everyone with a person alarm, in the
+    order the alarms were set, each once."""
+    names: dict[str, str] = {}
+    for alarm in load_config(path)["alarms"] if path.exists() else []:
+        if alarm.get("type") == "person" and (alarm.get("name") or "").strip():
+            names.setdefault(_person_key(alarm["name"]), alarm["name"].strip())
+    return list(names.values())
+
+
 def remove_alarm(path: Path, alarm_id: str) -> tuple[bool, str]:
     cfg = load_config(path)
     before = len(cfg["alarms"])

@@ -167,9 +167,6 @@
   .refresh-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
   .refresh-btn:disabled { opacity:.6; cursor:progress; }
   .refresh-btn.spin { animation:none; }
-  .disc { color:var(--muted); font-size:12px; display:inline-flex; align-items:center;
-    gap:5px; cursor:pointer; user-select:none; }
-  .disc input { cursor:pointer; }
   /* Scrape progress. A SEDI fetch is minutes of a browser doing nothing visible
      in this window, so the bar is the only sign it is alive. */
   .progress { height:6px; margin-top:10px; border-radius:3px; overflow:hidden;
@@ -361,6 +358,11 @@
   .show-all:hover { border-color:var(--accent); }
   /* SEDI insider lookup: one row per company the person filed against */
   .find-msg { color:var(--muted); font-size:13px; margin:0 0 12px; line-height:1.5; }
+  .suggest-box { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin-bottom:12px; }
+  .suggest-box summary { cursor:pointer; font-weight:600; font-size:13px; }
+  .suggest-box .find-msg { margin:10px 0; }
+  .suggest-box td.suggest-name { white-space:normal; min-width:12ch; }
   .find-msg b { color:var(--text); }
   .add-btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:6px;
     font:inherit; font-size:12px; padding:3px 10px; cursor:pointer; }
@@ -479,10 +481,7 @@
   <div class="titlerow">
     <h1>InSight</h1>
     <span class="meta" id="datameta">loading…</span>
-    <button id="refresh" class="refresh-btn" title="Fetch everything in one go: MarketBeat for your watchlist, then SEDI (Canada's official insider filings, the only source for small TSX-V names) for your Canadian companies. Anything fetched in the last hour is reused, so pressing again only retries what failed, and a trade both sources report is shown once. SEDI runs a minimized browser that pops up if a CAPTCHA needs solving.">↻ Fetch all</button>
-    <label class="disc" title="Also scrape MarketBeat's ~215 TSE companies (not just your watchlist). First run is slow (~15 min); later runs reuse the cache. Fills out the Insiders tab.">
-      <input type="checkbox" id="discover" /> Scan all TSE (~215)
-    </label>
+    <button id="refresh" class="refresh-btn" title="Fetch everything in one go: MarketBeat for your watchlist, SEDI (Canada's official insider filings, the only source for small TSX-V names) for your Canadian companies, then SEDI again for every insider you follow (🔔), across all the companies they trade, so you can see which ones to add. Anything fetched in the last hour is reused, so pressing again only retries what failed, and a trade both sources report is shown once. SEDI runs a minimized browser that pops up if a CAPTCHA needs solving.">↻ Fetch all</button>
     <span class="meta" id="refreshmsg"></span>
     <button id="settings-open" class="refresh-btn settings-cog"
       title="Settings — theme and notifications">⚙</button>
@@ -1015,9 +1014,69 @@ function renderInsiders(){
            d.total_companies, "companies traded");
   setMeta(d);
   const html = d.insiders.map(renderPerson).join("");
-  document.getElementById("feed").innerHTML =
-    html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`;
+  document.getElementById("feed").innerHTML = suggestionsBox() +
+    (html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`);
 }
+
+/* ---- companies the followed insiders trade, not on the watchlist ---- */
+// Filled by Fetch all's SEDI search for every insider with a 🔔 alarm (and by
+// ⛏ Find companies). The point is to suggest companies to add, so it lists only
+// those not on the watchlist, most recently active first.
+async function loadSuggestions(){
+  try {
+    const d = await (await fetch("/api/insider-finds")).json();
+    STATE.suggestions = d.suggestions || [];
+    STATE.unmatched = d.unmatched || [];
+  } catch(e){ STATE.suggestions = STATE.suggestions || []; }
+}
+
+function suggestionsBox(){
+  const rows = STATE.suggestions || [];
+  if (!rows.length) return "";
+  // + Add leads the row: long legal names ("... (formerly ...)") widen the
+  // table, and a button at the far end slid out of view behind a scrollbar.
+  const body = rows.map(r => `<tr>
+      <td><button class="add-btn" data-add-exch="${esc(r.exchange)}"
+        data-add-ticker="${esc(r.ticker)}" data-add-name="${esc(r.issuer_name)}">+ Add</button></td>
+      <td class="suggest-name">${esc(r.issuer_name)}</td>
+      <td>${esc(r.exchange)}:${esc(r.ticker)}</td>
+      <td class="suggest-name">${r.insiders.map(esc).join(", ")}</td>
+      <td class="t-num">${r.txn_count}</td>
+      <td>${esc(r.latest_date || "—")}</td>
+    </tr>`).join("");
+  const noun = rows.length === 1 ? "company" : "companies";
+  const lost = STATE.unmatched || [];
+  // Usually renamed companies: SEDI keeps the name they filed under, so no
+  // listing matches it. Shown, so a follow is never silently incomplete.
+  const lostLine = lost.length
+    ? `<p class="find-msg">Not matched to a listing (often renamed since they filed), so add
+        these by name if you want them: ${lost.map(u =>
+          `${esc(u.issuer_name)} <span class="muted-cell">(${u.insiders.map(esc).join(", ")})</span>`
+        ).join("; ")}.</p>`
+    : "";
+  return `<details class="suggest-box" ${STATE.suggestOpen ? "open" : ""}>
+    <summary>${rows.length} ${noun} the insiders you follow trade, not on your list</summary>
+    <p class="find-msg">From each followed insider's (🔔) latest SEDI search. Adding one puts
+      it on your list; <b>↻ Fetch all</b> then pulls its full history.</p>
+    <div class="txn-table-wrap"><table class="txn-table">
+      <thead><tr><th></th><th>Company</th><th>Ticker</th><th>Traded by</th>
+        <th class="t-num">Filings</th><th>Latest</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    ${lostLine}
+  </details>`;
+}
+
+document.addEventListener("toggle", e => {
+  if (e.target.classList && e.target.classList.contains("suggest-box")){
+    STATE.suggestOpen = e.target.open;
+  }
+}, true);
+
+document.getElementById("feed").addEventListener("click", e => {
+  const add = e.target.closest(".suggest-box .add-btn");
+  if (add){ e.stopPropagation(); addFoundCompany(add); }
+});
 
 /* ---- Alarms tab: notification settings + alarm list ---- */
 async function loadAlarms(){
@@ -1700,7 +1759,7 @@ function renderInsiderFind(d){
     : `All ${cos.length} are already on your watchlist.`;
   insiderFindBody(`
     <p class="find-msg">${lead} Adding one only puts it on the list — click
-      <b>↻ Refresh data</b> afterwards to pull its history.</p>
+      <b>↻ Fetch all</b> afterwards to pull its history.</p>
     <div class="txn-table-wrap"><table class="txn-table">
       <thead><tr><th>Company</th><th>Ticker</th><th class="t-num">Filings</th>
         <th>Latest</th><th></th></tr></thead>
@@ -1784,7 +1843,10 @@ async function load(){
       : "months=" + STATE.range;
     const r = await fetch(url + "?" + qp);
     const d = await r.json();
-    if (STATE.view === "insiders"){ indexInsiders(d); STATE.insiders = d; }
+    if (STATE.view === "insiders"){
+      indexInsiders(d); STATE.insiders = d;
+      await loadSuggestions();
+    }
     else { indexCompanies(d); STATE.data = d; }
     render();
     reportJump();
@@ -2191,9 +2253,7 @@ async function startRefresh(url, startMsg){
 
 refreshBtn.addEventListener("click", () => {
   if (refreshBtn.disabled) return;
-  const discover = document.getElementById("discover").checked;
-  startRefresh("/api/refresh?source=all" + (discover ? "&discover=1" : ""),
-    discover ? "Starting… (scanning ~215 companies, this can take a while)" : "Starting…");
+  startRefresh("/api/refresh?source=all", "Starting…");
 });
 
 let qTimer = null;

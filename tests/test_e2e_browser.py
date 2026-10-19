@@ -94,6 +94,10 @@ def served(tmp_path: Path, monkeypatch) -> Iterator[str]:
     monkeypatch.setattr(paths, "settings_file", lambda: tmp_path / "settings.json")
     monkeypatch.setattr(paths, "notify_file", lambda: tmp_path / "notify.json")
     monkeypatch.setattr(paths, "sedi_pages_dir", lambda: tmp_path / "sedi-pages")
+    # Never the user's own files: a real insider_finds.json put 43 suggestion
+    # rows (and their Add buttons) in front of the dialog these tests drive.
+    monkeypatch.setattr(paths, "insider_finds_file", lambda: tmp_path / "insider_finds.json")
+    monkeypatch.setattr(paths, "interviews_file", lambda: tmp_path / "interviews.json")
 
     from insight import aggregate
 
@@ -423,23 +427,23 @@ class TestFindingAnInsidersCompanies:
 
     def test_it_opens_a_dialog_and_shows_the_result(self, page, stubbed):
         self._open(page)
-        page.wait_for_selector(".add-btn", timeout=10_000)
+        page.wait_for_selector("#insider-find .add-btn", timeout=10_000)
         rows = page.locator("#insider-find-body tbody tr")
         assert rows.count() == 2
         assert "West Red Lake" in page.text_content("#insider-find-body")
 
     def test_only_the_untracked_company_can_be_added(self, page, stubbed):
         self._open(page)
-        page.wait_for_selector(".add-btn", timeout=10_000)
-        assert page.locator(".add-btn").count() == 1
-        assert page.locator(".add-btn").get_attribute("data-add-ticker") == "WRLG"
+        page.wait_for_selector("#insider-find .add-btn", timeout=10_000)
+        assert page.locator("#insider-find .add-btn").count() == 1
+        assert page.locator("#insider-find .add-btn").get_attribute("data-add-ticker") == "WRLG"
 
     def test_adding_puts_it_on_the_watchlist(self, page, stubbed, tmp_path: Path):
         self._open(page)
-        page.wait_for_selector(".add-btn", timeout=10_000)
-        page.click(".add-btn")
+        page.wait_for_selector("#insider-find .add-btn", timeout=10_000)
+        page.click("#insider-find .add-btn")
         page.wait_for_function(
-            "!document.querySelector('.add-btn')", timeout=10_000
+            "!document.querySelector('#insider-find .add-btn')", timeout=10_000
         )  # the button becomes an "on watchlist" label
         saved = json.loads((tmp_path / "companies.json").read_text())
         assert any(c["ticker"] == "WRLG" for c in saved["companies"]), saved

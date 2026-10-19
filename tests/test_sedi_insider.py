@@ -142,7 +142,12 @@ class TestResolveTickers:
             self.resolver(
                 {
                     "West Red Lake Gold Mines Ltd.": [
-                        {"ticker": "wrlg", "exchange": "tsxv", "country": "CA"}
+                        {
+                            "ticker": "wrlg",
+                            "exchange": "tsxv",
+                            "country": "CA",
+                            "legal_name": "West Red Lake Gold Mines Ltd",
+                        }
                     ]
                 }
             ),
