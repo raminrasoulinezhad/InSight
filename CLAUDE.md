@@ -15,9 +15,10 @@ data services.
   an alias for the old name.
 - **Cross-links + back-stack** — an insider name opens that insider, a company on
   their card opens that company; Back (and Alt+←) walks up to 10 states.
-- **Two data sources** — MarketBeat by default (unattended); **SEDI** on demand
-  via **↻ Fetch all** or `--source sedi` for TSXV/CSE names MarketBeat misses. See
-  below.
+- **Three data sources** — MarketBeat by default (unattended); **SEDI**, Canada's
+  official record, for TSXV/CSE names MarketBeat misses; **SEC EDGAR**, the US
+  official record (Form 4s), which replaces MarketBeat for US companies once
+  `INSIGHT_SEC_CONTACT` is set. All three run from **↻ Fetch all**. See below.
 - **Person-first search** — **⛏ Find companies** on an insider's card (or
   `insight-scrape --insider FAMILY_NAME`) uses SEDI's cross-issuer insider search
   to list every company someone filed against, with **+ Add** on those missing
@@ -80,6 +81,7 @@ uv run insight --window        # chromeless desktop window
 uv run insight-scrape          # scrape the watchlist (MarketBeat)
 uv run insight-scrape --discover        # + MarketBeat's ~215 TSE universe
 uv run insight-scrape --source sedi     # official SEDI; minimized browser
+uv run insight-scrape --source edgar    # SEC Form 4s for US companies (needs INSIGHT_SEC_CONTACT)
 uv run insight-scrape --insider Sprott  # SEDI person search: which companies?
 uv run python -m insight.interviews URL -o report.txt   # interviews, as a dry run
 uv run insight-scrape --prune-snapshots      # drop folded snapshots, keep newest 2
@@ -131,6 +133,27 @@ reload, Python edits need an app restart.
   Oct 2026 their Chrome was walled while their Firefox worked, yet Playwright's
   Firefox was walled too (even with `navigator.webdriver` hidden), so switching
   the automated browser is not a fix by itself.
+- **SEC EDGAR is polite by construction.** Every request carries
+  `User-Agent: InSight personal research <INSIGHT_SEC_CONTACT>` (the SEC refuses
+  anonymous clients with a 403) and one process-wide limiter holds all clients
+  to 5 requests/second, half the SEC's ceiling. Filings never change, so each
+  XML is cached for good under `cache/edgar/filings/`; reruns read only each
+  company's filing list plus what is new. Only the non-derivative table is
+  read, or every option exercise would appear twice. People are looked up
+  family-name first ("Friedland Robert") and `pick_owner` never guesses between
+  namesakes. The contact email is personal: `.env` only, never the repo.
+- **One regulator per company.** EDGAR fetches every US listing, plus any
+  watchlist company listed elsewhere that the SEC lists under the same ticker
+  and name *and* SEDI does not already cover (`edgar.sec_registrants`): US
+  issuers that trade in Toronto, like Ivanhoe Electric, Ovintiv and McEwen,
+  file only with the SEC. Where SEDI has data, SEDI keeps the company: dual
+  filers (Waste Connections) report the same vesting events to both, worded and
+  split too differently to match, so fetching both doubled them.
+- **Official records beat MarketBeat.** `aggregate.drop_cross_source_twins`
+  drops a MarketBeat row when SEDI or EDGAR has the same trade, and
+  `drop_congress_trades` drops MarketBeat's US Congress rows (role "House (…)" /
+  "Senate (…)"), which are not insiders. A company's first EDGAR fetch (two
+  years at once) goes into the alarms' baselines, not out as alerts.
 - **API keys never enter the repo.** They live in `.env` (gitignored, along with
   `.env.*`, excepting `.env.example`), and `.env.example` is the committed
   template holding placeholders only. `llm.py` routes one call across several
@@ -196,6 +219,8 @@ insight/
   scrape.py       insight-scrape CLI (targets, output, --discover, --source, prunes)
   marketbeat.py   MarketBeat scraper + discovery + cache/delisted helpers
   sedi.py         SEDI scraper (headful, persistent profile, saved report pages)
+  edgar.py        SEC EDGAR client + Form 4 parser (US companies and people; no browser)
+  finds.py        what followed insiders trade; the Insiders tab's "not on your list" box
   store.py        dated snapshots -> one deduplicated store, folded incrementally
   aggregate.py    records -> company/insider views (+ in-memory access cache)
   notes.py        per-company user notes (EXCH:TICKER -> text)

@@ -435,18 +435,47 @@ def _twin_key(r: Rec) -> tuple[Any, ...]:
 
 
 def drop_cross_source_twins(records: list[Rec]) -> list[Rec]:
-    """Drop a MarketBeat row when SEDI reports the same trade.
+    """Keep one copy of a trade that several sources report.
 
-    Both sources are fetched for Canadian companies, because neither is
-    complete on its own: SEDI's report for a large issuer can miss officers that
-    MarketBeat lists. Where they overlap, SEDI's copy is the richer one (the
-    filer's real role, the exact nature of the transaction), so it wins, and
-    the trade is shown, counted and alerted on once instead of twice.
+    Both MarketBeat and SEDI are fetched for Canadian companies, because neither
+    is complete on its own: SEDI's report for a large issuer can miss officers
+    that MarketBeat lists. Where they overlap, the regulator's copy is the
+    richer one (the filer's real role, the exact nature of the transaction), so
+    it wins, and the trade is shown, counted and alerted on once instead of
+    twice. The same goes for EDGAR and the US history MarketBeat collected
+    before EDGAR, and for SEDI and EDGAR on a company listed in both countries.
     """
-    sedi = {_twin_key(r) for r in records if r.get("source") == "sedi"}
-    if not sedi:
-        return records
-    return [r for r in records if r.get("source") != "marketbeat" or _twin_key(r) not in sedi]
+    keys = [_twin_key(r) for r in records]
+    ranks = [_SOURCE_RANK.get(r.get("source") or "", len(_SOURCE_RANK)) for r in records]
+    best: dict[tuple[Any, ...], int] = {}
+    for k, rank in zip(keys, ranks, strict=True):
+        if rank < best.get(k, len(_SOURCE_RANK) + 1):
+            best[k] = rank
+    return [r for r, k, rank in zip(records, keys, ranks, strict=True) if rank <= best[k]]
+
+
+# Which copy of one trade to keep when several sources report it: the
+# regulators' own records first. SEDI before EDGAR only matters for a company
+# listed on both sides (Ivanhoe Electric), where either would do and SEDI is
+# what the rest of a Canadian card comes from. Within one source nothing is
+# dropped: two same-day trades of one size by one person are two trades.
+_SOURCE_RANK = {"sedi": 0, "edgar": 1, "marketbeat": 2}
+
+# MarketBeat files US Congress members' stock trades alongside insider filings,
+# with the chamber as the role ("House (D-CA)", "Senate (R-TX)"). They are not
+# company insiders, and no regulator's insider record has them.
+_CONGRESS_ROLE = re.compile(r"^(House|Senate)\s*\(")
+
+
+def drop_congress_trades(records: list[Rec]) -> list[Rec]:
+    """Remove MarketBeat's rows for members of Congress (see _CONGRESS_ROLE)."""
+    return [
+        r
+        for r in records
+        if not (
+            r.get("source") == "marketbeat" and _CONGRESS_ROLE.match(r.get("insider_role") or "")
+        )
+    ]
 
 
 def load_all_records(data_dir: Path) -> list[Rec]:
@@ -473,7 +502,7 @@ def load_all_records(data_dir: Path) -> list[Rec]:
             return hit[1]
 
     records, _manifest = store.sync(data_dir, _txn_key)
-    records = drop_cross_source_twins(records)
+    records = drop_congress_trades(drop_cross_source_twins(records))
 
     with _CACHE_LOCK:
         _records_cache[key] = (sig, records)

@@ -573,7 +573,9 @@ def _deliver(
 # (not a fixed list) covers every SEDI variant: "Grant of options/rights/warrants",
 # "Exercise of rights/options/warrants", "Exercise for cash", … and survives new
 # wording. Note this affects alerts ONLY — such rows still appear in the app views.
-_ALERT_SKIP_WORDS = ("grant", "exercise")
+# Shares withheld to pay the tax on vesting (SEC code F) are the same kind of
+# event, and arrive with every vesting.
+_ALERT_SKIP_WORDS = ("grant", "exercise", "withholding")
 
 
 def _alertable(rec: dict[str, Any]) -> bool:

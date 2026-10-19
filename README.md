@@ -94,14 +94,21 @@ itself.
 
 ## 3. Where the data comes from
 
-InSight has two sources. **MarketBeat** is the everyday one; **SEDI** is there
-for the names MarketBeat misses.
+InSight has three sources. **MarketBeat** is the everyday one; **SEDI** and
+**SEC EDGAR** are the official Canadian and US records. **↻ Fetch all** runs
+all three.
 
-| | MarketBeat (default) | SEDI |
-|---|---|---|
-| **Covers** | Large and mid-cap TSX / US names | *Every* Canadian filing, incl. TSX-V and CSE micro-caps |
-| **Speed** | Automatic, unattended | Drives a minimized browser; may ask you to solve a CAPTCHA once |
-| **Use it** | **↻ Fetch all**, or `insight-scrape` | **↻ Fetch all** (same button), or `insight-scrape --source sedi` |
+| | MarketBeat (default) | SEDI (Canada) | SEC EDGAR (US) |
+|---|---|---|---|
+| **Covers** | Large and mid-cap TSX names | *Every* Canadian filing, incl. TSX-V and CSE micro-caps | *Every* US Form 4 (buys, sales, grants, exercises) |
+| **Speed** | Automatic, unattended | Drives a minimized browser; may ask you to solve a CAPTCHA once | Automatic, unattended; ~3 min for a first fetch, seconds after |
+| **Needs** | Nothing | Nothing | A contact email in `.env` (`INSIGHT_SEC_CONTACT`); no account, no key |
+| **Use it** | **↻ Fetch all**, or `insight-scrape` | **↻ Fetch all**, or `insight-scrape --source sedi` | **↻ Fetch all**, or `insight-scrape --source edgar` |
+
+The SEC asks every automated client to name a contact email, so it can ask a
+misbehaving tool to slow down before blocking it. InSight sends it only to
+sec.gov and stays at half the SEC's speed limit. Without one, US companies stay
+on MarketBeat.
 
 SEDI is Canada's official insider-filing system — the authoritative source, and
 the only one that sees small venture names. It is bot-protected, so it can't run

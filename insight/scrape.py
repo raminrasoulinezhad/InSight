@@ -266,11 +266,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--outdir", default=None, help="output dir (default: per-user app folder)")
     ap.add_argument(
         "--source",
-        choices=["marketbeat", "sedi"],
+        choices=["marketbeat", "sedi", "edgar"],
         default="marketbeat",
         help="data source (default: marketbeat). 'sedi' = Canada's official SEDI, "
         "covers small TSX-V names but runs a visible browser and may need you to "
-        "solve a one-time CAPTCHA",
+        "solve a one-time CAPTCHA. 'edgar' = the SEC's official Form 4 record for "
+        "US companies; needs INSIGHT_SEC_CONTACT (a contact email) in .env",
     )
     ap.add_argument(
         "--months",
@@ -397,6 +398,26 @@ def main(argv: list[str] | None = None) -> int:
         # The browser has closed, so its caches are safe to drop. The session
         # cookie that carries the solved CAPTCHA is never touched.
         _prune_browser_caches(paths.sedi_profile_dir(), quiet=True)
+    elif args.source == "edgar":
+        from .edgar import EdgarScraper, is_us, never_fetched
+        from .notify import absorb_into_baselines
+
+        targets = [t for t in targets if is_us(t)]  # EDGAR is US-only
+        print("Source: SEC EDGAR (Form 4s; at most 5 requests a second).\n")
+        edgar_cache = (cache_dir or paths.cache_dir()) / "edgar"
+        first = never_fetched(edgar_cache, targets)
+        results = scrape_many(
+            targets,
+            cache_dir=cache_dir,
+            max_age_hours=args.max_age,
+            force=args.force,
+            scraper_factory=lambda: EdgarScraper(edgar_cache, months=args.months),
+            source="edgar",
+        )
+        # A first fetch is two years of filings at once: history, not news.
+        absorb_into_baselines(
+            paths.notify_file(), [r.to_dict() for k in first for r in results.get(k) or []]
+        )
     else:
         results = scrape_many(
             targets,

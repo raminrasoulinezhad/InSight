@@ -481,7 +481,7 @@
   <div class="titlerow">
     <h1>InSight</h1>
     <span class="meta" id="datameta">loading…</span>
-    <button id="refresh" class="refresh-btn" title="Fetch everything in one go: MarketBeat for your watchlist, SEDI (Canada's official insider filings, the only source for small TSX-V names) for your Canadian companies, then SEDI again for every insider you follow (🔔), across all the companies they trade, so you can see which ones to add. Anything fetched in the last hour is reused, so pressing again only retries what failed, and a trade both sources report is shown once. SEDI runs a minimized browser that pops up if a CAPTCHA needs solving.">↻ Fetch all</button>
+    <button id="refresh" class="refresh-btn" title="Fetch everything in one go: MarketBeat for your watchlist, SEDI (Canada's official insider filings, the only source for small TSX-V names) for your Canadian companies, SEC EDGAR (the US official record) for your US companies, then SEDI and EDGAR again for every insider you follow (🔔), across all the companies they trade, so you can see which ones to add. Anything fetched in the last hour is reused, so pressing again only retries what failed, and a trade both sources report is shown once. SEDI runs a minimized browser that pops up if a CAPTCHA needs solving.">↻ Fetch all</button>
     <span class="meta" id="refreshmsg"></span>
     <button id="settings-open" class="refresh-btn settings-cog"
       title="Settings — theme and notifications">⚙</button>
@@ -1001,9 +1001,10 @@ function renderPerson(p){
 // company name" instead, so offering the button there would just return nothing.
 function sediFindBtn(p){
   const name = p.insider_name;
-  if (!name || name === "Unknown" || p.entity_type === "institution") return "";
+  // Institutions too: a fund or holding company is searched by company name.
+  if (!name || name === "Unknown") return "";
   return `<button class="sedi-link" data-find-insider="${esc(name)}"
-    title="Ask SEDI which companies this person has filed against — including ones not on your watchlist. Runs a minimized browser that pops up if a CAPTCHA needs solving.">⛏ Find companies</button>`;
+    title="Ask SEDI and the SEC which companies this insider has filed against, including ones not on your watchlist. Runs a minimized browser that pops up if a CAPTCHA needs solving.">⛏ Find companies</button>`;
 }
 
 function renderInsiders(){
@@ -1056,7 +1057,7 @@ function suggestionsBox(){
     : "";
   return `<details class="suggest-box" ${STATE.suggestOpen ? "open" : ""}>
     <summary>${rows.length} ${noun} the insiders you follow trade, not on your list</summary>
-    <p class="find-msg">From each followed insider's (🔔) latest SEDI search. Adding one puts
+    <p class="find-msg">From each followed insider's (🔔) latest SEDI and SEC search. Adding one puts
       it on your list; <b>↻ Fetch all</b> then pulls its full history.</p>
     <div class="txn-table-wrap"><table class="txn-table">
       <thead><tr><th></th><th>Company</th><th>Ticker</th><th>Traded by</th>
@@ -1808,6 +1809,9 @@ async function showInsiderFindResult(){
   }
 }
 
+const US_BOARDS = new Set(["NYSE", "NASDAQ", "NYSEAMERICAN", "AMEX", "NYSEARCA", "ARCA",
+  "BATS", "CBOE", "OTC"]);
+
 async function addFoundCompany(btn){
   const exchange = btn.dataset.addExch, ticker = btn.dataset.addTicker;
   btn.disabled = true;
@@ -1815,7 +1819,9 @@ async function addFoundCompany(btn){
     const r = await fetch("/api/watchlist", {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({
-        legal_name: btn.dataset.addName, exchange, ticker, country: "CA",
+        legal_name: btn.dataset.addName, exchange, ticker,
+        // SEDI finds are Canadian; EDGAR finds sit on a US board.
+        country: US_BOARDS.has(String(exchange).toUpperCase()) ? "US" : "CA",
       }),
     });
     const d = await r.json();

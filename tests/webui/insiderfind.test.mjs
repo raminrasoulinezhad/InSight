@@ -96,12 +96,14 @@ test("a hostile issuer name cannot inject markup", () => {
   assert.match(body(), /&lt;img/);
 });
 
-test("only individuals are offered the SEDI lookup", () => {
-  // The search drives SEDI's "insider family name" field, which is the wrong
-  // one for a fund — those file under "insider company name" and would return
-  // nothing, so offering the button there is a dead end.
+test("people and institutions are both offered the lookup", () => {
+  // A fund or holding company is searched by SEDI's "insider company name",
+  // so the button is no dead end for one (Nemesia S.a.r.l. finds 16 companies).
   assert.match(sediFindBtn({ insider_name: "Eric Sprott" }), /data-find-insider="Eric Sprott"/);
-  assert.equal(sediFindBtn({ insider_name: "Eric Sprott", entity_type: "institution" }), "");
+  assert.match(
+    sediFindBtn({ insider_name: "Nemesia S.a.r.l.", entity_type: "institution" }),
+    /data-find-insider="Nemesia S\.a\.r\.l\."/,
+  );
   assert.equal(sediFindBtn({ insider_name: "Unknown" }), "");
   assert.equal(sediFindBtn({ insider_name: "" }), "");
 });

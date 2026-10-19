@@ -1,7 +1,8 @@
 # US insider data: what SEDI is to Canada, EDGAR is to the US
 
 Evaluated live on 2026-10-18 against the 14 US-listed companies on the watchlist.
-Companion to `canadian-insider-data-research.md`.
+Companion to `canadian-insider-data-research.md`. **Built on 2026-10-19 as
+`insight/edgar.py`**; see the EDGAR section of `DEVELOPER_README.md`.
 
 ## Bottom line
 

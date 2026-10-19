@@ -690,17 +690,50 @@ class TestOneFetchButtonForBothSources:
         monkeypatch.setattr(app, "_people_phase", fake_people)
         monkeypatch.setattr(app, "_suggestion_note", lambda: " 4 companies to consider.")
 
+        from insight import edgar
+
+        # Never the real .env: with a contact email in it, this test would reach
+        # the live SEC site.
+        monkeypatch.setattr(edgar, "contact", lambda *a, **k: self.sec_contact)
+        self.sec_contact = ""
+
+        def fake_edgar(targets, outcome, *, force, max_age_hours):
+            us = [t for t in targets if edgar.is_us(t)]
+            calls.append(
+                {
+                    "source": "edgar",
+                    "tickers": [t["ticker"] for t in us],
+                    "force": force,
+                    "max_age_hours": max_age_hours,
+                }
+            )
+            outcome.update(fetched=len(us), failed=0, cached=0, untouched=0, stopped="")
+            return {}, us
+
+        monkeypatch.setattr(app, "_edgar_phase", fake_edgar)
+
         def go(**kw):
             app._do_refresh(source="all", **kw)
             return calls, dict(app._refresh)
 
         return go
 
-    def test_marketbeat_then_sedi_then_the_followed_insiders(self, run):
-        calls, _state = run()
+    def test_without_an_sec_contact_marketbeat_keeps_the_us_companies(self, run):
+        calls, state = run()
         assert [c["source"] for c in calls] == ["marketbeat", "sedi", "people"]
         assert calls[0]["tickers"] == ["ABC", "AAPL"]
         assert calls[1]["tickers"] == ["ABC"], "SEDI is Canada-only"
+        assert "SEC EDGAR failed (skipped: set INSIGHT_SEC_CONTACT in .env)" in state["message"]
+
+    def test_with_one_edgar_takes_the_us_companies_from_marketbeat(self, run):
+        # EDGAR is the official record and a superset of MarketBeat's US data,
+        # so fetching both would be the double fetch the button exists to stop.
+        self.sec_contact = "someone@example.com"
+        calls, state = run()
+        assert [c["source"] for c in calls] == ["marketbeat", "sedi", "edgar", "people"]
+        assert calls[0]["tickers"] == ["ABC"], "MarketBeat no longer fetches AAPL"
+        assert calls[2]["tickers"] == ["AAPL"]
+        assert "SEC EDGAR: 1 fetched" in state["message"] and state["warn"] is False
 
     def test_recent_fetches_are_reused_not_repeated(self, run):
         calls, _state = run()
@@ -708,15 +741,17 @@ class TestOneFetchButtonForBothSources:
             assert c.get("force", False) is False
             assert c["max_age_hours"] == app._FRESH_HOURS
 
-    def test_a_clean_run_reports_both_sources(self, run):
+    def test_a_clean_run_reports_every_source(self, run):
+        self.sec_contact = "someone@example.com"
         _calls, state = run()
         assert state["ok"] is True and state["warn"] is False
         assert state["message"] == (
-            "Done. MarketBeat: 2 fetched; SEDI: 1 fetched; "
+            "Done. MarketBeat: 1 fetched; SEDI: 1 fetched; SEC EDGAR: 1 fetched; "
             "Followed insiders: 2 fetched, 1 already up to date. 4 companies to consider."
         )
 
     def test_a_sedi_stop_keeps_the_marketbeat_part_and_says_so(self, run):
+        self.sec_contact = "someone@example.com"
         self.sedi_stops = True
         _calls, state = run()
         assert state["ok"] is True, "MarketBeat's data is real; the page should reload"

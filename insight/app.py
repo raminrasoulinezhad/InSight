@@ -113,17 +113,21 @@ def _do_insider_search(name: str) -> None:
                 f"Opening SEDI for “{name}” — the browser pops up if a CAPTCHA appears…"
             )
         saved = finds.load(paths.insider_finds_file())
+        edgar = _edgar_session()
         with SediScraper(
             headless=False,
             profile_dir=paths.sedi_profile_dir(),
             capture_dir=paths.app_dir() / "sedi-debug",
         ) as sedi:
-            kept = _search_insider(sedi, name, saved)
-        if kept:
-            by_company: dict[str, list[Any]] = {}
-            for r in kept:
-                by_company.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
-            write_outputs(by_company, DATA_DIR, date.today().isoformat(), source="sedi_people")
+            if edgar is not None:
+                edgar.__enter__()
+            kept, kept_us = _search_insider(sedi, edgar, name, saved)
+        for records, tag in ((kept, "sedi_people"), (kept_us, "edgar_people")):
+            if records:
+                by_company: dict[str, list[Any]] = {}
+                for r in records:
+                    by_company.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
+                write_outputs(by_company, DATA_DIR, date.today().isoformat(), source=tag)
 
         result = finds.load(paths.insider_finds_file()).get(name) or finds.summarize([])
         cfg = load_watchlist(CONFIG)
@@ -348,30 +352,52 @@ def _sedi_phase(
     return results, canadian
 
 
-def _search_insider(sedi: Any, name: str, saved: dict[str, Any]) -> list[Any]:
-    """One followed insider: search SEDI, match issuers to tickers, save what was
-    found, and return the records that have a ticker (the store is keyed on
-    one). The first search for someone is folded into their alarm's baseline:
-    it brings in trades in companies the alarm never watched, and the recent
-    ones are not news just because the app had not seen them."""
+def _edgar_session() -> Any:
+    """An EDGAR session, or None when no SEC contact email is configured (the
+    SEC refuses anonymous clients, so there is nothing to try)."""
+    from .edgar import EdgarScraper, contact
+
+    if not contact():
+        return None
+    return EdgarScraper(paths.cache_dir() / "edgar")
+
+
+def _search_insider(
+    sedi: Any, edgar: Any, name: str, saved: dict[str, Any]
+) -> tuple[list[Any], list[Any]]:
+    """One followed insider, in Canada (SEDI) and the US (EDGAR): match issuers
+    to tickers, save what was found, and return (sedi, edgar) records that have
+    a ticker (the store is keyed on one). The first search for someone is folded
+    into their alarm's baseline: it brings in trades in companies the alarm never
+    watched, and the recent ones are not news just because the app had not seen
+    them. An EDGAR failure never costs the SEDI result; a SEDI block raises."""
+    from . import edgar as sec
     from . import finds, notify
     from .issuers import load_watchlist
     from .sedi import align_to_watchlist, resolve_tickers
 
+    watchlist = load_watchlist(CONFIG).get("companies") or []
     known = [c.get("issuer_name", "") for c in (saved.get(name) or {}).get("companies") or []]
     records = sedi.fetch_insider(name, known)
     records, unresolved = resolve_tickers(records) if records else (records, [])
-    align_to_watchlist(records, load_watchlist(CONFIG).get("companies") or [])
-    finds.save(paths.insider_finds_file(), name, finds.summarize(records, unresolved))
+    align_to_watchlist(records, watchlist)
+    us: list[Any] = []
+    if edgar is not None:
+        try:
+            us = sec.align_to_watchlist(edgar.fetch_insider(name), watchlist)
+        except Exception as e:  # EDGAR down or slow: SEDI's answer still stands
+            print(f"  [insider:{name}] EDGAR: {type(e).__name__}: {e}")
+    finds.save(paths.insider_finds_file(), name, finds.summarize(records + us, unresolved))
     kept = [r for r in records if r.ticker]
+    kept_us = [r for r in us if r.ticker]
     if name not in saved:
-        notify.absorb_into_baselines(paths.notify_file(), [r.to_dict() for r in kept])
-    return kept
+        notify.absorb_into_baselines(paths.notify_file(), [r.to_dict() for r in kept + kept_us])
+    return kept, kept_us
 
 
 def _people_phase(outcome: dict[str, Any], *, max_age_hours: float) -> list[str]:
-    """Search SEDI for every followed insider (everyone with a 🔔 alarm) and
-    store their trades in *every* company, watchlist or not.
+    """Search SEDI and EDGAR for every followed insider (everyone with a 🔔
+    alarm) and store their trades in *every* company, watchlist or not.
 
     That is what makes the Insiders tab show a person's whole activity, and what
     feeds the suggestions of companies to add. Returns the followed names.
@@ -387,17 +413,24 @@ def _people_phase(outcome: dict[str, Any], *, max_age_hours: float) -> list[str]
     outcome.update(fetched=0, failed=0, cached=len(names) - len(due), untouched=0, stopped="")
     if not due:
         return names
-    results: dict[str, list[Any]] = {}
+    canada: dict[str, list[Any]] = {}
+    us: dict[str, list[Any]] = {}
+    edgar = _edgar_session()
     with SediScraper(
         headless=False,
         profile_dir=paths.sedi_profile_dir(),
         capture_dir=paths.app_dir() / "sedi-debug",
     ) as sedi:
+        if edgar is not None:
+            edgar.__enter__()
         for i, name in enumerate(due):
             _progress(i, len(due), name)
             try:
-                for r in _search_insider(sedi, name, saved):
-                    results.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
+                found, found_us = _search_insider(sedi, edgar, name, saved)
+                for r in found:
+                    canada.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
+                for r in found_us:
+                    us.setdefault(f"{r.exchange}:{r.ticker}", []).append(r)
                 outcome["fetched"] += 1
                 print(f"  [insider:{name}] searched")
             except (BotBlocked, BrowserGone) as e:
@@ -410,9 +443,56 @@ def _people_phase(outcome: dict[str, Any], *, max_age_hours: float) -> list[str]
                 outcome["failed"] += 1
                 print(f"  [insider:{name}] ERROR: {type(e).__name__}: {e}")
     _progress(len(due), len(due), "")
-    if results:
-        write_outputs(results, DATA_DIR, date.today().isoformat(), source="sedi_people")
+    today = date.today().isoformat()
+    if canada:
+        write_outputs(canada, DATA_DIR, today, source="sedi_people")
+    if us:
+        write_outputs(us, DATA_DIR, today, source="edgar_people")
     return names
+
+
+def _edgar_phase(
+    targets: list[dict[str, Any]],
+    outcome: dict[str, Any],
+    *,
+    force: bool,
+    max_age_hours: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fetch the US companies from SEC EDGAR. Returns (results, targets).
+
+    A company's first EDGAR fetch brings in two years of filings, most of which
+    the app never had (MarketBeat carries a fraction), so those are folded into
+    the alarms' baselines rather than announced as new.
+    """
+    from . import notify
+    from .aggregate import load_all_records
+    from .edgar import EdgarClient, EdgarScraper, contact, never_fetched, sec_registrants
+    from .marketbeat import scrape_many
+    from .scrape import write_outputs
+
+    cache = paths.cache_dir() / "edgar"
+    on_sedi = {
+        f"{r.get('exchange')}:{r.get('ticker')}"
+        for r in load_all_records(DATA_DIR)
+        if r.get("source") == "sedi"
+    }
+    us = sec_registrants(targets, EdgarClient(contact(), cache).listings(), on_sedi)
+    first = never_fetched(cache, us)
+    results = scrape_many(
+        us,
+        cache_dir=paths.cache_dir(),
+        max_age_hours=max_age_hours,
+        force=force,
+        on_progress=_progress,
+        scraper_factory=lambda: EdgarScraper(cache),
+        source="edgar",
+        outcome=outcome,
+    )
+    new = [r.to_dict() for key in first for r in results.get(key) or []]
+    if new:
+        notify.absorb_into_baselines(paths.notify_file(), new)
+    write_outputs(results, DATA_DIR, date.today().isoformat(), source="edgar")
+    return results, us
 
 
 def _do_refresh(discover: bool = False, source: str = "marketbeat"):
@@ -439,17 +519,26 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
         run_date = date.today().isoformat()
 
         if source == "all":
+            from .edgar import contact, is_us
+
             mb_out: dict[str, Any] = {}
             sedi_out: dict[str, Any] = {}
+            edgar_out: dict[str, Any] = {}
             people_out: dict[str, Any] = {}
             mb_targets: list[dict[str, Any]] = []
             sedi_targets: list[dict[str, Any]] = []
+            edgar_targets: list[dict[str, Any]] = []
             people: list[str] = []
             mb_age = 12.0 if discover else _FRESH_HOURS  # the universe is ~215 deep
+            # EDGAR is the official record for US companies and a superset of
+            # MarketBeat's (which also mixes in Congress members' trades), so
+            # MarketBeat only covers them when there is no SEC contact to use.
+            sec_ready = bool(contact())
+            mb_list = [t for t in targets if not (sec_ready and is_us(t))]
             _set_phase("MarketBeat: ", "Fetching from MarketBeat…")
             try:
                 _results, mb_targets = _marketbeat_phase(
-                    targets, discover, mb_out, force=False, max_age_hours=mb_age
+                    mb_list, discover, mb_out, force=False, max_age_hours=mb_age
                 )
             except Exception as e:  # SEDI is still worth trying
                 mb_out["error"] = f"{type(e).__name__}: {e}"
@@ -465,7 +554,20 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             except Exception as e:
                 sedi_out["error"] = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
-            _set_phase("Followed insiders: ", "Searching SEDI for the insiders you follow…")
+            _set_phase("SEC EDGAR: ", "Fetching US companies from SEC EDGAR…")
+            if not sec_ready:
+                edgar_out["error"] = "skipped: set INSIGHT_SEC_CONTACT in .env"
+            else:
+                try:
+                    _results, edgar_targets = _edgar_phase(
+                        targets, edgar_out, force=False, max_age_hours=_FRESH_HOURS
+                    )
+                except Exception as e:
+                    edgar_out["error"] = f"{type(e).__name__}: {e}"
+                    traceback.print_exc()
+            _set_phase(
+                "Followed insiders: ", "Searching SEDI and EDGAR for the insiders you follow…"
+            )
             try:
                 people = _people_phase(people_out, max_age_hours=_FRESH_HOURS)
             except Exception as e:
@@ -475,6 +577,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                 [
                     ("MarketBeat", mb_out, len(mb_targets)),
                     ("SEDI", sedi_out, len(sedi_targets)),
+                    ("SEC EDGAR", edgar_out, len(edgar_targets)),
                     ("Followed insiders", people_out, len(people)),
                 ]
             )

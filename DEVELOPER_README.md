@@ -228,8 +228,57 @@ each company not already on the watchlist.
   while a refresh runs is a 409.
 - The result is served on its own route, not folded into the job status, so a
   reload after the job ends can still show it.
-- The button is hidden for institutions: it drives the *family name* field, and a
-  fund files under "Insider company name" instead, so it would return nothing.
+- The button shows for institutions too: an organisation is searched through
+  SEDI's "Insider company name" field (`insider_query`), not the family name.
+
+### SEC EDGAR, the US record (`edgar.py`)
+
+What SEDI is to Canada, EDGAR is to the US, and far easier: every insider trade
+is a Form 4 filed as XML on a free API with no account, key, CAPTCHA or bot
+wall. The evaluation is in
+[`docs/us-insider-data-research.md`](docs/us-insider-data-research.md).
+
+- **Identity and pace.** The SEC refuses anonymous clients (403), so every
+  request names `InSight personal research <INSIGHT_SEC_CONTACT>`. One limiter
+  shared by every client in the process holds them to 5 requests/second (the
+  ceiling is 10); a 429 or 5xx backs off and retries, anything else raises.
+- **Company first** (`EdgarScraper.fetch`, behind `scrape_many(source="edgar")`):
+  ticker to CIK from `company_tickers_exchange.json` (cached a day), the
+  company's filing list from `data.sec.gov/submissions`, then each Form 4/5's
+  XML. Records are stamped with the watchlist's exchange, ticker and name.
+- **Person first** (`EdgarScraper.fetch_insider`): EDGAR's own name lookup
+  (`efts.sec.gov/LATEST/search-index`, what its search box uses), typed family
+  name first, since it needs every word and files "FRIEDLAND ROBERT M".
+  `pick_owner` requires family and given name, uses the middle initial to split
+  namesakes, and returns no one rather than guess.
+- **Cached for good.** A filing never changes, so its XML is kept under
+  `cache/edgar/filings/`; a rerun reads each filing list and fetches only what
+  is new. First fetch of 14 companies: ~1,100 trades in ~3 minutes.
+- **Only the non-derivative table.** It already shows an exercise as shares
+  acquired; reading the derivative table too would show it twice.
+- **Names read like the rest of the app.** "SPROTT ERIC" becomes "Eric Sprott",
+  so the cross-source twin rule and person alarms line up with MarketBeat and
+  SEDI. Codes map to words the alarm rules understand (`F` is "Tax withholding
+  on vesting" and, like grants and exercises, never alerts).
+
+EDGAR also takes a watchlist company listed **outside** the US when the SEC
+lists the same ticker under the same name and SEDI has nothing for it
+(`sec_registrants`). Those are US issuers that trade in Toronto (Ivanhoe
+Electric, Ovintiv, McEwen): their insiders file only with the SEC. A company SEDI
+already covers stays SEDI's alone, because dual filers report the same vesting
+events to both regulators in shapes too different to match (Waste Connections:
+258 EDGAR rows next to 481 SEDI rows, mostly the same exercises and withholdings).
+SEDI and EDGAR copies that *do* match are kept once, SEDI first
+(`aggregate._SOURCE_RANK`).
+
+In Fetch all, US companies go to EDGAR **instead of** MarketBeat once a contact
+is set: EDGAR is a superset, and MarketBeat's extra US rows were US Congress
+members' trades (now dropped on load, `aggregate.drop_congress_trades`).
+Without a contact, MarketBeat keeps them and the summary says EDGAR was skipped.
+A company's first EDGAR fetch is folded into the alarms' baselines
+(`edgar.never_fetched` + `notify.absorb_into_baselines`), so two years of
+filings do not arrive as one wall of alerts. Foreign private issuers (BHP, Rio
+Tinto) file no Form 4s at all; BioHarvest is Canadian, so SEDI is its source.
 
 ### Blocked alternatives
 
