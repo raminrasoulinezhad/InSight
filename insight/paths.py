@@ -89,6 +89,12 @@ def notes_file() -> Path:
     return app_dir() / "notes.json"
 
 
+def sedi_history_file() -> Path:
+    """Per company, the SEDI date its full history was last fetched up to, so a
+    later fetch only asks for what came after (see SediScraper.fetch)."""
+    return app_dir() / "sedi_history.json"
+
+
 def insider_finds_file() -> Path:
     """What each followed insider was last found trading on SEDI, company by
     company, so the app can suggest companies to add. Rebuilt by every search;

@@ -10,6 +10,9 @@ rows captured from a live SEDI Insider Transaction Detail report."""
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+from pathlib import Path
+
 import pytest
 
 from insight import paths, sedi
@@ -491,7 +494,7 @@ class TestABotCheckOnTheSearchIsSeenThrough:
         calls = {"searches": 0, "walls": 0}
         monkeypatch.setattr(s, "_open_search", lambda: None)
 
-        def fill(select_type, query):
+        def fill(select_type, query, start=None, end=None):
             calls["searches"] += 1
 
         monkeypatch.setattr(s, "_fill_search", fill)
@@ -615,3 +618,110 @@ class TestWhichCompaniesSediIsAskedAbout:
     def test_the_country_settles_an_unknown_board(self):
         assert sedi.is_canadian({"exchange": "", "country": "CA"}) is True
         assert sedi.is_canadian({"exchange": "XYZ"}) is False
+
+
+def _rec(d: str) -> sedi.InsiderTransaction:
+    return sedi.InsiderTransaction(
+        issuer_name="X Corp", exchange="TSE", ticker="X", insider_name="A B", transaction_date=d
+    )
+
+
+class TestABusyCompanyIsFetchedInPieces:
+    """SEDI stops a report near 500 rows ("Your search returned more results
+    than can be displayed"): 36 of 163 companies came back with exactly 501
+    trades, silently missing part of the two years."""
+
+    def scraper(self, monkeypatch, capacity: int):
+        """A SEDI whose report holds `capacity` rows; one trade per day."""
+        s = sedi.SediScraper()
+        s._today = date(2026, 10, 21)
+        last = {"n": 0}
+
+        def window(start, end, first):
+            lo = start or s._full_start(s._today)
+            hi = end or s._today
+            days = (hi - lo).days + 1
+            last["n"] = days
+            shown = min(days, capacity + 1)
+            return [_rec((lo + timedelta(days=i)).isoformat()) for i in range(shown)]
+
+        monkeypatch.setattr(s, "_truncated", lambda recs: last["n"] > capacity)
+        return s, window
+
+    def test_a_short_report_is_one_search(self, monkeypatch):
+        s, window = self.scraper(monkeypatch, capacity=5000)
+        recs, complete = s._split_fetch(window, None, None, "TSE:X")
+        assert complete and len(recs) == (date(2026, 10, 21) - date(2024, 1, 1)).days + 1
+
+    def test_a_cut_report_is_split_until_every_day_is_in(self, monkeypatch):
+        s, window = self.scraper(monkeypatch, capacity=500)
+        recs, complete = s._split_fetch(window, None, None, "TSE:X")
+        dates = [r.transaction_date for r in recs]
+        assert complete
+        assert len(dates) == len(set(dates)), "the halves never repeat a trade"
+        assert len(dates) == (date(2026, 10, 21) - date(2024, 1, 1)).days + 1, "nothing missing"
+
+    def test_a_window_that_cannot_be_narrowed_enough_says_so(self, monkeypatch):
+        s, window = self.scraper(monkeypatch, capacity=3)
+        _recs, complete = s._split_fetch(window, None, None, "TSE:X")
+        assert complete is False
+
+
+class TestAfterTheFirstFullFetchOnlyWhatIsNew:
+    def test_no_history_means_the_whole_window(self, tmp_path: Path):
+        s = sedi.SediScraper(history_path=tmp_path / "h.json")
+        assert s._resumes_from("TSE:X") is None
+
+    def test_a_remembered_company_resumes_a_month_before_it_ended(self, tmp_path: Path):
+        s = sedi.SediScraper(history_path=tmp_path / "h.json")
+        s._today = date(2026, 10, 21)
+        s._remember("TSE:X")
+        assert s._resumes_from("TSE:X") == date(2026, 9, 21)
+        assert sedi.SediScraper(history_path=tmp_path / "h.json")._resumes_from("TSE:Y") is None
+
+    def test_without_a_history_file_nothing_is_remembered(self):
+        s = sedi.SediScraper()
+        s._today = date(2026, 10, 21)
+        s._remember("TSE:X")
+        assert s._resumes_from("TSE:X") is None
+
+    def test_an_incomplete_fetch_is_not_remembered(self, tmp_path: Path, monkeypatch):
+        s = sedi.SediScraper(history_path=tmp_path / "h.json")
+        s._today = date(2026, 10, 21)
+        monkeypatch.setattr(s, "_split_fetch", lambda *a, **k: ([], False))
+        s.fetch("TSE", "X", "X Corp")
+        assert s._resumes_from("TSE:X") is None, "it will be fetched in full again"
+
+
+class TestTheFormGetsTheWindow:
+    def test_from_and_to_are_the_windows_own_dates(self):
+        calls: list = []
+
+        class Page:
+            def select_option(self, sel, value=None, label=None, timeout=None):
+                calls.append((sel, value if value is not None else label))
+
+            def fill(self, sel, value, timeout=None):
+                calls.append((sel, value))
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            def locator(self, sel):
+                return sel
+
+        s = sedi.SediScraper(headless=True)
+        s._page = Page()
+        s._sedi_today = lambda: date(2026, 10, 21)
+        s._click = lambda target, timeout=8000: None
+        s._fill_search("8", "Franco-Nevada", date(2025, 3, 7), date(2025, 9, 30))
+        got = dict(calls)
+        assert (got["select[name='MONTH_FROM_PUBLIC']"], got["select[name='DAY_FROM_PUBLIC']"]) == (
+            "2",
+            "7",
+        )
+        assert got["input[name='YEAR_FROM_PUBLIC']"] == "2025"
+        assert (got["select[name='MONTH_TO_PUBLIC']"], got["select[name='DAY_TO_PUBLIC']"]) == (
+            "8",
+            "30",
+        )

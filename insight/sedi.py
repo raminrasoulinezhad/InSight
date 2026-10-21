@@ -41,9 +41,13 @@ Design split (mirrors marketbeat.py):
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import re
+import tempfile
+import threading
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -595,6 +599,16 @@ _ITD_URL = "https://www.sedi.ca/sedi/SVTItdController?locale=en_CA"
 # what makes a person-first search possible at all: it spans every issuer the
 # person has filed against, including the TSX-V/CSE micro-caps MarketBeat does
 # not list. (The form also offers "4 = Insider company name", unused here.)
+# SEDI stops a report near this many rows and says so with this banner.
+_ROW_CAP = 500
+_TRUNCATED_MARKER = "returned more results than can be displayed"
+# Halvings before giving up on a window (two years / 2**6 is about 11 days).
+_MAX_SPLITS = 6
+# A follow-up fetch re-reads this much before where the last one ended, for
+# filings that arrive late (insiders have days to file, and some file later).
+_OVERLAP_DAYS = 30
+_HISTORY_LOCK = threading.Lock()
+
 _SELECT_TYPE_ISSUER = "8"
 _SELECT_TYPE_INSIDER = "5"
 _SELECT_TYPE_INSIDER_COMPANY = "4"
@@ -695,10 +709,16 @@ class SediScraper:
         manual_wait_s: int = 240,
         channel: str | None = "chrome",
         start_minimized: bool = True,
+        history_path: Path | None = None,
     ):
         self._headless = headless
         self._profile_dir = profile_dir
         self._months = months
+        # Where a company's full history was last fetched up to (see fetch).
+        # None: every fetch asks for the whole window, as the CLI default does.
+        self._history_path = history_path
+        self._today: date | None = None  # SEDI's own date, read off the form
+        self._working_query: dict[str, str] = {}  # issuer -> the text SEDI matched
         self._capture_dir = capture_dir
         self._pages_dir = pages_dir  # snapshot each company's report HTML here
         self._manual_wait_s = manual_wait_s
@@ -916,7 +936,14 @@ class SediScraper:
             body = self._page.inner_text("body")
         return not _is_search_form(body) or bool(re.search(r"Error:", body))
 
-    def _search(self, select_type: str, query: str, label: str) -> bool:
+    def _search(
+        self,
+        select_type: str,
+        query: str,
+        label: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> bool:
         """Open the form and run one search, seeing it through SEDI's bot check.
 
         When the check holds the first attempt it gets its page (see
@@ -929,7 +956,7 @@ class SediScraper:
         for attempt in range(2):
             self._open_search()
             try:
-                self._fill_search(select_type, query)
+                self._fill_search(select_type, query, start, end)
             except Exception as e:
                 print(f"  SEDI [{label}] could not drive the search form: {e}")
                 self._dump(f"itd_form_error_{label}")
@@ -970,33 +997,141 @@ class SediScraper:
     def fetch(self, exchange: str, ticker: str, issuer_hint: str = "") -> list[InsiderTransaction]:
         """Run the ITD 'issuer name' search for one company and parse results.
 
+        The first fetch of a company asks for the whole window. Once that has
+        gone through, later fetches ask only for the time since, less a month
+        of overlap for late filings (`_OVERLAP_DAYS`): the store keeps every
+        trade already fetched, so asking SEDI for two years again is wasted
+        searching against a bot-walled site. Either way, a report SEDI cuts
+        short is fetched again in halves (`_split_fetch`).
+
         On a parse of zero rows the results HTML is dumped (when capture_dir is
         set) and any SEDI error banner is logged, so an empty result is
         diagnosable rather than silent. Failures never abort the batch.
         """
         issuer = issuer_hint or ticker
+        key = f"{exchange.upper()}:{ticker.upper()}"
+        since = self._resumes_from(key)
 
-        queries = issuer_queries(issuer)
+        def window(start: date | None, end: date | None, first: bool) -> list[InsiderTransaction]:
+            return self._issuer_report(exchange, ticker, issuer, start, end, save=first)
+
+        records, complete = self._split_fetch(window, since, None, key)
+        if complete:
+            self._remember(key)
+        return records
+
+    def _issuer_report(
+        self,
+        exchange: str,
+        ticker: str,
+        issuer: str,
+        start: date | None,
+        end: date | None,
+        *,
+        save: bool,
+    ) -> list[InsiderTransaction]:
+        """One issuer search over one date window, parsed."""
+        label = f"{exchange}:{ticker}"
+        known = self._working_query.get(issuer)
+        full_name = issuer_queries(issuer)[0]
+        queries = [known] if known else issuer_queries(issuer)
         for attempt, query in enumerate(queries):
-            if not self._search(_SELECT_TYPE_ISSUER, query, f"{exchange}:{ticker}"):
+            if not self._search(_SELECT_TYPE_ISSUER, query, label, start, end):
                 return []
-            if not self._found_nothing() or attempt == len(queries) - 1:
+            if not self._found_nothing():
+                self._working_query[issuer] = query  # later windows go straight to it
                 break
-            print(f"  SEDI [{exchange}:{ticker}] no issuer starts with {query!r}; retrying")
+            if attempt == len(queries) - 1:
+                break
+            print(f"  SEDI [{label}] no issuer starts with {query!r}; retrying")
 
         # An issuer-name search lands on a "Select issuer" picker; click through
         # to the matching issuer's actual transaction report. After a retry the
         # list is wider than the name, so only a matching name is taken.
-        self._select_issuer_if_needed(issuer, strict=attempt > 0)
+        self._select_issuer_if_needed(issuer, strict=query != full_name)
 
         now = datetime.now(UTC).isoformat(timespec="seconds")
         rows = self._extract_rows()  # settles the report DOM before we snapshot it
-        self._save_page(exchange, ticker)  # snapshot the report page for the UI
+        if save:
+            self._save_page(exchange, ticker)  # snapshot the report page for the UI
         records = _parse_report_rows(rows, issuer, exchange, ticker, _ITD_URL, now)
         if not records:
             self._log_page_error(exchange, ticker)
             self._dump(f"itd_results_{ticker}")  # leave HTML so parsing can be fixed
         return records
+
+    def _truncated(self, records: list[InsiderTransaction]) -> bool:
+        """SEDI showed only part of the answer. It says so ("Your search
+        returned more results than can be displayed"), and stops near 500 rows;
+        either is enough."""
+        body = ""
+        with contextlib.suppress(Exception):
+            body = self._page.inner_text("body")
+        return _TRUNCATED_MARKER in body.lower() or len(records) >= _ROW_CAP
+
+    def _split_fetch(
+        self,
+        window: Callable[[date | None, date | None, bool], list[InsiderTransaction]],
+        start: date | None,
+        end: date | None,
+        label: str,
+        depth: int = 0,
+    ) -> tuple[list[InsiderTransaction], bool]:
+        """Fetch a date window, halving it while SEDI cuts the report short.
+
+        SEDI returns at most ~500 rows per search: 36 of 163 companies came back
+        with exactly 501 trades, silently missing part of the two years (the
+        reason CNQ "lacked" officers MarketBeat lists). Windows are disjoint, so
+        the halves never repeat a trade. Returns (records, complete): complete
+        is False when even the smallest window was still cut short.
+        """
+        records = window(start, end, depth == 0)
+        if not self._truncated(records):
+            return records, True
+        today = self._today or date.today()
+        lo, hi = start or self._full_start(today), end or today
+        if depth >= _MAX_SPLITS or (hi - lo).days < 2:
+            print(f"  SEDI [{label}] still cut short for {lo}..{hi}; some trades are missing")
+            return records, False
+        mid = lo + (hi - lo) / 2
+        print(f"  SEDI [{label}] report cut short; fetching {lo}..{mid} and {mid}..{hi} apart")
+        older, ok_old = self._split_fetch(window, lo, mid, label, depth + 1)
+        newer, ok_new = self._split_fetch(window, mid + timedelta(days=1), hi, label, depth + 1)
+        return older + newer, ok_old and ok_new
+
+    # -- where each company's full history reaches -----------------------------------
+    def _history(self) -> dict[str, str]:
+        if not self._history_path:
+            return {}
+        try:
+            raw = json.loads(self._history_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+        return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+    def _resumes_from(self, key: str) -> date | None:
+        """Where a fetch of this company starts: None (the whole window) until a
+        full fetch has gone through, then a month before where it ended."""
+        try:
+            until = date.fromisoformat(self._history()[key])
+        except (KeyError, ValueError):
+            return None
+        return until - timedelta(days=_OVERLAP_DAYS)
+
+    def _remember(self, key: str) -> None:
+        """Record that this company's trades are fetched up to SEDI's today."""
+        if not self._history_path or self._today is None:
+            return
+        with _HISTORY_LOCK:
+            history = self._history()
+            history[key] = self._today.isoformat()
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=self._history_path.parent, prefix=self._history_path.name + ".", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(history, fh, indent=1, sort_keys=True)
+            os.replace(tmp, self._history_path)
 
     # ------------------------------------------------------------------
     def fetch_insider(
@@ -1023,20 +1158,24 @@ class SediScraper:
         slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")[:40] or "insider"
         select_type, query = insider_query(name)
 
-        if not self._search(select_type, query, f"insider:{slug}"):
-            return []
+        def window(start: date | None, end: date | None, first: bool) -> list[InsiderTransaction]:
+            if not self._search(select_type, query, f"insider:{slug}", start, end):
+                return []
+            self._select_insider_if_needed(name, known_issuers)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            rows = self._extract_rows()
+            # No issuer/exchange/ticker fallback: every company must come from
+            # the grid's own "Issuer name:" headers. Passing one in would stamp
+            # it on rows belonging to other companies.
+            records = _parse_report_rows(rows, "", "", "", _ITD_URL, now)
+            if not records:
+                self._log_page_error("insider", name)
+                self._dump(f"itd_insider_results_{slug}")
+            return records
 
-        self._select_insider_if_needed(name, known_issuers)
-
-        now = datetime.now(UTC).isoformat(timespec="seconds")
-        rows = self._extract_rows()
-        # No issuer/exchange/ticker fallback: every company must come from the
-        # grid's own "Issuer name:" headers. Passing one in would stamp it on
-        # rows belonging to other companies.
-        records = _parse_report_rows(rows, "", "", "", _ITD_URL, now)
-        if not records:
-            self._log_page_error("insider", name)
-            self._dump(f"itd_insider_results_{slug}")
+        # Always the whole window, split while cut short: the summary of what a
+        # person trades drives the suggestions, so it cannot be a recent slice.
+        records, _complete = self._split_fetch(window, None, None, f"insider:{name}")
         return records
 
     def _select_insider_if_needed(self, name: str, known_issuers: Iterable[str] = ()) -> None:
@@ -1114,7 +1253,14 @@ class SediScraper:
             if m:
                 print(f"  SEDI [{exchange}:{ticker}] page error: {m.group(1).strip()[:80]}")
 
-    def _fill_search(self, select_type: str, value: str) -> None:
+    def _full_start(self, today: date) -> date:
+        """Start of the full window: Jan 1, at least two years back (more if a
+        larger --months was asked for)."""
+        return date(today.year - max(2, (self._months + 11) // 12), 1, 1)
+
+    def _fill_search(
+        self, select_type: str, value: str, start: date | None = None, end: date | None = None
+    ) -> None:
         """Drive SEDI's public ITD form over a wide date window, then submit.
 
         The form is the same for every search type — only SELECT_TYPE and the
@@ -1130,7 +1276,9 @@ class SediScraper:
         # local/UTC clock can be a day ahead and trip "Date cannot be future
         # dated". At least 2 years back (more if a larger --months was requested).
         today = self._sedi_today()
-        years_back = max(2, (self._months + 11) // 12)
+        self._today = today
+        start = start or self._full_start(today)
+        end = min(end or today, today)
 
         page.select_option("select[name='SELECT_TYPE']", select_type, timeout=8000)
         page.wait_for_timeout(300)  # onchange enables the value box
@@ -1145,12 +1293,12 @@ class SediScraper:
         # chosen by their visible label, not by value/index (index didn't stick,
         # leaving the day empty -> SEDI defaulted to month-end -> "future dated").
         page.select_option("select[name='DATE_RANGE_TYPE']", "0")  # date of transaction
-        page.select_option("select[name='MONTH_FROM_PUBLIC']", "0")  # January (0-indexed)
-        page.fill("input[name='YEAR_FROM_PUBLIC']", str(today.year - years_back))
-        page.select_option("select[name='DAY_FROM_PUBLIC']", label="1")
-        page.select_option("select[name='MONTH_TO_PUBLIC']", str(today.month - 1))
-        page.fill("input[name='YEAR_TO_PUBLIC']", str(today.year))
-        page.select_option("select[name='DAY_TO_PUBLIC']", label=str(today.day))
+        page.select_option("select[name='MONTH_FROM_PUBLIC']", str(start.month - 1))
+        page.fill("input[name='YEAR_FROM_PUBLIC']", str(start.year))
+        page.select_option("select[name='DAY_FROM_PUBLIC']", label=str(start.day))
+        page.select_option("select[name='MONTH_TO_PUBLIC']", str(end.month - 1))
+        page.fill("input[name='YEAR_TO_PUBLIC']", str(end.year))
+        page.select_option("select[name='DAY_TO_PUBLIC']", label=str(end.day))
 
         self._click(page.locator("input[name='Search']"))
 

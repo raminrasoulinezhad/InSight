@@ -344,6 +344,8 @@ def _sedi_phase(
             # dump HTML for any company that yields no rows, so an empty result
             # can be diagnosed rather than being silent.
             capture_dir=paths.app_dir() / "sedi-debug",
+            # after a company's first full fetch, ask only for what is new
+            history_path=paths.sedi_history_file(),
         ),
         source="sedi",
         outcome=outcome,

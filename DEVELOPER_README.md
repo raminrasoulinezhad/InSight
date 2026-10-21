@@ -78,6 +78,20 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   times in a row". The SEDI browser now launches with `bypass_csp=True`, so the
   check page loads (the window comes up if it needs a human), and `_search`
   runs the search again once the check clears. Only a second hold is a block.
+- **SEDI cuts a report off near 500 rows**, and says so: "Your search returned
+  more results than can be displayed". 36 of 163 companies came back with
+  exactly 501 trades, silently missing part of the two years; CNQ had 15
+  insiders instead of 37. `_split_fetch` halves the date window while the
+  report is cut short (disjoint halves, so nothing repeats, up to six levels).
+  CNQ: 501 trades became 1,810.
+- **After a company's first full fetch, only what is new.** The store keeps
+  every trade already fetched, so `sedi_history.json` records, per company, the
+  SEDI date its history is complete up to, and the next fetch asks only from a
+  month before that (`_OVERLAP_DAYS`, for late filings): CNQ's follow-up was 19
+  trades in 11 s instead of two years. A fetch still cut short at the smallest
+  window is not recorded, so it is tried in full again. The person search always
+  asks for the whole window, since its summary feeds the suggestions.
+  `insight-scrape --source sedi --force` ignores the history.
 - **SEDI's "starts with" is literal**, and names are often worded differently:
   the watchlist's "Metalla Royalty & Streaming" is SEDI's "Metalla Royalty and
   Streaming Ltd.", "Alimentation-Couche Tard" is "Alimentation Couche-Tard".

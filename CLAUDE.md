@@ -120,7 +120,10 @@ reload, Python edits need an app restart.
   `Browser.setWindowBounds`, since no portable way exists to move someone else's
   window); `--sedi-window` opts out. A check on the *search* (a redirected form
   POST) needs `bypass_csp=True` to be shown at all, and `_search` retries once
-  after it clears. Never wire it
+  after it clears. A report SEDI cuts short (~500 rows, "more results than can
+  be displayed") is fetched again in halves of the date window; after a full
+  fetch, `sedi_history.json` lets later fetches ask only for the last month or so.
+  Never wire it
   into the daily timer, and never delete the profile's cookies — that jar *is* the
   solved challenge.
 - **When SEDI stops working, check the browser's identity first.** Chrome

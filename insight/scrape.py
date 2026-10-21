@@ -392,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
                 capture_dir=capture,
                 pages_dir=paths.sedi_pages_dir(),
                 start_minimized=not args.sedi_window,
+                # --force means the whole window again, not only what is new
+                history_path=None if args.force else paths.sedi_history_file(),
             ),
             source="sedi",
         )
