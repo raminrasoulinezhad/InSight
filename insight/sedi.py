@@ -609,6 +609,11 @@ _MAX_SPLITS = 6
 _OVERLAP_DAYS = 30
 _HISTORY_LOCK = threading.Lock()
 
+
+class _WindowFailed(Exception):
+    """A date window's search could not be run (form not drivable)."""
+
+
 _SELECT_TYPE_ISSUER = "8"
 _SELECT_TYPE_INSIDER = "5"
 _SELECT_TYPE_INSIDER_COMPANY = "4"
@@ -958,6 +963,12 @@ class SediScraper:
             try:
                 self._fill_search(select_type, query, start, end)
             except Exception as e:
+                # The check can arrive a moment after the form loads, so the
+                # form vanishes mid-fill. That is the check, not a broken form:
+                # see it through (window up, a human if needed), then retry.
+                if self._walled():
+                    self._clear_wall_or_raise("filling the ITD search")
+                    continue
                 print(f"  SEDI [{label}] could not drive the search form: {e}")
                 self._dump(f"itd_form_error_{label}")
                 return False
@@ -1013,11 +1024,20 @@ class SediScraper:
         since = self._resumes_from(key)
 
         def window(start: date | None, end: date | None, first: bool) -> list[InsiderTransaction]:
-            return self._issuer_report(exchange, ticker, issuer, start, end, save=first)
+            records = self._issuer_report(exchange, ticker, issuer, start, end, save=first)
+            if records is None:
+                raise _WindowFailed
+            return records
 
         records, complete = self._split_fetch(window, since, None, key)
         if complete:
             self._remember(key)
+        elif not records:
+            # Nothing came back because the search could not be run, which is
+            # not "no insider trades". Raising lets the batch count it as failed
+            # and keep the company's last good cache instead of overwriting it
+            # with an empty one.
+            raise RuntimeError("SEDI search could not be run for this company")
         return records
 
     def _issuer_report(
@@ -1029,15 +1049,16 @@ class SediScraper:
         end: date | None,
         *,
         save: bool,
-    ) -> list[InsiderTransaction]:
-        """One issuer search over one date window, parsed."""
+    ) -> list[InsiderTransaction] | None:
+        """One issuer search over one date window, parsed. None when the search
+        could not be run at all, which is not the same as finding nothing."""
         label = f"{exchange}:{ticker}"
         known = self._working_query.get(issuer)
         full_name = issuer_queries(issuer)[0]
         queries = [known] if known else issuer_queries(issuer)
         for attempt, query in enumerate(queries):
             if not self._search(_SELECT_TYPE_ISSUER, query, label, start, end):
-                return []
+                return None
             if not self._found_nothing():
                 self._working_query[issuer] = query  # later windows go straight to it
                 break
@@ -1085,7 +1106,13 @@ class SediScraper:
         the halves never repeat a trade. Returns (records, complete): complete
         is False when even the smallest window was still cut short.
         """
-        records = window(start, end, depth == 0)
+        try:
+            records = window(start, end, depth == 0)
+        except _WindowFailed:
+            # A window that could not be searched is a gap, not an empty
+            # stretch: the company is not marked complete, so the next fetch
+            # asks for the whole window again.
+            return [], False
         if not self._truncated(records):
             return records, True
         today = self._today or date.today()
@@ -1160,7 +1187,7 @@ class SediScraper:
 
         def window(start: date | None, end: date | None, first: bool) -> list[InsiderTransaction]:
             if not self._search(select_type, query, f"insider:{slug}", start, end):
-                return []
+                raise _WindowFailed
             self._select_insider_if_needed(name, known_issuers)
             now = datetime.now(UTC).isoformat(timespec="seconds")
             rows = self._extract_rows()

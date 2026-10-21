@@ -688,7 +688,8 @@ class TestAfterTheFirstFullFetchOnlyWhatIsNew:
     def test_an_incomplete_fetch_is_not_remembered(self, tmp_path: Path, monkeypatch):
         s = sedi.SediScraper(history_path=tmp_path / "h.json")
         s._today = date(2026, 10, 21)
-        monkeypatch.setattr(s, "_split_fetch", lambda *a, **k: ([], False))
+        # still cut short at the smallest window: some rows, but not all
+        monkeypatch.setattr(s, "_split_fetch", lambda *a, **k: ([_rec("2026-01-01")], False))
         s.fetch("TSE", "X", "X Corp")
         assert s._resumes_from("TSE:X") is None, "it will be fetched in full again"
 
@@ -725,3 +726,43 @@ class TestTheFormGetsTheWindow:
             "8",
             "30",
         )
+
+
+class TestACheckThatArrivesMidFill:
+    """At 11:06 on 2026-10-21 the check replaced the form while it was being
+    filled in: read as a broken form, the piece came back empty."""
+
+    def test_the_check_is_seen_through_and_the_search_retried(self, monkeypatch):
+        s = sedi.SediScraper()
+        s._page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
+        fills = {"n": 0}
+        walls = []
+
+        def fill(*a, **k):
+            fills["n"] += 1
+            if fills["n"] == 1:
+                raise RuntimeError("no SELECT_TYPE: the page is the check")
+
+        monkeypatch.setattr(s, "_open_search", lambda: None)
+        monkeypatch.setattr(s, "_fill_search", fill)
+        monkeypatch.setattr(s, "_walled", lambda: fills["n"] == 1)
+        monkeypatch.setattr(s, "_clear_wall_or_raise", lambda ctx: walls.append(ctx))
+        monkeypatch.setattr(s, "_submitted", lambda: True)
+        assert s._search("8", "TC Energy", "TSE:TRP") is True
+        assert fills["n"] == 2 and walls[0] == "filling the ITD search"
+
+    def test_a_piece_that_could_not_be_searched_is_a_gap(self, monkeypatch):
+        s = sedi.SediScraper()
+        s._today = date(2026, 10, 21)
+
+        def window(start, end, first):
+            raise sedi._WindowFailed
+
+        recs, complete = s._split_fetch(window, None, None, "TSE:TRP")
+        assert recs == [] and complete is False, "never remembered as complete"
+
+    def test_a_company_whose_search_could_not_run_fails_rather_than_reads_empty(self, monkeypatch):
+        s = sedi.SediScraper()
+        monkeypatch.setattr(s, "_split_fetch", lambda *a, **k: ([], False))
+        with pytest.raises(RuntimeError):
+            s.fetch("TSXV", "BRC", "Blackrock Silver Corp")
