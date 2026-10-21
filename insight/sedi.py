@@ -726,6 +726,14 @@ class SediScraper:
             str(self._profile_dir) if self._profile_dir else "",
             headless=self._headless,
             channel=channel,
+            # When SEDI re-checks a visitor, it answers the *search* (a form
+            # POST) with a redirect to its bot check, and the page's CSP
+            # (form-action 'self') forbids a form from landing off-site. Chrome
+            # then silently stays on the form: no check page, nothing to click,
+            # and the run reported "blocked" with the window never shown.
+            # Ignoring the page's CSP in this one browser lets it follow SEDI's
+            # own redirect, so the check runs, clears or asks for a human.
+            bypass_csp=True,
             locale="en-CA",
             viewport={"width": 1366, "height": 900},
             # The cache cap keeps this persistent profile from growing without
@@ -836,11 +844,12 @@ class SediScraper:
             body = self._page.inner_text("body")
         return _is_bot_wall(title, url, body)
 
-    def _clear_wall_or_raise(self, ctx: str) -> None:
+    def _clear_wall_or_raise(self, ctx: str) -> bool:
         """If the bot wall is up: headless -> BotBlocked; headful -> wait for a
-        human to solve it in the visible window (poll until it clears)."""
+        human to solve it in the visible window (poll until it clears). Returns
+        whether there was a wall to get past."""
         if not self._walled():
-            return
+            return False
         if self._headless:
             raise BotBlocked(f"SEDI bot wall while {ctx} (headless — cannot solve)")
         # The window has been sitting minimized. This is the one thing it exists
@@ -862,7 +871,7 @@ class SediScraper:
             if not self._walled():
                 print("  SEDI: wall cleared, continuing.")
                 self.hide_window()  # thanks — back out of the way
-                return
+                return True
             if waited % reload_every < step:
                 with contextlib.suppress(Exception):
                     self._page.reload(wait_until="domcontentloaded", timeout=30000)
@@ -893,22 +902,46 @@ class SediScraper:
         page.wait_for_timeout(1500)
         self._clear_wall_or_raise("opening ITD search")
 
-    def _raise_if_not_submitted(self, label: str) -> None:
-        """Fail loudly when Search went nowhere.
+    def _submitted(self) -> bool:
+        """True once Search has actually taken the page somewhere.
 
-        SEDI's bot wall can let the form load and then intercept the submit:
-        Chrome refuses the redirect to the validator (CSP `form-action 'self'`)
-        and the page just sits there. Read as "no rows", that looked like a
+        SEDI's bot check can let the form load and then intercept the submit,
+        leaving the page on the form. Read as "no rows", that looked like a
         company with no insider trades, overwrote its good cache with nothing,
         and saved the blank form as its SEDI page. A SEDI validation error also
-        leaves the form up, but with an "Error:" banner, and is left alone.
+        leaves the form up, but with an "Error:" banner: that is an answer.
         """
         body = ""
         with contextlib.suppress(Exception):
             body = self._page.inner_text("body")
-        if _is_search_form(body) and not re.search(r"Error:", body):
-            self._dump(f"itd_not_submitted_{label}")
-            raise BotBlocked("SEDI did not accept the search (its bot check intercepted it)")
+        return not _is_search_form(body) or bool(re.search(r"Error:", body))
+
+    def _search(self, select_type: str, query: str, label: str) -> bool:
+        """Open the form and run one search, seeing it through SEDI's bot check.
+
+        When the check holds the first attempt it gets its page (see
+        `bypass_csp` in `_launch`): the window comes up, the check clears by
+        itself or a human ticks the box, and the search runs again with the
+        fresh pass. Only a second hold is a block. Returns False when the form
+        could not be driven at all (logged and dumped); raises BotBlocked when
+        the check never lets a search through.
+        """
+        for attempt in range(2):
+            self._open_search()
+            try:
+                self._fill_search(select_type, query)
+            except Exception as e:
+                print(f"  SEDI [{label}] could not drive the search form: {e}")
+                self._dump(f"itd_form_error_{label}")
+                return False
+            self._page.wait_for_timeout(2500)
+            self._clear_wall_or_raise("running ITD search")
+            if self._submitted():
+                return True
+            if attempt == 0:
+                print(f"  SEDI [{label}] the bot check held the search; searching again")
+        self._dump(f"itd_not_submitted_{label}")
+        raise BotBlocked("SEDI did not accept the search (its bot check intercepted it)")
 
     def _dump(self, label: str) -> None:
         if not self._capture_dir:
@@ -942,20 +975,11 @@ class SediScraper:
         diagnosable rather than silent. Failures never abort the batch.
         """
         issuer = issuer_hint or ticker
-        page = self._page
 
         queries = issuer_queries(issuer)
         for attempt, query in enumerate(queries):
-            self._open_search()
-            try:
-                self._fill_search(_SELECT_TYPE_ISSUER, query)
-            except Exception as e:
-                print(f"  SEDI [{exchange}:{ticker}] could not drive the search form: {e}")
-                self._dump(f"itd_form_error_{ticker}")
+            if not self._search(_SELECT_TYPE_ISSUER, query, f"{exchange}:{ticker}"):
                 return []
-            page.wait_for_timeout(2500)
-            self._clear_wall_or_raise("running ITD search")
-            self._raise_if_not_submitted(ticker)
             if not self._found_nothing() or attempt == len(queries) - 1:
                 break
             print(f"  SEDI [{exchange}:{ticker}] no issuer starts with {query!r}; retrying")
@@ -996,22 +1020,11 @@ class SediScraper:
         reports legal names, not tickers. Run `resolve_tickers` over the result to
         fill those in before writing a snapshot.
         """
-        page = self._page
         slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")[:40] or "insider"
         select_type, query = insider_query(name)
 
-        self._open_search()
-
-        try:
-            self._fill_search(select_type, query)
-        except Exception as e:
-            print(f"  SEDI [insider:{name}] could not drive the search form: {e}")
-            self._dump(f"itd_insider_form_error_{slug}")
+        if not self._search(select_type, query, f"insider:{slug}"):
             return []
-
-        page.wait_for_timeout(2500)
-        self._clear_wall_or_raise("running ITD insider search")
-        self._raise_if_not_submitted(f"insider_{slug}")
 
         self._select_insider_if_needed(name, known_issuers)
 

@@ -71,6 +71,13 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   goes by the exchange when it is a known one and only falls back to the
   entry's country for an unknown exchange (nine US and Australian companies on
   one watchlist carried country "CA" and were searched on every run).
+- **A bot check on the search itself is seen through.** When SEDI re-checks a
+  visitor it answers the search (a form POST) with a redirect to its check,
+  and the page's CSP (`form-action 'self'`) stopped Chrome following it: the
+  page sat on the form, nothing appeared on screen, and runs ended "blocked 3
+  times in a row". The SEDI browser now launches with `bypass_csp=True`, so the
+  check page loads (the window comes up if it needs a human), and `_search`
+  runs the search again once the check clears. Only a second hold is a block.
 - **SEDI's "starts with" is literal**, and names are often worded differently:
   the watchlist's "Metalla Royalty & Streaming" is SEDI's "Metalla Royalty and
   Streaming Ltd.", "Alimentation-Couche Tard" is "Alimentation Couche-Tard".

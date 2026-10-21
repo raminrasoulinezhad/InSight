@@ -467,19 +467,56 @@ class TestABlockedSearchIsNotAnEmptyResult:
         s._page = type("P", (), {"inner_text": lambda self, sel: body})()
         return s
 
-    def test_still_on_the_form_after_search_raises(self):
-        s = self.wired_to("Insider transaction detail - Enter Search criteria")
-        with pytest.raises(sedi.BotBlocked):
-            s._raise_if_not_submitted("FNV")
+    def test_still_on_the_form_after_search_is_not_submitted(self):
+        assert not self.wired_to("Insider transaction detail - Enter Search criteria")._submitted()
 
-    def test_a_sedi_validation_error_is_left_to_the_normal_path(self):
+    def test_a_sedi_validation_error_is_an_answer(self):
         # SEDI re-shows the form with a banner for its own errors; that is a
         # real answer about the query, not a block.
         s = self.wired_to("Enter Search criteria  Error: Date cannot be future dated")
-        s._raise_if_not_submitted("FNV")
+        assert s._submitted()
 
-    def test_a_report_page_passes(self):
-        self.wired_to("Issuer name: Franco-Nevada Corporation")._raise_if_not_submitted("FNV")
+    def test_a_report_page_is_submitted(self):
+        assert self.wired_to("Issuer name: Franco-Nevada Corporation")._submitted()
+
+
+class TestABotCheckOnTheSearchIsSeenThrough:
+    """SEDI answered searches with a redirect to its bot check, Chrome's CSP
+    kept the form from following it, and the run gave up "blocked 3 times in a
+    row" with the check never on screen."""
+
+    def scraper(self, monkeypatch, outcomes):
+        s = sedi.SediScraper()
+        s._page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
+        calls = {"searches": 0, "walls": 0}
+        monkeypatch.setattr(s, "_open_search", lambda: None)
+
+        def fill(select_type, query):
+            calls["searches"] += 1
+
+        monkeypatch.setattr(s, "_fill_search", fill)
+        monkeypatch.setattr(
+            s, "_clear_wall_or_raise", lambda ctx: calls.update(walls=calls["walls"] + 1)
+        )
+        monkeypatch.setattr(s, "_submitted", lambda: outcomes.pop(0))
+        monkeypatch.setattr(s, "_dump", lambda label: None)
+        return s, calls
+
+    def test_a_held_search_is_run_again_after_the_check(self, monkeypatch):
+        s, calls = self.scraper(monkeypatch, [False, True])
+        assert s._search("8", "Franco-Nevada", "TSE:FNV") is True
+        assert calls["searches"] == 2 and calls["walls"] == 2
+
+    def test_two_holds_in_a_row_are_a_block(self, monkeypatch):
+        s, calls = self.scraper(monkeypatch, [False, False])
+        with pytest.raises(sedi.BotBlocked):
+            s._search("8", "Franco-Nevada", "TSE:FNV")
+        assert calls["searches"] == 2
+
+    def test_the_browser_may_follow_sedis_redirect_to_its_check(self):
+        import inspect
+
+        assert "bypass_csp=True" in inspect.getsource(sedi.SediScraper._launch)
 
 
 class TestTheBrowserDoesNotLieAboutItsVersion:
