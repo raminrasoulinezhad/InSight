@@ -607,6 +607,8 @@ _MAX_SPLITS = 6
 # A follow-up fetch re-reads this much before where the last one ended, for
 # filings that arrive late (insiders have days to file, and some file later).
 _OVERLAP_DAYS = 30
+# How often a company gets a full fetch again (re-learning its SEDI name).
+_FULL_REFRESH_DAYS = 90
 _HISTORY_LOCK = threading.Lock()
 
 
@@ -669,6 +671,13 @@ def _is_search_form(body: str) -> bool:
     return "enter search criteria" in (body or "").lower()
 
 
+def _is_solvable_check(title: str, html: str) -> bool:
+    """A wall page with a CAPTCHA widget on it (Radware serves hCaptcha), which a
+    person can solve, unlike a bare "403 Forbidden" block."""
+    h = (html or "").lower()
+    return "hcaptcha" in h or "g-recaptcha" in h or "data-sitekey" in h
+
+
 def _is_bot_wall(title: str, url: str, body: str = "") -> bool:
     """True if the current page is the Radware/ShieldSquare bot wall. Pure so it
     can be unit-tested; `_walled()` supplies the live title/url/body."""
@@ -715,6 +724,7 @@ class SediScraper:
         channel: str | None = "chrome",
         start_minimized: bool = True,
         history_path: Path | None = None,
+        on_notice: Callable[[str], None] | None = None,
     ):
         self._headless = headless
         self._profile_dir = profile_dir
@@ -723,6 +733,10 @@ class SediScraper:
         # None: every fetch asks for the whole window, as the CLI default does.
         self._history_path = history_path
         self._today: date | None = None  # SEDI's own date, read off the form
+        # Tells the app something needs the user ("" when it no longer does).
+        # A check waiting for a human used to show nothing but "Fetching 1 of
+        # 190", so nobody knew to look for the SEDI window.
+        self._on_notice = on_notice
         self._working_query: dict[str, str] = {}  # issuer -> the text SEDI matched
         self._capture_dir = capture_dir
         self._pages_dir = pages_dir  # snapshot each company's report HTML here
@@ -869,6 +883,18 @@ class SediScraper:
             body = self._page.inner_text("body")
         return _is_bot_wall(title, url, body)
 
+    def _notice(self, message: str) -> None:
+        if self._on_notice is not None:
+            with contextlib.suppress(Exception):
+                self._on_notice(message)
+
+    def _is_puzzle(self) -> bool:
+        """True when the wall is a CAPTCHA a person can solve (an hCaptcha or
+        reCAPTCHA widget), as opposed to a bare block page."""
+        with contextlib.suppress(Exception):
+            return _is_solvable_check(self._page.title(), self._page.content())
+        return False
+
     def _clear_wall_or_raise(self, ctx: str) -> bool:
         """If the bot wall is up: headless -> BotBlocked; headful -> wait for a
         human to solve it in the visible window (poll until it clears). Returns
@@ -881,26 +907,65 @@ class SediScraper:
         # for, so un-minimize it — otherwise the scrape waits four minutes for a
         # CAPTCHA nobody can see, then fails.
         self.show_window()
-        print(
-            f"  SEDI: Radware bot wall while {ctx}. If there's a CAPTCHA, solve it in the "
-            "browser window (re-opened for you). A bare '403 Forbidden / Transaction ID' "
-            "page is a hard IP/fingerprint block with nothing to solve — reloading "
-            "periodically in case it re-validates…"
+        minutes = max(1, round(self._manual_wait_s / 60))
+        self._notice(
+            "SEDI needs you: solve the 'I am not a robot' check in the SEDI browser "
+            f"window (waiting up to {minutes} min)"
         )
+        print(f"  SEDI: bot check while {ctx}; waiting for it to clear or be solved…")
         waited = 0
         step = 3000
-        reload_every = 15000  # nudge Radware to re-run its JS check after cookies settle
+        # Reloading nudges Radware to re-run its check on a bare block page. On
+        # a puzzle it wipes whatever the person has clicked so far, every time,
+        # which made the check close to unsolvable; so a puzzle is left alone.
+        reload_every = 15000
         while waited < self._manual_wait_s * 1000:
             self._page.wait_for_timeout(step)
             waited += step
             if not self._walled():
                 print("  SEDI: wall cleared, continuing.")
+                self._notice("")
                 self.hide_window()  # thanks — back out of the way
                 return True
-            if waited % reload_every < step:
+            if waited % reload_every < step and not self._is_puzzle():
                 with contextlib.suppress(Exception):
                     self._page.reload(wait_until="domcontentloaded", timeout=30000)
+        self._notice("")
+        # Keep what SEDI showed: "why was it blocked?" should have an answer.
+        self._dump(f"wall_timeout_{re.sub(r'[^A-Za-z0-9]+', '_', ctx)}")
         raise BotBlocked(f"SEDI bot wall not cleared within {self._manual_wait_s}s while {ctx}")
+
+    def _relaunch(self) -> None:
+        """Close this browser and open a fresh one on the same profile.
+
+        On 2026-10-27 the first session sat on the bot check for three
+        companies (4 minutes each) and the SEDI phase stopped, yet a new session
+        two minutes later ran nine searches straight through. A stuck session is
+        worth one fresh start before a company counts as blocked.
+        """
+        with contextlib.suppress(Exception):
+            if self._ctx:
+                self._ctx.close()
+        self._window = None
+        try:
+            self._ctx = self._launch(self._channel)
+        except Exception:
+            self._ctx = self._launch(None)
+        self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        self.hide_window()
+
+    def _with_one_fresh_start(self, run: Callable[[], Any], label: str) -> Any:
+        """Run a fetch; if SEDI's check blocks it, start a fresh browser and run
+        it once more. A fatal block (the check's server not answering) is not
+        retried: a new session reaches the same dead server."""
+        try:
+            return run()
+        except BotBlocked as e:
+            if e.fatal or self._headless:
+                raise
+            print(f"  SEDI [{label}] blocked ({e}); trying once more in a fresh browser")
+            self._relaunch()
+            return run()
 
     def _browser_gone(self) -> bool:
         with contextlib.suppress(Exception):
@@ -1019,9 +1084,24 @@ class SediScraper:
         set) and any SEDI error banner is logged, so an empty result is
         diagnosable rather than silent. Failures never abort the batch.
         """
+        return self._with_one_fresh_start(
+            lambda: self._fetch_company(exchange, ticker, issuer_hint), f"{exchange}:{ticker}"
+        )
+
+    def _fetch_company(
+        self, exchange: str, ticker: str, issuer_hint: str
+    ) -> list[InsiderTransaction]:
         issuer = issuer_hint or ticker
         key = f"{exchange.upper()}:{ticker.upper()}"
         since = self._resumes_from(key)
+        # SEDI says "no results" both for a name it does not know and for a
+        # known company with no trades in the dates asked. A follow-up month is
+        # often quiet, and reading that as a wrong name cost up to four extra
+        # searches per quiet company, the kind of volume that brings on the bot
+        # check. A follow-up tries one text only: the one that worked last time,
+        # else the plain name. Name variants are for full fetches.
+        if since is not None:
+            self._working_query[issuer] = self._known_query(key) or issuer_queries(issuer)[0]
 
         def window(start: date | None, end: date | None, first: bool) -> list[InsiderTransaction]:
             records = self._issuer_report(exchange, ticker, issuer, start, end, save=first)
@@ -1031,7 +1111,7 @@ class SediScraper:
 
         records, complete = self._split_fetch(window, since, None, key)
         if complete:
-            self._remember(key)
+            self._remember(key, self._working_query.get(issuer, ""), full=since is None)
         elif not records:
             # Nothing came back because the search could not be run, which is
             # not "no insider trades". Raising lets the batch count it as failed
@@ -1065,6 +1145,8 @@ class SediScraper:
             if attempt == len(queries) - 1:
                 break
             print(f"  SEDI [{label}] no issuer starts with {query!r}; retrying")
+        if known and self._found_nothing():
+            return []  # a known company with no trades in these dates: nothing new
 
         # An issuer-name search lands on a "Select issuer" picker; click through
         # to the matching issuer's actual transaction report. After a retry the
@@ -1127,31 +1209,59 @@ class SediScraper:
         return older + newer, ok_old and ok_new
 
     # -- where each company's full history reaches -----------------------------------
-    def _history(self) -> dict[str, str]:
+    def _history(self) -> dict[str, dict[str, str]]:
+        """{EXCH:TICKER: {"until": date, "query": search text}}. Older files hold
+        a bare date per company, read as {"until": date}."""
         if not self._history_path:
             return {}
         try:
             raw = json.loads(self._history_path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return {}
-        return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                out[str(k)] = {str(a): str(b) for a, b in v.items()}
+            elif v:
+                out[str(k)] = {"until": str(v)}
+        return out
 
-    def _resumes_from(self, key: str) -> date | None:
+    def _resumes_from(self, key: str, today: date | None = None) -> date | None:
         """Where a fetch of this company starts: None (the whole window) until a
-        full fetch has gone through, then a month before where it ended."""
+        full fetch has gone through, then a month before where it ended. Every
+        `_FULL_REFRESH_DAYS` it is None again: one full fetch re-learns the name
+        SEDI knows the company by and catches anything a follow-up missed."""
+        entry = self._history().get(key, {})
         try:
-            until = date.fromisoformat(self._history()[key])
+            until = date.fromisoformat(entry["until"])
+            full = date.fromisoformat(entry.get("full") or entry["until"])
         except (KeyError, ValueError):
+            return None
+        if ((today or self._today or date.today()) - full).days >= _FULL_REFRESH_DAYS:
             return None
         return until - timedelta(days=_OVERLAP_DAYS)
 
-    def _remember(self, key: str) -> None:
-        """Record that this company's trades are fetched up to SEDI's today."""
+    def _known_query(self, key: str) -> str:
+        return self._history().get(key, {}).get("query", "")
+
+    def _remember(self, key: str, query: str = "", full: bool = False) -> None:
+        """Record that this company's trades are fetched up to SEDI's today, the
+        search text SEDI knows it by, and (for a full fetch) when that was."""
         if not self._history_path or self._today is None:
             return
         with _HISTORY_LOCK:
             history = self._history()
-            history[key] = self._today.isoformat()
+            old = history.get(key, {})
+            today = self._today.isoformat()
+            entry = {
+                "until": today,
+                "full": today if full else old.get("full", old.get("until", today)),
+            }
+            if query or old.get("query"):
+                entry["query"] = query or old["query"]
+            history[key] = entry
             self._history_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(
                 dir=self._history_path.parent, prefix=self._history_path.name + ".", suffix=".tmp"
@@ -1202,8 +1312,12 @@ class SediScraper:
 
         # Always the whole window, split while cut short: the summary of what a
         # person trades drives the suggestions, so it cannot be a recent slice.
-        records, _complete = self._split_fetch(window, None, None, f"insider:{name}")
-        return records
+        def run() -> list[InsiderTransaction]:
+            records, _complete = self._split_fetch(window, None, None, f"insider:{name}")
+            return records
+
+        result: list[InsiderTransaction] = self._with_one_fresh_start(run, f"insider:{name}")
+        return result
 
     def _select_insider_if_needed(self, name: str, known_issuers: Iterable[str] = ()) -> None:
         """An insider search lands on a 'Select insider' picker when more than

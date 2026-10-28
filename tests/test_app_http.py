@@ -768,3 +768,17 @@ class TestOneFetchButtonForBothSources:
                 break
             threading.Event().wait(0.02)
         assert got == {"source": "all"}
+
+
+class TestABotCheckWaitingOnTheUserIsSaid:
+    def test_the_notice_replaces_the_progress_line_and_is_flagged(self):
+        app._sedi_notice("SEDI needs you: solve the check")
+        assert app._refresh["attention"] is True
+        assert app._refresh["message"].startswith("SEDI needs you")
+        app._progress(3, 10, "Next Co")
+        assert app._refresh["attention"] is False, "progress resumes unflagged"
+
+    def test_clearing_says_so(self):
+        app._sedi_notice("")
+        assert app._refresh["attention"] is False
+        assert "cleared" in app._refresh["message"]

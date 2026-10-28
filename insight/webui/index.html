@@ -358,6 +358,7 @@
   .show-all:hover { border-color:var(--accent); }
   /* SEDI insider lookup: one row per company the person filed against */
   .find-msg { color:var(--muted); font-size:13px; margin:0 0 12px; line-height:1.5; }
+  .meta.attention { color:var(--sell); font-weight:600; }
   .suggest-box { background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:12px 14px; margin-bottom:12px; }
   .suggest-box summary { cursor:pointer; font-weight:600; font-size:13px; }
@@ -2205,6 +2206,8 @@ async function pollRefresh(){
   try {
     const d = await (await fetch("/api/refresh/status")).json();
     refreshMsg.textContent = d.message || "";
+    // A bot check waiting on the user must not look like routine progress.
+    refreshMsg.classList.toggle("attention", !!(d.running && d.attention));
     if (d.running){ setProgress(true, d.done, d.total); return; }   // keep polling
     clearInterval(pollTimer); pollTimer = null;
     setRefreshing(false, d.message);

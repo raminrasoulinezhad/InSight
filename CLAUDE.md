@@ -122,8 +122,11 @@ reload, Python edits need an app restart.
   POST) needs `bypass_csp=True` to be shown at all, and `_search` retries once
   after it clears. A report SEDI cuts short (~500 rows, "more results than can
   be displayed") is fetched again in halves of the date window; after a full
-  fetch, `sedi_history.json` lets later fetches ask only for the last month or so.
-  Never wire it
+  fetch, `sedi_history.json` lets later fetches ask only for the last month or so,
+  with one search each (the stored `query`; "no results" there means a quiet
+  month, not a wrong name). A check waiting on a person is announced in the app
+  ("SEDI needs you"), a solvable puzzle is never reloaded under them, and a
+  blocked company gets one fresh browser before it counts. Never wire it
   into the daily timer, and never delete the profile's cookies — that jar *is* the
   solved challenge.
 - **When SEDI stops working, check the browser's identity first.** Chrome

@@ -92,6 +92,22 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   window is not recorded, so it is tried in full again. The person search always
   asks for the whole window, since its summary feeds the suggestions.
   `insight-scrape --source sedi --force` ignores the history.
+- **A follow-up fetch is one search.** SEDI answers "no results" both for a
+  name it does not know and for a known company with no trades in the dates
+  asked, and reading a quiet month as a wrong name cost up to five searches per
+  company. `sedi_history.json` now holds, per company, `until`, `full` (the last
+  full fetch) and `query` (the text SEDI matched); a follow-up searches that text
+  (or the plain name) once and takes "no results" as "nothing new". Every
+  `_FULL_REFRESH_DAYS` (90) a company gets a full fetch again, with name
+  variants, which re-learns `query`.
+- **When the check waits on a person** (`_clear_wall_or_raise`): the app's status
+  line says "SEDI needs you: solve the 'I am not a robot' check in the SEDI
+  browser window" (`on_notice`, shown flagged in the header); a solvable puzzle
+  (hCaptcha) is never reloaded under the person solving it (reloads are only for
+  a bare block page); a timeout saves `sedi-debug/wall_timeout_*` so the cause is
+  on disk; and a company blocked that way gets one fresh browser session before
+  it counts (`_with_one_fresh_start`). On 2026-10-27 a stuck first session
+  blocked three companies while a fresh session minutes later ran nine searches.
 - **SEDI's "starts with" is literal**, and names are often worded differently:
   the watchlist's "Metalla Royalty & Streaming" is SEDI's "Metalla Royalty and
   Streaming Ltd.", "Alimentation-Couche Tard" is "Alimentation Couche-Tard".

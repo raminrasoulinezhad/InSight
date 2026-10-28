@@ -76,10 +76,19 @@ _refresh = {
 }
 
 
+def _sedi_notice(message: str) -> None:
+    """SEDI's scraper asking for the user (or saying it no longer needs them).
+    Shown in place of the progress line, flagged so the page makes it stand out:
+    a bot check waiting on a person used to read as "Fetching 1 of 190"."""
+    with _refresh_lock:
+        _refresh["attention"] = bool(message)
+        _refresh["message"] = message or "SEDI: check cleared, continuing…"
+
+
 def _progress(done: int, total: int, label: str) -> None:
     """Publish scrape progress for /api/refresh/status."""
     with _refresh_lock:
-        _refresh.update(done=done, total=total, label=label)
+        _refresh.update(done=done, total=total, label=label, attention=False)
         if total:
             where = f" — {label}" if label else ""
             phase = _refresh.get("phase") or ""
@@ -118,6 +127,7 @@ def _do_insider_search(name: str) -> None:
             headless=False,
             profile_dir=paths.sedi_profile_dir(),
             capture_dir=paths.app_dir() / "sedi-debug",
+            on_notice=_sedi_notice,
         ) as sedi:
             if edgar is not None:
                 edgar.__enter__()
@@ -346,6 +356,7 @@ def _sedi_phase(
             capture_dir=paths.app_dir() / "sedi-debug",
             # after a company's first full fetch, ask only for what is new
             history_path=paths.sedi_history_file(),
+            on_notice=_sedi_notice,
         ),
         source="sedi",
         outcome=outcome,
@@ -422,6 +433,7 @@ def _people_phase(outcome: dict[str, Any], *, max_age_hours: float) -> list[str]
         headless=False,
         profile_dir=paths.sedi_profile_dir(),
         capture_dir=paths.app_dir() / "sedi-debug",
+        on_notice=_sedi_notice,
     ) as sedi:
         if edgar is not None:
             edgar.__enter__()
@@ -905,6 +917,7 @@ class Handler(BaseHTTPRequestHandler):
                     finished=False,
                     ok=False,
                     warn=False,
+                    attention=False,
                     phase="",
                     message="Starting…",
                     date=None,
@@ -961,6 +974,7 @@ class Handler(BaseHTTPRequestHandler):
                     finished=False,
                     ok=False,
                     warn=False,
+                    attention=False,
                     phase="",
                     message="Starting…",
                     date=None,

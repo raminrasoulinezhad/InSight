@@ -10,6 +10,7 @@ rows captured from a live SEDI Insider Transaction Detail report."""
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -766,3 +767,161 @@ class TestACheckThatArrivesMidFill:
         monkeypatch.setattr(s, "_split_fetch", lambda *a, **k: ([], False))
         with pytest.raises(RuntimeError):
             s.fetch("TSXV", "BRC", "Blackrock Silver Corp")
+
+
+class TestWaitingForAPersonOnTheCheck:
+    """2026-10-27: three companies waited out the check for 4 minutes each and
+    the SEDI phase stopped, with the app saying only "Fetching 1 of 190"."""
+
+    def scraper(self, monkeypatch, html: str):
+        s = sedi.SediScraper(manual_wait_s=30)
+        reloads, notices, dumps = [], [], []
+
+        class Page:
+            def wait_for_timeout(self, ms):
+                pass
+
+            def title(self):
+                return "Radware Bot Manager Captcha"
+
+            def content(self):
+                return html
+
+            def reload(self, **k):
+                reloads.append(1)
+
+        s._page = Page()
+        s._on_notice = notices.append
+        monkeypatch.setattr(s, "_walled", lambda: True)
+        monkeypatch.setattr(s, "show_window", lambda: None)
+        monkeypatch.setattr(s, "_dump", dumps.append)
+        return s, reloads, notices, dumps
+
+    def test_a_puzzle_is_never_reloaded_under_the_person_solving_it(self, monkeypatch):
+        s, reloads, _n, _d = self.scraper(monkeypatch, '<div class="h-captcha" data-sitekey="x">')
+        with pytest.raises(sedi.BotBlocked):
+            s._clear_wall_or_raise("opening ITD search")
+        assert reloads == []
+
+    def test_a_bare_block_page_is_still_nudged_with_reloads(self, monkeypatch):
+        s, reloads, _n, _d = self.scraper(monkeypatch, "<h1>403 Forbidden</h1> Transaction ID")
+        with pytest.raises(sedi.BotBlocked):
+            s._clear_wall_or_raise("opening ITD search")
+        assert len(reloads) >= 1
+
+    def test_the_app_is_told_and_untold(self, monkeypatch):
+        s, _r, notices, _d = self.scraper(monkeypatch, '<iframe src="hcaptcha.com">')
+        with pytest.raises(sedi.BotBlocked):
+            s._clear_wall_or_raise("opening ITD search")
+        assert notices[0].startswith("SEDI needs you") and notices[-1] == ""
+
+    def test_what_sedi_showed_is_kept_when_nobody_solves_it(self, monkeypatch):
+        s, _r, _n, dumps = self.scraper(monkeypatch, '<iframe src="hcaptcha.com">')
+        with pytest.raises(sedi.BotBlocked):
+            s._clear_wall_or_raise("opening ITD search")
+        assert dumps == ["wall_timeout_opening_ITD_search"]
+
+
+class TestAFreshBrowserBeforeGivingUp:
+    def test_a_blocked_company_gets_one_fresh_session(self, monkeypatch):
+        s = sedi.SediScraper()
+        relaunches = []
+        monkeypatch.setattr(s, "_relaunch", lambda: relaunches.append(1))
+        outcomes = [sedi.BotBlocked("check never cleared"), ["rows"]]
+
+        def run():
+            r = outcomes.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        assert s._with_one_fresh_start(run, "TSE:FNV") == ["rows"]
+        assert relaunches == [1]
+
+    def test_only_one(self, monkeypatch):
+        s = sedi.SediScraper()
+        monkeypatch.setattr(s, "_relaunch", lambda: None)
+
+        def run():
+            raise sedi.BotBlocked("still walled")
+
+        with pytest.raises(sedi.BotBlocked):
+            s._with_one_fresh_start(run, "TSE:FNV")
+
+    def test_a_dead_check_server_is_not_retried(self, monkeypatch):
+        s = sedi.SediScraper()
+        relaunches = []
+        monkeypatch.setattr(s, "_relaunch", lambda: relaunches.append(1))
+
+        def run():
+            raise sedi.BotBlocked("validator not responding", fatal=True)
+
+        with pytest.raises(sedi.BotBlocked):
+            s._with_one_fresh_start(run, "TSE:FNV")
+        assert relaunches == []
+
+    def test_a_solvable_check_is_told_from_a_bare_block(self):
+        assert sedi._is_solvable_check("x", '<div class="h-captcha" data-sitekey="k">')
+        assert not sedi._is_solvable_check("403 Forbidden", "Transaction ID: 1f2e")
+
+
+class TestAQuietMonthIsNotAWrongName:
+    """SEDI answers "no results" for an unknown name and for a quiet month alike.
+    Retrying name variants on every quiet company cost up to five searches each."""
+
+    def scraper(self, monkeypatch, tmp_path: Path, history: dict):
+        h = tmp_path / "h.json"
+        h.write_text(json.dumps(history))
+        s = sedi.SediScraper(history_path=h)
+        s._today = date(2026, 10, 27)
+        searches: list[str] = []
+
+        def search(select_type, query, label, start=None, end=None):
+            searches.append(query)
+            return True
+
+        monkeypatch.setattr(s, "_search", search)
+        monkeypatch.setattr(s, "_found_nothing", lambda: True)
+        monkeypatch.setattr(s, "_select_issuer_if_needed", lambda *a, **k: None)
+        monkeypatch.setattr(s, "_extract_rows", lambda: [])
+        monkeypatch.setattr(s, "_truncated", lambda recs: False)
+        monkeypatch.setattr(s, "_log_page_error", lambda *a: None)
+        monkeypatch.setattr(s, "_dump", lambda *a: None)
+        return s, searches, h
+
+    def test_a_follow_up_tries_one_search_only(self, monkeypatch, tmp_path: Path):
+        s, searches, _h = self.scraper(
+            monkeypatch, tmp_path, {"TSE:FNV": {"until": "2026-10-21", "full": "2026-10-21"}}
+        )
+        assert s.fetch("TSE", "FNV", "Franco-Nevada Corporation") == []
+        assert searches == ["Franco-Nevada"], "quiet, not a wrong name"
+
+    def test_it_uses_the_text_that_worked_before(self, monkeypatch, tmp_path: Path):
+        entry = {
+            "until": "2026-10-21",
+            "full": "2026-10-21",
+            "query": "Metalla Royalty and Streaming",
+        }
+        s, searches, _h = self.scraper(monkeypatch, tmp_path, {"TSXV:MTA": entry})
+        s.fetch("TSXV", "MTA", "Metalla Royalty & Streaming Ltd.")
+        assert searches == ["Metalla Royalty and Streaming"]
+
+    def test_a_full_fetch_still_tries_the_variants_and_remembers(self, monkeypatch, tmp_path: Path):
+        s, searches, h = self.scraper(monkeypatch, tmp_path, {})
+        s.fetch("TSXV", "MTA", "Metalla Royalty & Streaming Ltd.")
+        assert len(searches) == 4
+        saved = json.loads(h.read_text())["TSXV:MTA"]
+        assert saved["full"] == "2026-10-27" and saved["until"] == "2026-10-27"
+
+    def test_every_ninety_days_a_full_fetch_again(self, tmp_path: Path):
+        h = tmp_path / "h.json"
+        h.write_text(json.dumps({"TSE:X": {"until": "2026-10-20", "full": "2026-07-01"}}))
+        s = sedi.SediScraper(history_path=h)
+        assert s._resumes_from("TSE:X", today=date(2026, 10, 27)) is None
+        assert s._resumes_from("TSE:X", today=date(2026, 8, 1)) == date(2026, 9, 20)
+
+    def test_an_older_bare_date_history_still_reads(self, tmp_path: Path):
+        h = tmp_path / "h.json"
+        h.write_text(json.dumps({"TSE:X": "2026-10-21"}))
+        s = sedi.SediScraper(history_path=h)
+        assert s._resumes_from("TSE:X", today=date(2026, 10, 27)) == date(2026, 9, 21)
