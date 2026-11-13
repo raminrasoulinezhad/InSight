@@ -680,10 +680,15 @@ class TestOneFetchButtonForBothSources:
             source = kw.get("source", "marketbeat")
             if overlap["on"] and source == "marketbeat":
                 mb_in.set()
+                if kw.get("on_progress"):
+                    kw["on_progress"](2, 10, "Gold Co")
                 release_mb.wait(3)
             if overlap["on"] and source == "sedi":
                 assert mb_in.wait(3), "MarketBeat had not started"
                 overlap["both"] = True
+                if kw.get("on_progress"):
+                    kw["on_progress"](0, 4, "ABC Corp")
+                overlap["rows"] = {p["name"]: dict(p) for p in app._refresh["phases"]}
                 release_mb.set()
             calls.append({"source": source, "tickers": [t["ticker"] for t in targets], **kw})
             out = kw["outcome"]
@@ -740,6 +745,10 @@ class TestOneFetchButtonForBothSources:
         sources = [c["source"] for c in calls]
         assert sources.index("sedi") < sources.index("people")
         assert "SEC EDGAR failed (skipped: set INSIGHT_SEC_CONTACT in .env)" in state["message"]
+        rows = {p["name"]: p for p in state["phases"]}
+        assert rows["SEC EDGAR"]["state"] == "skipped"
+        assert rows["MarketBeat"]["state"] == "done"
+        assert rows["SEDI"]["state"] == "done"
 
     def test_with_one_edgar_takes_the_us_companies_from_marketbeat(self, run):
         # EDGAR is the official record and a superset of MarketBeat's US data,
@@ -755,12 +764,18 @@ class TestOneFetchButtonForBothSources:
         assert sources.index("sedi") < sources.index("edgar") < sources.index("people")
         assert sources.index("marketbeat") < sources.index("edgar")
         assert "SEC EDGAR: 1 fetched" in state["message"] and state["warn"] is False
+        assert [p["state"] for p in state["phases"]] == ["done", "done", "done", "done"]
 
     def test_marketbeat_is_in_its_fetch_while_sedi_is_in_its(self, run):
         self.overlap["on"] = True
         calls, _state = run()
         assert self.overlap["both"] is True
         assert {c["source"] for c in calls} >= {"marketbeat", "sedi"}
+        rows = self.overlap["rows"]
+        assert rows["MarketBeat"]["state"] == "running" and rows["MarketBeat"]["label"] == "Gold Co"
+        assert rows["SEDI"]["label"] == "ABC Corp" and rows["SEDI"]["total"] == 4
+        assert rows["SEC EDGAR"]["state"] == "waiting"
+        assert rows["Followed insiders"]["state"] == "waiting"
 
     def test_recent_fetches_are_reused_not_repeated(self, run):
         calls, _state = run()
@@ -784,6 +799,10 @@ class TestOneFetchButtonForBothSources:
         assert state["ok"] is True, "MarketBeat's data is real; the page should reload"
         assert state["warn"] is True, "and the SEDI failure must stay on screen"
         assert "SEDI stopped after 1 of 1: SEDI's bot check is down" in state["message"]
+        rows = {p["name"]: p for p in state["phases"]}
+        assert rows["SEDI"]["state"] == "failed"
+        assert "bot check" in rows["SEDI"]["detail"]
+        assert rows["MarketBeat"]["state"] == "done"
 
     def test_the_endpoint_accepts_the_combined_source(self, client: Client, monkeypatch):
         got = {}
@@ -836,6 +855,17 @@ class TestMarketBeatBesideSediKeepsTheSediBar:
         assert app._refresh["message"] == "MarketBeat: Fetching 4 of 10 — Left"
         app._marketbeat_progress(4, 10, "Next")
         assert app._refresh["message"] == "MarketBeat: Fetching 5 of 10 — Next"
+
+    def test_a_notice_stays_on_the_sedi_row_while_marketbeat_moves(self):
+        app._begin_fetch_phases()
+        app._set_phase("SEDI: ", "Opening SEDI…")
+        app._sedi_notice("SEDI needs you: solve the check")
+        app._marketbeat_progress(2, 8, "Silver")
+        rows = {p["name"]: p for p in app._refresh["phases"]}
+        assert rows["SEDI"]["detail"].startswith("SEDI needs you")
+        assert rows["MarketBeat"]["label"] == "Silver"
+        assert rows["MarketBeat"]["done"] == 2
+        assert rows["SEC EDGAR"]["state"] == "waiting"
 
     def test_finishing_drops_the_suffix(self):
         app._set_phase("SEDI: ", "Opening SEDI…")

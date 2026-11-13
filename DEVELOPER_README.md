@@ -133,9 +133,10 @@ a SEDI person search for every followed insider (see below). MarketBeat has its
 own headless browser, so it overlaps the SEDI company pass; the SEDI profile is
 still opened only once, and the person search waits until that pass has closed
 it. EDGAR waits too, because it skips companies SEDI already covers and has to
-see this run's snapshot. The progress bar stays on SEDI (that is the phase that
-can ask for a person); MarketBeat's count is a suffix on the same line, and a
-bot-check notice is shown on its own. Both company sources, because neither is
+see this run's snapshot. The page shows one row per stage (MarketBeat, SEDI, SEC EDGAR, followed
+insiders) for the whole job, so a stage that has not started yet reads as
+waiting rather than as a frozen bar. A bot-check notice replaces SEDI's count
+and is flagged in the header. Both company sources, because neither is
 complete: MarketBeat misses most TSX-V names, and SEDI's report for a large
 issuer can miss officers MarketBeat lists (CNQ: 15 insiders in SEDI's data,
 several more on MarketBeat). Each phase writes its own snapshot, so a SEDI

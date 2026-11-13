@@ -73,7 +73,117 @@ _refresh = {
     # Which source a combined fetch is on, e.g. "SEDI: ". Shown before the
     # count, so "Fetching 3 of 107" says whose 107 it is.
     "phase": "",
+    # One row per Fetch all stage, so the page can show all four at once.
+    # Empty for a single-source job, which keeps the one progress bar.
+    "phases": [],
 }
+
+
+_FETCH_PHASE_NAMES = ("MarketBeat", "SEDI", "SEC EDGAR", "Followed insiders")
+_PHASE_BY_PREFIX = {
+    "MarketBeat: ": "MarketBeat",
+    "SEDI: ": "SEDI",
+    "SEC EDGAR: ": "SEC EDGAR",
+    "Followed insiders: ": "Followed insiders",
+}
+
+
+def _phase_row(name: str) -> dict[str, Any] | None:
+    """Caller holds `_refresh_lock`."""
+    for row in _refresh.get("phases") or []:
+        if row.get("name") == name:
+            return row
+    return None
+
+
+def _begin_fetch_phases() -> None:
+    """Four rows, two of them already at work: MarketBeat and SEDI start together."""
+    with _refresh_lock:
+        _refresh["phases"] = [
+            {
+                "name": "MarketBeat",
+                "state": "running",
+                "done": 0,
+                "total": 0,
+                "label": "",
+                "detail": "starting",
+            },
+            {
+                "name": "SEDI",
+                "state": "running",
+                "done": 0,
+                "total": 0,
+                "label": "",
+                "detail": "opening the browser",
+            },
+            {
+                "name": "SEC EDGAR",
+                "state": "waiting",
+                "done": 0,
+                "total": 0,
+                "label": "",
+                "detail": "",
+            },
+            {
+                "name": "Followed insiders",
+                "state": "waiting",
+                "done": 0,
+                "total": 0,
+                "label": "",
+                "detail": "",
+            },
+        ]
+
+
+def _mark_phase_running(name: str, done: int, total: int, label: str) -> None:
+    """Caller holds `_refresh_lock`. A finished row stays finished."""
+    row = _phase_row(name)
+    if row is None or row["state"] in ("done", "failed", "skipped"):
+        return
+    row.update(state="running", done=done, total=total, label=label)
+    if label:
+        row["detail"] = ""
+
+
+def _phase_counts(out: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, word in (
+        ("fetched", "fetched"),
+        ("cached", "already up to date"),
+        ("failed", "failed"),
+    ):
+        n = int(out.get(key) or 0)
+        if n:
+            parts.append(f"{n} {word}")
+    return ", ".join(parts)
+
+
+def _finish_phase(name: str, out: dict[str, Any], n: int) -> None:
+    """Record how a Fetch all stage ended, for its own row."""
+    with _refresh_lock:
+        row = _phase_row(name)
+        if row is None:
+            return
+        err = str(out.get("error") or "")
+        if err.startswith("skipped"):
+            row.update(state="skipped", label="", detail="no SEC contact configured")
+            return
+        if err or out.get("stopped"):
+            row.update(
+                state="failed",
+                label="",
+                detail=err or str(out.get("stopped") or "failed"),
+            )
+            return
+        detail = _phase_counts(out)
+        accounted = int(out.get("fetched") or 0) + int(out.get("cached") or 0)
+        failed = int(out.get("failed") or 0)
+        state = "failed" if failed and not accounted else "done"
+        total = max(n, accounted, int(row.get("total") or 0))
+        if state == "done":
+            row.update(state=state, done=total, total=total, label="", detail=detail)
+        else:
+            row.update(state=state, label="", detail=detail)
 
 
 def _sedi_notice(message: str) -> None:
@@ -83,6 +193,9 @@ def _sedi_notice(message: str) -> None:
     with _refresh_lock:
         _refresh["attention"] = bool(message)
         _show_message(message or "SEDI: check cleared, continuing…")
+        row = _phase_row("SEDI")
+        if row is not None and row["state"] == "running":
+            row["detail"] = message or "check cleared, continuing"
 
 
 def _progress(done: int, total: int, label: str) -> None:
@@ -93,6 +206,9 @@ def _progress(done: int, total: int, label: str) -> None:
             where = f" — {label}" if label else ""
             phase = _refresh.get("phase") or ""
             _show_message(f"{phase}Fetching {min(done + 1, total)} of {total}{where}")
+            name = _PHASE_BY_PREFIX.get(str(phase))
+            if name:
+                _mark_phase_running(name, done, total, label)
 
 
 # The insider search is a *browser* job, so it shares the refresh job slot rather
@@ -315,6 +431,10 @@ def _set_phase(phase: str, message: str) -> None:
     with _refresh_lock:
         _refresh.update(phase=phase, done=0, total=0, label="", attention=False)
         _show_message(message)
+        name = _PHASE_BY_PREFIX.get(phase)
+        row = _phase_row(name) if name else None
+        if row is not None and row["state"] == "waiting":
+            row.update(state="running", detail=message)
 
 
 def _reset_marketbeat_background() -> None:
@@ -332,6 +452,7 @@ def _marketbeat_progress(done: int, total: int, label: str) -> None:
     """
     with _refresh_lock:
         _mb_bg.update(running=True, done=done, total=total, label=label)
+        _mark_phase_running("MarketBeat", done, total, label)
         if _refresh.get("attention"):
             return
         phase = str(_refresh.get("phase") or "")
@@ -651,9 +772,11 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                     mb_out["error"] = f"{type(e).__name__}: {e}"
                     traceback.print_exc()
                 finally:
+                    _finish_phase("MarketBeat", mb_out, len(fetched_mb.get("targets") or []))
                     _marketbeat_finished()
 
             _reset_marketbeat_background()
+            _begin_fetch_phases()
             _set_phase(
                 "SEDI: ",
                 "Opening SEDI… a browser runs minimized; it pops up if a CAPTCHA needs solving.",
@@ -667,6 +790,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             except Exception as e:
                 sedi_out["error"] = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
+            _finish_phase("SEDI", sedi_out, len(sedi_targets))
             # EDGAR reads which companies SEDI covers, so it waits until that
             # snapshot is written. MarketBeat does not, and may still be going.
             _adopt_marketbeat_bar()
@@ -683,6 +807,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
                 except Exception as e:
                     edgar_out["error"] = f"{type(e).__name__}: {e}"
                     traceback.print_exc()
+            _finish_phase("SEC EDGAR", edgar_out, len(edgar_targets))
             _set_phase(
                 "Followed insiders: ", "Searching SEDI and EDGAR for the insiders you follow…"
             )
@@ -691,6 +816,7 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             except Exception as e:
                 people_out["error"] = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
+            _finish_phase("Followed insiders", people_out, len(people))
             ok, warn, message = _fetch_all_summary(
                 [
                     ("MarketBeat", mb_out, len(mb_targets)),
@@ -983,7 +1109,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, dict(_insider_result))
         elif path == "/api/refresh/status":
             with _refresh_lock:
-                self._send_json(200, dict(_refresh))
+                payload = dict(_refresh)
+                payload["phases"] = [dict(p) for p in (_refresh.get("phases") or [])]
+            self._send_json(200, payload)
         elif path == "/api/interviews":
             self._send_json(200, {"videos": interviews.load_saved()})
         elif path == "/api/notes":
@@ -1030,6 +1158,7 @@ class Handler(BaseHTTPRequestHandler):
                     done=0,
                     total=0,
                     label="",
+                    phases=[],
                 )
             threading.Thread(target=_do_refresh, args=(discover, source), daemon=True).start()
             self._send_json(202, {"started": True})
@@ -1056,6 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
                     done=0,
                     total=0,
                     label="",
+                    phases=[],
                 )
             _insider_result.update(name=name, companies=[], unresolved=[])
             threading.Thread(target=_do_insider_search, args=(name,), daemon=True).start()
@@ -1085,6 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
                     done=0,
                     total=0,
                     label="",
+                    phases=[],
                 )
             threading.Thread(target=_do_interview, args=(url,), daemon=True).start()
             self._send_json(202, {"started": True})

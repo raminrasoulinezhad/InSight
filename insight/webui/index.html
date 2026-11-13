@@ -177,6 +177,20 @@
   /* Work started, count not known yet (opening the browser, discovering the
      universe). A determinate bar stuck at 0% reads as hung. */
   .progress.indeterminate .progress-fill { width:35%; animation:slide 1.3s ease-in-out infinite; }
+  /* Fetch all keeps one row per stage, because a single bar can only say
+     which stage it is on, and the other three look frozen. */
+  .phases { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+  .phases.hidden { display:none; }
+  .phase-top { display:flex; gap:10px; align-items:baseline; font-size:12px; }
+  .phase .pname { flex:0 0 9.2em; color:var(--muted); }
+  .phase.running .pname { color:var(--text); font-weight:600; }
+  .phase.done .pname { color:var(--buy); }
+  .phase.failed .pname { color:var(--sell); }
+  .phase.waiting { opacity:.55; }
+  .phase .pstat { color:var(--muted); min-width:0; }
+  .phase.running .pstat { color:var(--text); }
+  .phase.attention .pstat { color:var(--sell); font-weight:600; }
+  .phase-bar { margin-top:3px; height:4px; }
   @keyframes slide { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
   @media (prefers-reduced-motion:reduce) {
     .progress-fill { transition:none; }
@@ -491,6 +505,7 @@
        aria-valuemin="0" aria-valuemax="100" aria-label="Fetch progress">
     <div id="progress-fill" class="progress-fill"></div>
   </div>
+  <div id="phases" class="phases hidden" aria-live="polite"></div>
   <div class="tabs" id="tabs">
     <button data-view="companies" class="active">Companies</button>
     <button data-view="insiders">Insiders</button>
@@ -2175,6 +2190,49 @@ function progressPercent(done, total){
   return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
 }
 
+// One line for a Fetch all stage. `attention` is the SEDI bot-check notice,
+// which has to win over the company count or the page still looks routine.
+function phaseStatusText(p, attention){
+  if (!p) return "";
+  if (attention && p.detail) return p.detail;
+  if (p.state === "waiting") return "waiting";
+  if (p.state === "skipped") return p.detail || "skipped";
+  if (p.state === "failed") return p.detail || "failed";
+  if (p.state === "done") return p.detail || "done";
+  if (p.total){
+    const n = Math.min(p.done + 1, p.total);
+    return p.label ? (n + " of " + p.total + " " + p.label) : (n + " of " + p.total);
+  }
+  return p.detail || "starting";
+}
+
+function renderPhases(phases, attention){
+  const box = document.getElementById("phases");
+  if (!box) return false;
+  if (!phases || !phases.length){
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return false;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = phases.map(p => {
+    const ask = !!(attention && p.name === "SEDI");
+    const running = p.state === "running";
+    const known = running && p.total > 0;
+    const pct = known
+      ? progressPercent(Math.min(p.done + 1, p.total), p.total)
+      : (p.state === "done" ? 100 : null);
+    const barClass = "progress phase-bar" + (running && !p.total ? " indeterminate" : "");
+    const width = pct === null ? "" : (pct + "%");
+    return `<div class="phase ${esc(p.state)}${ask ? " attention" : ""}">
+      <div class="phase-top"><span class="pname">${esc(p.name)}</span>` +
+      `<span class="pstat">${esc(phaseStatusText(p, ask))}</span></div>
+      <div class="${barClass}"><div class="progress-fill" style="width:${width}"></div></div>
+    </div>`;
+  }).join("");
+  return true;
+}
+
 function setProgress(on, done, total){
   progressBar.classList.toggle("hidden", !on);
   if (!on){
@@ -2205,10 +2263,17 @@ function setRefreshing(on, msg){
 async function pollRefresh(){
   try {
     const d = await (await fetch("/api/refresh/status")).json();
-    refreshMsg.textContent = d.message || "";
-    // A bot check waiting on the user must not look like routine progress.
-    refreshMsg.classList.toggle("attention", !!(d.running && d.attention));
-    if (d.running){ setProgress(true, d.done, d.total); return; }   // keep polling
+    const attention = !!(d.running && d.attention);
+    const phased = renderPhases(d.phases, attention);
+    // The four rows are the status. The single line is the bot-check notice,
+    // or the summary once the job has finished.
+    refreshMsg.textContent = (phased && d.running && !attention) ? "" : (d.message || "");
+    refreshMsg.classList.toggle("attention", attention);
+    if (d.running){
+      if (phased) setProgress(false);
+      else setProgress(true, d.done, d.total);
+      return;   // keep polling
+    }
     clearInterval(pollTimer); pollTimer = null;
     setRefreshing(false, d.message);
     const insider = STATE.pendingInsider;
@@ -2237,7 +2302,7 @@ async function pollRefresh(){
     }
     // A clean run's summary fades; one where something failed stays until the
     // next job, since "SEDI stopped: …" is the part worth reading.
-    if (d.ok && !d.warn) setTimeout(()=>{ refreshMsg.textContent = ""; }, 6000);
+    if (d.ok && !d.warn) setTimeout(()=>{ refreshMsg.textContent = ""; renderPhases([]); }, 6000);
   } catch(e){
     clearInterval(pollTimer); pollTimer = null;
     setProgress(false);
@@ -2249,6 +2314,7 @@ async function startRefresh(url, startMsg){
   clearTimeout(hideTimer);                     // a run starting inside the
   hideTimer = null;                            // hold-at-100% window keeps its bar
   setRefreshing(true, startMsg);
+  renderPhases([]);
   setProgress(true, 0, 0);                     // indeterminate until the count lands
   try {
     const r = await fetch(url, { method:"POST" });
@@ -2373,10 +2439,25 @@ function applyViewChrome(){
   syncBackBtn();
 }
 
+// A reload mid-fetch used to paint a quiet page: polling starts only from the
+// button, so an already-running job was invisible until the next click.
+async function resumeRefresh(){
+  try {
+    const d = await (await fetch("/api/refresh/status")).json();
+    if (!d.running) return;
+    setRefreshing(true, d.message || "Fetching…");
+    if (!pollTimer) pollTimer = setInterval(pollRefresh, 1500);
+    pollRefresh();
+  } catch (e) { /* the page still loads if the status call fails */ }
+}
+
 // Alarms and notes first, so the 🔔 and 📝 buttons render their state on the
 // very first paint instead of flipping on a second pass.
 watchSystemTheme();
-Promise.all([loadAlarms(), loadNotes(), loadTheme(), loadAutostart()]).then(load);
+Promise.all([loadAlarms(), loadNotes(), loadTheme(), loadAutostart()]).then(() => {
+  load();
+  resumeRefresh();
+});
 </script>
 </body>
 </html>
