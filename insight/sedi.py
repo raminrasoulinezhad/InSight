@@ -46,6 +46,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -609,18 +610,81 @@ _MAX_SPLITS = 6
 _OVERLAP_DAYS = 30
 # How often a company gets a full fetch again (re-learning its SEDI name).
 _FULL_REFRESH_DAYS = 90
-# Pauses after a page is already on screen. Each used to be twice as long.
-# The form and the results are ready within about a tenth of a second, so the
-# extra wait was idle and a full company pass spent about eight minutes on it.
-# Half keeps a margin. The bot-check poll is not one of these, and MarketBeat
-# keeps its own one-second gap: that site blocks when it is pushed.
-_FORM_SETTLE_MS = 750
-_FIELD_SETTLE_MS = 150
-_SEARCH_SETTLE_MS = 1250
-_REPORT_SETTLE_MS = 1000
-# Gap before the next company, half of scrape_many's default one second.
-SEDI_PAUSE_S = 0.5
+# How long a SEDI page may take to show the next control. The wait returns as
+# soon as that control (or the bot check) is on screen; this only bounds a page
+# that never arrives. There is no fixed pause after it, and none between
+# companies: the company search and the insider search share these waits.
+# MarketBeat keeps its own gap. That site blocks when it is pushed; SEDI's
+# check is handled when it appears, not by idling on every page.
+_READY_TIMEOUT_MS = 15000
+_POLL_MS = 50
+SEDI_PAUSE_S = 0.0
 _HISTORY_LOCK = threading.Lock()
+
+# Read once per poll. `has_form` / `field_enabled` / `has_picker` are the
+# controls the next step needs; the body text distinguishes a report, a picker,
+# an error and a page that is still blank mid-navigation.
+_PAGE_SNAP_JS = r"""
+() => {
+  const field = document.querySelector("input[name='SELECT_TYPE_VALUE']");
+  const picker = document.querySelector(
+    "a[href*='SVTItdSelectIssuer'], a[href*='SVTItdSelectInsider']"
+  );
+  return {
+    title: document.title || '',
+    url: location.href || '',
+    body: document.body ? document.body.innerText : '',
+    has_form: !!document.querySelector("select[name='SELECT_TYPE']"),
+    field_enabled: !!field && !field.disabled,
+    has_picker: !!picker,
+  };
+}
+"""
+
+
+def _snap_ready(kind: str, snap: dict[str, Any]) -> bool:
+    """True when the page is far enough along for `kind` to proceed.
+
+    A bot wall counts for every kind, so the caller can hand it to the person
+    instead of waiting out the timeout. A blank document (the moment between
+    two pages) is never ready: treating it as the results page is what used to
+    save an empty report over a good one.
+    """
+    title = str(snap.get("title") or "")
+    url = str(snap.get("url") or "")
+    body = str(snap.get("body") or "")
+    if _is_bot_wall(title, url, body):
+        return True
+    if kind == "form":
+        return bool(snap.get("has_form"))
+    if kind == "field":
+        return bool(snap.get("field_enabled"))
+    low = body.lower()
+    if kind == "answer":
+        # Still the criteria form, unless SEDI rejected the query on it.
+        if _is_search_form(body):
+            return bool(re.search(r"Error:", body))
+        if not low.strip():
+            return False
+        return any(
+            marker in low
+            for marker in (
+                "issuer name",
+                "insider name",
+                "select issuer",
+                "select insider",
+                "found no results",
+            )
+        )
+    if kind == "report":
+        # The picker is the page before the report. Leave it once its links
+        # are gone and the report (or an empty answer) is what is showing.
+        if snap.get("has_picker") or not low.strip():
+            return False
+        return any(
+            marker in low for marker in ("issuer name", "insider name", "found no results")
+        ) or bool(re.search(r"Error:", body))
+    return False
 
 
 class _WindowFailed(Exception):
@@ -983,6 +1047,27 @@ class SediScraper:
             return bool(self._page.is_closed())
         return True
 
+    def _wait_ready(self, kind: str) -> None:
+        """Poll until `_snap_ready` says this step can run, then return.
+
+        Used by the company search and the insider search. A page that never
+        arrives falls through after `_READY_TIMEOUT_MS`; the caller already
+        treats "still on the form" and "could not read the report" as failures
+        rather than as empty trades.
+        """
+        deadline = time.monotonic() + _READY_TIMEOUT_MS / 1000
+        while True:
+            if self._browser_gone():
+                raise BrowserGone("the SEDI browser window was closed")
+            snap = None
+            with contextlib.suppress(Exception):
+                snap = self._page.evaluate(_PAGE_SNAP_JS)
+            if isinstance(snap, dict) and _snap_ready(kind, snap):
+                return
+            if time.monotonic() >= deadline:
+                return
+            self._page.wait_for_timeout(_POLL_MS)
+
     def _open_search(self) -> None:
         """Load the ITD search form, telling a dead bot wall from a slow page,
         and both from a browser that is no longer there."""
@@ -1000,7 +1085,7 @@ class SediScraper:
             if _is_dead_wall(title, url):
                 raise BotBlocked(_DEAD_WALL, fatal=True) from e
             raise
-        page.wait_for_timeout(_FORM_SETTLE_MS)
+        self._wait_ready("form")
         self._clear_wall_or_raise("opening ITD search")
 
     def _submitted(self) -> bool:
@@ -1048,7 +1133,7 @@ class SediScraper:
                 print(f"  SEDI [{label}] could not drive the search form: {e}")
                 self._dump(f"itd_form_error_{label}")
                 return False
-            self._page.wait_for_timeout(_SEARCH_SETTLE_MS)
+            self._wait_ready("answer")
             self._clear_wall_or_raise("running ITD search")
             if self._submitted():
                 return True
@@ -1349,8 +1434,7 @@ class SediScraper:
         if pick is None:
             raise LookupError(f"SEDI lists {n} insiders for that search, but none is {name}")
         self._click(views.nth(pick))
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
-        page.wait_for_timeout(_REPORT_SETTLE_MS)
+        self._wait_ready("report")
         self._clear_wall_or_raise("opening insider report")
 
     def _extract_rows(self) -> list[list[str]]:
@@ -1358,11 +1442,14 @@ class SediScraper:
         large reports can destroy the JS context mid-evaluate)."""
         for _ in range(3):
             with contextlib.suppress(Exception):
-                self._page.wait_for_load_state("domcontentloaded", timeout=15000)
+                self._page.wait_for_load_state("domcontentloaded", timeout=_READY_TIMEOUT_MS)
             try:
                 return self._page.evaluate(_SEDI_ROWS_JS)
             except Exception:
-                self._page.wait_for_timeout(1500)
+                # The report replaced the page under the read. The next try
+                # waits until a row is back, instead of a fixed pause.
+                with contextlib.suppress(Exception):
+                    self._page.wait_for_selector("tr", timeout=_READY_TIMEOUT_MS)
         return []
 
     def _found_nothing(self) -> bool:
@@ -1393,8 +1480,7 @@ class SediScraper:
             return
         with contextlib.suppress(Exception):
             self._click(views.nth(pick))
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-            page.wait_for_timeout(_REPORT_SETTLE_MS)
+            self._wait_ready("report")
             self._clear_wall_or_raise("opening issuer report")
 
     def _log_page_error(self, exchange: str, ticker: str) -> None:
@@ -1433,7 +1519,7 @@ class SediScraper:
         end = min(end or today, today)
 
         page.select_option("select[name='SELECT_TYPE']", select_type, timeout=8000)
-        page.wait_for_timeout(_FIELD_SETTLE_MS)  # onchange enables the value box
+        self._wait_ready("field")  # onchange enables the value box
         page.fill("input[name='SELECT_TYPE_VALUE']", value, timeout=8000)
         # "Starts with" rather than exact: SEDI stores full legal names, so an
         # exact match fails on the shortened names people actually type.

@@ -493,6 +493,7 @@ class TestABotCheckOnTheSearchIsSeenThrough:
         s = sedi.SediScraper()
         s._page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
         calls = {"searches": 0, "walls": 0}
+        monkeypatch.setattr(s, "_wait_ready", lambda kind: None)
         monkeypatch.setattr(s, "_open_search", lambda: None)
 
         def fill(select_type, query, start=None, end=None):
@@ -695,6 +696,63 @@ class TestAfterTheFirstFullFetchOnlyWhatIsNew:
         assert s._resumes_from("TSE:X") is None, "it will be fetched in full again"
 
 
+class TestAPageIsReadyWhenItsControlIs:
+    """Fixed pauses used to sit after every SEDI page. Readiness is the page
+    itself: the next control, or the bot check. A blank document mid-navigation
+    is neither."""
+
+    def snap(self, **over):
+        base = {
+            "title": "SEDI",
+            "url": "https://www.sedi.ca/sedi/SVTItdController",
+            "body": "",
+            "has_form": False,
+            "field_enabled": False,
+            "has_picker": False,
+        }
+        base.update(over)
+        return base
+
+    def test_there_is_no_gap_between_companies(self):
+        assert sedi.SEDI_PAUSE_S == 0
+
+    def test_the_form_and_the_value_box_are_their_own_controls(self):
+        assert sedi._snap_ready("form", self.snap(has_form=True))
+        assert not sedi._snap_ready("form", self.snap())
+        assert sedi._snap_ready("field", self.snap(field_enabled=True))
+        assert not sedi._snap_ready("field", self.snap(has_form=True))
+
+    def test_a_blank_page_is_not_an_answer_or_a_report(self):
+        assert not sedi._snap_ready("answer", self.snap())
+        assert not sedi._snap_ready("report", self.snap(body="   "))
+
+    def test_the_search_form_is_not_an_answer_unless_sedi_rejected_it(self):
+        form = "Insider transaction detail - Enter Search criteria"
+        rejected = form + " Error: Date cannot be future dated"
+        assert not sedi._snap_ready("answer", self.snap(body=form, has_form=True))
+        assert sedi._snap_ready("answer", self.snap(body=rejected))
+
+    def test_a_picker_and_a_report_are_answers_and_only_the_report_is_a_report(self):
+        picker = self.snap(body="Select issuer", has_picker=True)
+        report = self.snap(body="Issuer name: Franco-Nevada Corporation")
+        assert sedi._snap_ready("answer", picker)
+        assert not sedi._snap_ready("report", picker)
+        assert sedi._snap_ready("answer", report)
+        assert sedi._snap_ready("report", report)
+        insider = self.snap(body="Insider name: Sprott, Eric")
+        assert sedi._snap_ready("report", insider)
+
+    def test_no_results_is_ready_for_both_searches(self):
+        empty = self.snap(body="Your search found no results")
+        assert sedi._snap_ready("answer", empty)
+        assert sedi._snap_ready("report", empty)
+
+    def test_a_bot_wall_is_ready_for_every_step(self):
+        wall = self.snap(title="Radware Bot Manager Captcha", body="")
+        for kind in ("form", "field", "answer", "report"):
+            assert sedi._snap_ready(kind, wall)
+
+
 class TestTheFormGetsTheWindow:
     def test_from_and_to_are_the_windows_own_dates(self):
         calls: list = []
@@ -705,6 +763,19 @@ class TestTheFormGetsTheWindow:
 
             def fill(self, sel, value, timeout=None):
                 calls.append((sel, value))
+
+            def is_closed(self):
+                return False
+
+            def evaluate(self, js):
+                return {
+                    "title": "SEDI",
+                    "url": "https://www.sedi.ca/sedi/SVTItdController",
+                    "body": "Enter Search criteria",
+                    "has_form": True,
+                    "field_enabled": True,
+                    "has_picker": False,
+                }
 
             def wait_for_timeout(self, ms):
                 pass
@@ -736,6 +807,7 @@ class TestACheckThatArrivesMidFill:
     def test_the_check_is_seen_through_and_the_search_retried(self, monkeypatch):
         s = sedi.SediScraper()
         s._page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
+        monkeypatch.setattr(s, "_wait_ready", lambda kind: None)
         fills = {"n": 0}
         walls = []
 
