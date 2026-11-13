@@ -539,7 +539,7 @@ def _sedi_phase(
     pops up for a CAPTCHA). Returns (results, targets)."""
     from .marketbeat import scrape_many
     from .scrape import write_outputs
-    from .sedi import SediScraper, is_canadian
+    from .sedi import SEDI_PAUSE_S, SediScraper, is_canadian
 
     canadian = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
     results = scrape_many(
@@ -563,6 +563,7 @@ def _sedi_phase(
             on_notice=_sedi_notice,
         ),
         source="sedi",
+        pause_s=SEDI_PAUSE_S,
         outcome=outcome,
     )
     write_outputs(results, DATA_DIR, date.today().isoformat(), source="sedi")

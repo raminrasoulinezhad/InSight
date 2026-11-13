@@ -609,6 +609,17 @@ _MAX_SPLITS = 6
 _OVERLAP_DAYS = 30
 # How often a company gets a full fetch again (re-learning its SEDI name).
 _FULL_REFRESH_DAYS = 90
+# Pauses after a page is already on screen. Each used to be twice as long.
+# The form and the results are ready within about a tenth of a second, so the
+# extra wait was idle and a full company pass spent about eight minutes on it.
+# Half keeps a margin. The bot-check poll is not one of these, and MarketBeat
+# keeps its own one-second gap: that site blocks when it is pushed.
+_FORM_SETTLE_MS = 750
+_FIELD_SETTLE_MS = 150
+_SEARCH_SETTLE_MS = 1250
+_REPORT_SETTLE_MS = 1000
+# Gap before the next company, half of scrape_many's default one second.
+SEDI_PAUSE_S = 0.5
 _HISTORY_LOCK = threading.Lock()
 
 
@@ -989,7 +1000,7 @@ class SediScraper:
             if _is_dead_wall(title, url):
                 raise BotBlocked(_DEAD_WALL, fatal=True) from e
             raise
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(_FORM_SETTLE_MS)
         self._clear_wall_or_raise("opening ITD search")
 
     def _submitted(self) -> bool:
@@ -1037,7 +1048,7 @@ class SediScraper:
                 print(f"  SEDI [{label}] could not drive the search form: {e}")
                 self._dump(f"itd_form_error_{label}")
                 return False
-            self._page.wait_for_timeout(2500)
+            self._page.wait_for_timeout(_SEARCH_SETTLE_MS)
             self._clear_wall_or_raise("running ITD search")
             if self._submitted():
                 return True
@@ -1339,7 +1350,7 @@ class SediScraper:
             raise LookupError(f"SEDI lists {n} insiders for that search, but none is {name}")
         self._click(views.nth(pick))
         page.wait_for_load_state("domcontentloaded", timeout=15000)
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(_REPORT_SETTLE_MS)
         self._clear_wall_or_raise("opening insider report")
 
     def _extract_rows(self) -> list[list[str]]:
@@ -1383,7 +1394,7 @@ class SediScraper:
         with contextlib.suppress(Exception):
             self._click(views.nth(pick))
             page.wait_for_load_state("domcontentloaded", timeout=15000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(_REPORT_SETTLE_MS)
             self._clear_wall_or_raise("opening issuer report")
 
     def _log_page_error(self, exchange: str, ticker: str) -> None:
@@ -1422,7 +1433,7 @@ class SediScraper:
         end = min(end or today, today)
 
         page.select_option("select[name='SELECT_TYPE']", select_type, timeout=8000)
-        page.wait_for_timeout(300)  # onchange enables the value box
+        page.wait_for_timeout(_FIELD_SETTLE_MS)  # onchange enables the value box
         page.fill("input[name='SELECT_TYPE_VALUE']", value, timeout=8000)
         # "Starts with" rather than exact: SEDI stores full legal names, so an
         # exact match fails on the shortened names people actually type.

@@ -88,7 +88,10 @@ The workaround is not to defeat the wall but to **solve it once by hand**:
   every trade already fetched, so `sedi_history.json` records, per company, the
   SEDI date its history is complete up to, and the next fetch asks only from a
   month before that (`_OVERLAP_DAYS`, for late filings): CNQ's follow-up was 19
-  trades in 11 s instead of two years. A fetch still cut short at the smallest
+  trades in 11 s instead of two years. The pauses after the form and the
+  results load are half what they were (`_FORM_SETTLE_MS`, `_SEARCH_SETTLE_MS`
+  and the half-second gap before the next company): the page is ready in a
+  fraction of a second, and the old waits were idle. A fetch still cut short at the smallest
   window is not recorded, so it is tried in full again. The person search always
   asks for the whole window, since its summary feeds the suggestions.
   `insight-scrape --source sedi --force` ignores the history.

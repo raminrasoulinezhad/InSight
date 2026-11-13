@@ -162,6 +162,13 @@ class TestItNeverBreaksTheScrape:
         got = scrape_many([target("A")], scraper_factory=lambda: FakeScraper())
         assert list(got) == ["TSE:A"]
 
+    def test_the_gap_between_companies_can_be_shortened(self, monkeypatch):
+        # SEDI passes a half-second gap. MarketBeat leaves the default alone.
+        slept: list[float] = []
+        monkeypatch.setattr(marketbeat.time, "sleep", lambda s: slept.append(s))
+        scrape_many([target("A"), target("B")], scraper_factory=lambda: FakeScraper(), pause_s=0.5)
+        assert slept == [0.5, 0.5]
+
 
 class TestABlockedSessionStopsTheBatch:
     """Once a site is refusing the whole session, every further company is a

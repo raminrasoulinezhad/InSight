@@ -377,6 +377,7 @@ def scrape_many(
     source: str = "marketbeat",
     on_progress: Callable[[int, int, str], None] | None = None,
     outcome: dict[str, Any] | None = None,
+    pause_s: float = 1.0,
 ) -> dict[str, list[InsiderTransaction]]:
     """targets: iterable of {name, exchange, ticker}. Returns {key: [...]}.
 
@@ -514,7 +515,8 @@ def scrape_many(
                     "their cached data kept."
                 )
                 break
-            time.sleep(1.0)  # be polite between requests
+            if pause_s:
+                time.sleep(pause_s)  # be polite between requests
 
     progress(len(to_fetch), "")
     _save_delisted(delisted_path, delisted)

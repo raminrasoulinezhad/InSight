@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "insight"
-version = "0.1.0"
+version = "0.2.0"
 description = "View and collect insider stock transactions for a watchlist (Canada/US)."
 readme = "README.md"
 requires-python = ">=3.12"

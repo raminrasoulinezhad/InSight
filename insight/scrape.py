@@ -375,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         # SEDI is bot-walled: force a visible browser + persistent profile so a
         # one-time CAPTCHA solve sticks. Its delisted-detection doesn't apply
         # (no per-ticker insider URL to redirect), so no delisted file is passed.
-        from .sedi import is_canadian
+        from .sedi import SEDI_PAUSE_S, is_canadian
 
         capture = Path(args.capture) if args.capture else None
         targets = [t for t in targets if is_canadian(t)]  # SEDI is Canada-only
@@ -396,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                 history_path=None if args.force else paths.sedi_history_file(),
             ),
             source="sedi",
+            pause_s=SEDI_PAUSE_S,
         )
         # The browser has closed, so its caches are safe to drop. The session
         # cookie that carries the solved CAPTCHA is never touched.
