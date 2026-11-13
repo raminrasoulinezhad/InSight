@@ -642,7 +642,7 @@ class TestARefreshThatFetchedNothingSaysSo:
 
 
 class TestOneFetchButtonForBothSources:
-    """The UI's single Fetch button: MarketBeat, then SEDI, in one job."""
+    """The UI's single Fetch button: MarketBeat alongside SEDI, in one job."""
 
     @pytest.fixture
     def run(self, tmp_path: Path, monkeypatch):
@@ -669,9 +669,22 @@ class TestOneFetchButtonForBothSources:
         monkeypatch.setattr(app, "_fire_alarms", lambda: None)
         monkeypatch.setattr(sedi, "SediScraper", lambda **kw: None)
         calls: list[dict] = []
+        # Set overlap["on"] before run() to hold MarketBeat inside its fetch
+        # until SEDI has entered its own. Sequential code fails the wait.
+        overlap = {"on": False, "both": False}
+        mb_in = threading.Event()
+        release_mb = threading.Event()
+        self.overlap = overlap
 
         def fake_scrape_many(targets, **kw):
             source = kw.get("source", "marketbeat")
+            if overlap["on"] and source == "marketbeat":
+                mb_in.set()
+                release_mb.wait(3)
+            if overlap["on"] and source == "sedi":
+                assert mb_in.wait(3), "MarketBeat had not started"
+                overlap["both"] = True
+                release_mb.set()
             calls.append({"source": source, "tickers": [t["ticker"] for t in targets], **kw})
             out = kw["outcome"]
             out.update(fetched=len(targets), failed=0, cached=0, untouched=0, stopped="")
@@ -720,9 +733,12 @@ class TestOneFetchButtonForBothSources:
 
     def test_without_an_sec_contact_marketbeat_keeps_the_us_companies(self, run):
         calls, state = run()
-        assert [c["source"] for c in calls] == ["marketbeat", "sedi", "people"]
-        assert calls[0]["tickers"] == ["ABC", "AAPL"]
-        assert calls[1]["tickers"] == ["ABC"], "SEDI is Canada-only"
+        by = {c["source"]: c for c in calls}
+        assert set(by) == {"marketbeat", "sedi", "people"}
+        assert by["marketbeat"]["tickers"] == ["ABC", "AAPL"]
+        assert by["sedi"]["tickers"] == ["ABC"], "SEDI is Canada-only"
+        sources = [c["source"] for c in calls]
+        assert sources.index("sedi") < sources.index("people")
         assert "SEC EDGAR failed (skipped: set INSIGHT_SEC_CONTACT in .env)" in state["message"]
 
     def test_with_one_edgar_takes_the_us_companies_from_marketbeat(self, run):
@@ -730,10 +746,21 @@ class TestOneFetchButtonForBothSources:
         # so fetching both would be the double fetch the button exists to stop.
         self.sec_contact = "someone@example.com"
         calls, state = run()
-        assert [c["source"] for c in calls] == ["marketbeat", "sedi", "edgar", "people"]
-        assert calls[0]["tickers"] == ["ABC"], "MarketBeat no longer fetches AAPL"
-        assert calls[2]["tickers"] == ["AAPL"]
+        by = {c["source"]: c for c in calls}
+        assert set(by) == {"marketbeat", "sedi", "edgar", "people"}
+        assert by["marketbeat"]["tickers"] == ["ABC"], "MarketBeat no longer fetches AAPL"
+        assert by["edgar"]["tickers"] == ["AAPL"]
+        sources = [c["source"] for c in calls]
+        # EDGAR reads which companies SEDI just wrote, so it waits for that.
+        assert sources.index("sedi") < sources.index("edgar") < sources.index("people")
+        assert sources.index("marketbeat") < sources.index("edgar")
         assert "SEC EDGAR: 1 fetched" in state["message"] and state["warn"] is False
+
+    def test_marketbeat_is_in_its_fetch_while_sedi_is_in_its(self, run):
+        self.overlap["on"] = True
+        calls, _state = run()
+        assert self.overlap["both"] is True
+        assert {c["source"] for c in calls} >= {"marketbeat", "sedi"}
 
     def test_recent_fetches_are_reused_not_repeated(self, run):
         calls, _state = run()
@@ -768,6 +795,54 @@ class TestOneFetchButtonForBothSources:
                 break
             threading.Event().wait(0.02)
         assert got == {"source": "all"}
+
+
+class TestMarketBeatBesideSediKeepsTheSediBar:
+    """The bar follows SEDI. MarketBeat is a suffix, and a bot check hides it."""
+
+    def setup_method(self) -> None:
+        app._reset_marketbeat_background()
+        app._refresh.update(phase="", message="", attention=False, done=0, total=0, label="")
+
+    def teardown_method(self) -> None:
+        app._reset_marketbeat_background()
+        app._refresh.update(phase="", message="", attention=False, done=0, total=0, label="")
+
+    def test_the_bar_stays_on_sedi_and_the_line_names_marketbeat(self):
+        app._set_phase("SEDI: ", "Opening SEDI…")
+        app._marketbeat_progress(2, 10, "Somewhere")
+        assert app._refresh["phase"] == "SEDI: "
+        assert app._refresh["total"] == 0
+        assert app._refresh["message"] == "Opening SEDI… · MarketBeat 3 of 10"
+        app._progress(0, 5, "ABC Corp")
+        assert app._refresh["done"] == 0 and app._refresh["total"] == 5
+        assert app._refresh["message"] == ("SEDI: Fetching 1 of 5 — ABC Corp · MarketBeat 3 of 10")
+
+    def test_a_bot_check_notice_is_not_covered(self):
+        app._set_phase("SEDI: ", "Opening SEDI…")
+        app._marketbeat_progress(1, 10, "X")
+        app._sedi_notice("SEDI needs you: solve the check")
+        app._marketbeat_progress(4, 10, "Y")
+        assert app._refresh["attention"] is True
+        assert app._refresh["message"] == "SEDI needs you: solve the check"
+        assert app._refresh["done"] == 0
+
+    def test_after_sedi_the_bar_follows_whatever_marketbeat_has_left(self):
+        app._set_phase("SEDI: ", "Opening SEDI…")
+        app._marketbeat_progress(3, 10, "Left")
+        app._adopt_marketbeat_bar()
+        assert app._refresh["phase"] == "MarketBeat: "
+        assert app._refresh["done"] == 3 and app._refresh["total"] == 10
+        assert app._refresh["message"] == "MarketBeat: Fetching 4 of 10 — Left"
+        app._marketbeat_progress(4, 10, "Next")
+        assert app._refresh["message"] == "MarketBeat: Fetching 5 of 10 — Next"
+
+    def test_finishing_drops_the_suffix(self):
+        app._set_phase("SEDI: ", "Opening SEDI…")
+        app._progress(1, 5, "ABC")
+        app._marketbeat_progress(0, 4, "Q")
+        app._marketbeat_finished()
+        assert app._refresh["message"] == "SEDI: Fetching 2 of 5 — ABC"
 
 
 class TestABotCheckWaitingOnTheUserIsSaid:

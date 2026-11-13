@@ -82,7 +82,7 @@ def _sedi_notice(message: str) -> None:
     a bot check waiting on a person used to read as "Fetching 1 of 190"."""
     with _refresh_lock:
         _refresh["attention"] = bool(message)
-        _refresh["message"] = message or "SEDI: check cleared, continuing…"
+        _show_message(message or "SEDI: check cleared, continuing…")
 
 
 def _progress(done: int, total: int, label: str) -> None:
@@ -92,7 +92,7 @@ def _progress(done: int, total: int, label: str) -> None:
         if total:
             where = f" — {label}" if label else ""
             phase = _refresh.get("phase") or ""
-            _refresh["message"] = f"{phase}Fetching {min(done + 1, total)} of {total}{where}"
+            _show_message(f"{phase}Fetching {min(done + 1, total)} of {total}{where}")
 
 
 # The insider search is a *browser* job, so it shares the refresh job slot rather
@@ -283,9 +283,88 @@ def _watchlist_targets() -> list[dict[str, Any]]:
     ]
 
 
+# MarketBeat runs beside the SEDI company pass (its own headless browser, not
+# the SEDI profile). The bar stays on SEDI, which is the phase that can ask
+# for a person; MarketBeat's place in line is a short suffix on that message.
+# `base_message` is the foreground line without that suffix, so a later
+# MarketBeat tick can refresh the suffix alone.
+_mb_bg = {"running": False, "done": 0, "total": 0, "label": ""}
+_status_base = ""
+
+
+def _marketbeat_clause() -> str:
+    """Caller holds `_refresh_lock`. Empty when MarketBeat owns the bar itself."""
+    if not _mb_bg.get("running") or not _mb_bg.get("total"):
+        return ""
+    if str(_refresh.get("phase") or "").startswith("MarketBeat"):
+        return ""
+    done = min(int(_mb_bg["done"]) + 1, int(_mb_bg["total"]))
+    return f" · MarketBeat {done} of {_mb_bg['total']}"
+
+
+def _show_message(base: str) -> None:
+    """Caller holds `_refresh_lock`. A bot-check notice is never given a suffix:
+    that line is the one the user has to see."""
+    global _status_base
+    _status_base = base
+    extra = "" if _refresh.get("attention") else _marketbeat_clause()
+    _refresh["message"] = base + extra
+
+
 def _set_phase(phase: str, message: str) -> None:
     with _refresh_lock:
-        _refresh.update(phase=phase, message=message, done=0, total=0, label="")
+        _refresh.update(phase=phase, done=0, total=0, label="", attention=False)
+        _show_message(message)
+
+
+def _reset_marketbeat_background() -> None:
+    global _status_base
+    with _refresh_lock:
+        _mb_bg.update(running=False, done=0, total=0, label="")
+        _status_base = ""
+
+
+def _marketbeat_progress(done: int, total: int, label: str) -> None:
+    """MarketBeat's progress while SEDI (or a later phase) owns the bar.
+
+    Counts stay on the foreground phase. Once that phase has finished and
+    MarketBeat is the only work left, this takes the bar over.
+    """
+    with _refresh_lock:
+        _mb_bg.update(running=True, done=done, total=total, label=label)
+        if _refresh.get("attention"):
+            return
+        phase = str(_refresh.get("phase") or "")
+        # Any other named phase (SEDI, EDGAR, followed insiders) keeps the bar.
+        # An empty phase, or one already handed to MarketBeat, shows its count.
+        if phase and not phase.startswith("MarketBeat"):
+            _show_message(_status_base)
+            return
+        _refresh.update(phase="MarketBeat: ", done=done, total=total, label=label, attention=False)
+        where = f" — {label}" if label else ""
+        if total:
+            _show_message(f"MarketBeat: Fetching {min(done + 1, total)} of {total}{where}")
+
+
+def _marketbeat_finished() -> None:
+    with _refresh_lock:
+        _mb_bg["running"] = False
+        if _refresh.get("attention") or not _status_base:
+            return
+        _show_message(_status_base)
+
+
+def _adopt_marketbeat_bar() -> None:
+    """SEDI is done and MarketBeat is still fetching: point the bar at it."""
+    with _refresh_lock:
+        if not _mb_bg.get("running"):
+            return
+        done, total = int(_mb_bg["done"]), int(_mb_bg["total"])
+        label = str(_mb_bg["label"])
+        _refresh.update(phase="MarketBeat: ", done=done, total=total, label=label, attention=False)
+        where = f" — {label}" if label else ""
+        if total:
+            _show_message(f"MarketBeat: Fetching {min(done + 1, total)} of {total}{where}")
 
 
 def _marketbeat_phase(
@@ -295,6 +374,7 @@ def _marketbeat_phase(
     *,
     force: bool,
     max_age_hours: float,
+    on_progress: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch from MarketBeat (headless, unattended). Returns (results, targets)."""
     from .marketbeat import discover_tickers, scrape_many
@@ -302,8 +382,11 @@ def _marketbeat_phase(
 
     targets = list(targets)
     if discover:
-        with _refresh_lock:
-            _refresh["message"] = "Discovering ticker universe…"
+        if on_progress is None:
+            # Only when MarketBeat is the job on screen. Alongside SEDI this
+            # would replace the line that says a check needs solving.
+            with _refresh_lock:
+                _show_message("Discovering ticker universe…")
         seen = {f"{t.get('exchange', '').upper()}:{t.get('ticker', '').upper()}" for t in targets}
         for d in discover_tickers(["TSE"]):
             key = f"{d['exchange']}:{d['ticker']}"
@@ -317,7 +400,7 @@ def _marketbeat_phase(
         max_age_hours=max_age_hours,
         force=force,
         delisted_path=paths.delisted_file(),
-        on_progress=_progress,
+        on_progress=on_progress or _progress,
         outcome=outcome,
     )
     write_outputs(results, DATA_DIR, date.today().isoformat())
@@ -517,14 +600,17 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
     (e.g. Playwright not installed) surfaces as a job error, not an app crash.
 
     `source="all"` is what the UI's one Fetch button runs: MarketBeat for the
-    watchlist (plus the ~215-company TSE universe when `discover` is set), then
-    SEDI for the Canadian companies. Both, because neither is complete on its
-    own: SEDI's report for a large issuer can miss officers MarketBeat lists,
-    and MarketBeat misses most small TSX-V names. Trades both report are shown
-    once (`aggregate.drop_cross_source_twins`). Anything fetched successfully
-    within `_FRESH_HOURS` is reused rather than fetched again. MarketBeat goes
-    first because it is quick and never needs a human; a SEDI failure then
-    costs nothing that was already fetched.
+    watchlist (plus the ~215-company TSE universe when `discover` is set) at
+    the same time as SEDI for the Canadian companies. They use different
+    browsers, so the overlap is safe; the SEDI profile is still only ever
+    opened once. EDGAR waits until SEDI has written, because it skips any
+    company SEDI already covers. Both company sources, because neither is
+    complete on its own: SEDI's report for a large issuer can miss officers
+    MarketBeat lists, and MarketBeat misses most small TSX-V names. Trades
+    both report are shown once (`aggregate.drop_cross_source_twins`). Anything
+    fetched successfully within `_FRESH_HOURS` is reused rather than fetched
+    again. Each phase writes its own snapshot, so a SEDI failure keeps
+    whatever MarketBeat already saved.
 
     `source="marketbeat"` / `"sedi"` run one source alone, always fresh.
     """
@@ -549,18 +635,31 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             # MarketBeat only covers them when there is no SEC contact to use.
             sec_ready = bool(contact())
             mb_list = [t for t in targets if not (sec_ready and is_us(t))]
-            _set_phase("MarketBeat: ", "Fetching from MarketBeat…")
-            try:
-                _results, mb_targets = _marketbeat_phase(
-                    mb_list, discover, mb_out, force=False, max_age_hours=mb_age
-                )
-            except Exception as e:  # SEDI is still worth trying
-                mb_out["error"] = f"{type(e).__name__}: {e}"
-                traceback.print_exc()
+            fetched_mb: dict[str, list[dict[str, Any]]] = {}
+
+            def _run_marketbeat() -> None:
+                try:
+                    _results, fetched_mb["targets"] = _marketbeat_phase(
+                        mb_list,
+                        discover,
+                        mb_out,
+                        force=False,
+                        max_age_hours=mb_age,
+                        on_progress=_marketbeat_progress,
+                    )
+                except Exception as e:  # SEDI's result still stands
+                    mb_out["error"] = f"{type(e).__name__}: {e}"
+                    traceback.print_exc()
+                finally:
+                    _marketbeat_finished()
+
+            _reset_marketbeat_background()
             _set_phase(
                 "SEDI: ",
                 "Opening SEDI… a browser runs minimized; it pops up if a CAPTCHA needs solving.",
             )
+            mb_thread = threading.Thread(target=_run_marketbeat, name="marketbeat", daemon=True)
+            mb_thread.start()
             try:
                 _results, sedi_targets = _sedi_phase(
                     targets, sedi_out, force=False, max_age_hours=_FRESH_HOURS
@@ -568,6 +667,11 @@ def _do_refresh(discover: bool = False, source: str = "marketbeat"):
             except Exception as e:
                 sedi_out["error"] = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
+            # EDGAR reads which companies SEDI covers, so it waits until that
+            # snapshot is written. MarketBeat does not, and may still be going.
+            _adopt_marketbeat_bar()
+            mb_thread.join()
+            mb_targets = list(fetched_mb.get("targets") or [])
             _set_phase("SEC EDGAR: ", "Fetching US companies from SEC EDGAR…")
             if not sec_ready:
                 edgar_out["error"] = "skipped: set INSIGHT_SEC_CONTACT in .env"

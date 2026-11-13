@@ -33,9 +33,10 @@ data services.
   adds the company *and* files the comments. Shares the refresh job slot. Needs a
   free LLM key (see `.env.example`); without one the tab says so.
 - **Watchlist** — add by name (TradingView resolver) / remove.
-- **↻ Fetch all** — the only fetch button, one job: MarketBeat, then SEDI for
-  the Canadian companies, then a SEDI person search for every **followed
-  insider** (anyone with a 🔔 person alarm). Their trades are stored in every
+- **↻ Fetch all** — the only fetch button, one job: MarketBeat at the same
+  time as SEDI for the Canadian companies (different browsers), then EDGAR,
+  then a SEDI person search for every **followed insider** (anyone with a 🔔
+  person alarm). Their trades are stored in every
   company they touch, and the companies off the watchlist become the **"not on
   your list"** box at the top of the Insiders tab, with + Add. Reuses anything
   fetched in the last hour, and a trade both sources report is shown once (SEDI's
