@@ -250,6 +250,15 @@
     padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer; filter:grayscale(1) opacity(.6); }
   .bell:hover { border-color:var(--accent); filter:none; }
   .bell.on { border-color:var(--inst); filter:none; background:var(--inst-dim); }
+  #unalarmed { background:var(--bg); color:var(--muted); border:1px solid var(--line);
+    border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; }
+  #unalarmed:hover { border-color:var(--accent); color:var(--text); }
+  #unalarmed.on { background:var(--panel2); color:var(--text); border-color:var(--accent); }
+  .quiet-head { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  .quiet-list { display:flex; flex-direction:column; gap:6px; }
+  .quiet-row { display:flex; align-items:center; gap:10px; padding:8px 12px;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  .quiet-row .lbl { flex:1; font-weight:600; }
   .sedi-link { background:transparent; color:var(--muted); border:1px solid var(--line);
     border-radius:6px; padding:2px 8px; font-size:12px; line-height:1.4; cursor:pointer;
     text-decoration:none; margin-left:6px; }
@@ -527,6 +536,8 @@
       <button data-f="sell">Net sellers</button>
       <button data-f="inst">Institutions</button>
     </div>
+    <button type="button" id="unalarmed" aria-pressed="false"
+      title="Show the names on this page that are not set to notify you">Not notified</button>
     <select id="range" title="Show transactions from this period">
       <option value="d7">Last week</option>
       <option value="d14" selected>Last 2 weeks</option>
@@ -630,7 +641,10 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // refresh poll knows to show results instead of reloading the feed
               pendingInsider:null, insiderFindOpener:null,
               interviews:[], pendingInterview:false, suggest:null, interviewError:null,
-              expanded:new Set() };   // companies showing their full row list
+              expanded:new Set(),   // companies showing their full row list
+              // Companies / Insiders: list names that have no alarm, so the
+              // ones that will not notify you can be reviewed in one place.
+              unalarmed:false };
 
 // Alarm identity — must match notify.alarm_key on the backend.
 const personKey = n => "person:" + (n||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -929,6 +943,57 @@ function render(){
   return renderCompanies();
 }
 
+// Names with no alarm. The buyer/seller filter hides cards, which would hide
+// names from a review of who is not notified, so this list ignores it. The
+// search box still applies.
+function unalarmedCompanies(companies, alarmKeys, q){
+  const out = [];
+  for (const c of companies || []){
+    if (alarmKeys.has(companyKey(c.exchange, c.ticker))) continue;
+    const hay = c._hay || (c.issuer_name + " " + c.exchange + ":" + c.ticker).toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    out.push(c);
+  }
+  out.sort((a, b) => (a.issuer_name || "").localeCompare(b.issuer_name || ""));
+  return out;
+}
+function unalarmedInsiders(insiders, alarmKeys, q){
+  const out = [];
+  for (const p of insiders || []){
+    if (alarmKeys.has(personKey(p.insider_name))) continue;
+    const hay = p._hay || (p.insider_name || "").toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    out.push(p);
+  }
+  out.sort((a, b) => (a.insider_name || "").localeCompare(b.insider_name || ""));
+  return out;
+}
+function quietListHtml(kind, rows){
+  const one = rows.length === 1;
+  const noun = kind === "person"
+    ? (one ? "insider is" : "insiders are")
+    : (one ? "company is" : "companies are");
+  const head = rows.length
+    ? `${rows.length} ${noun} not set to notify you. The bell turns notification on.`
+    : "Everyone on this page is set to notify you.";
+  const body = rows.map(row => {
+    if (kind === "person"){
+      return `<div class="quiet-row"><span class="lbl">${esc(row.insider_name)}</span>
+        ${bellBtn("person", {name:row.insider_name, label:row.insider_name})}</div>`;
+    }
+    return `<div class="quiet-row"><span class="lbl">${esc(row.issuer_name)}</span>
+      <span class="ticker">${esc(row.exchange)}:${esc(row.ticker)}</span>
+      ${bellBtn("company", {exch:row.exchange, ticker:row.ticker, label:row.issuer_name})}</div>`;
+  }).join("");
+  return `<p class="quiet-head">${head}</p><div class="quiet-list">${body}</div>`;
+}
+function syncUnalarmedBtn(){
+  const b = document.getElementById("unalarmed");
+  if (!b) return;
+  b.classList.toggle("on", !!STATE.unalarmed);
+  b.setAttribute("aria-pressed", STATE.unalarmed ? "true" : "false");
+}
+
 function renderCompanies(){
   const d = STATE.data;
   if (!d){ return; }
@@ -936,6 +1001,16 @@ function renderCompanies(){
            d.total_transactions, "transactions",
            d.total_companies, "on watchlist");
   setMeta(d);
+  syncUnalarmedBtn();
+  if (STATE.unalarmed){
+    const rows = unalarmedCompanies(d.companies, STATE.alarmKeys, STATE.qnorm);
+    const html = quietListHtml("company", rows);
+    document.getElementById("feed").innerHTML = rows.length
+      ? html : `<p class="quiet-head">${STATE.qnorm
+        ? "No companies match your filter."
+        : "Everyone on this page is set to notify you."}</p>`;
+    return;
+  }
   const html = d.companies.map(renderCompany).join("");
   document.getElementById("feed").innerHTML =
     html.trim() ? html : `<div class="nodata">Nothing matches your filter.</div>`;
@@ -1030,6 +1105,16 @@ function renderInsiders(){
            d.total_transactions, "transactions",
            d.total_companies, "companies traded");
   setMeta(d);
+  syncUnalarmedBtn();
+  if (STATE.unalarmed){
+    const rows = unalarmedInsiders(d.insiders, STATE.alarmKeys, STATE.qnorm);
+    document.getElementById("feed").innerHTML = rows.length
+      ? quietListHtml("person", rows)
+      : `<p class="quiet-head">${STATE.qnorm
+        ? "No insiders match your filter."
+        : "Everyone on this page is set to notify you."}</p>`;
+    return;
+  }
   const html = d.insiders.map(renderPerson).join("");
   document.getElementById("feed").innerHTML = suggestionsBox() +
     (html.trim() ? html : `<div class="nodata">No insiders match your filter.</div>`);
@@ -2342,6 +2427,10 @@ document.getElementById("q").addEventListener("input", e => {
 document.getElementById("range").addEventListener("change", e => {
   pushNav("range");
   STATE.range = e.target.value; load();
+});
+document.getElementById("unalarmed").addEventListener("click", () => {
+  STATE.unalarmed = !STATE.unalarmed;
+  render();
 });
 document.querySelectorAll("#filter button").forEach(b => {
   b.addEventListener("click", () => {
