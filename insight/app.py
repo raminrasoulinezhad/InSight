@@ -404,7 +404,9 @@ def _watchlist_targets() -> list[dict[str, Any]]:
 # for a person; MarketBeat's place in line is a short suffix on that message.
 # `base_message` is the foreground line without that suffix, so a later
 # MarketBeat tick can refresh the suffix alone.
-_mb_bg = {"running": False, "done": 0, "total": 0, "label": ""}
+# Mixed bool/int/str values. Left unannotated, mypy types this as
+# dict[str, object] and then rejects int() on the counts.
+_mb_bg: dict[str, Any] = {"running": False, "done": 0, "total": 0, "label": ""}
 _status_base = ""
 
 

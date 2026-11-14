@@ -19,17 +19,19 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Pin the image. ubuntu-latest moves to Ubuntu 26, and that notice is
+    # already on every run.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
 
       - name: Set up Node (for the browser-UI tests)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Set up Python + sync dev deps
         run: uv sync --group dev
@@ -42,7 +44,7 @@ jobs:
 
       - name: Cache the Playwright browser
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
