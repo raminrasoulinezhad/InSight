@@ -67,7 +67,7 @@ jobs:
         run: uv run mypy insight
 
       - name: Browser-UI tests (node, no deps)
-        run: node --test tests/webui/
+        run: node --test tests/webui/*.test.mjs
 
       - name: Tests
         run: uv run pytest
