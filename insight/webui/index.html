@@ -282,6 +282,34 @@
   .iv-suggested { margin-top:14px; border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
   .iv-suggested h4 { margin:0 0 4px 0; font-size:13px; }
   .iv-error { border-left:3px solid var(--sell); }
+  /* Chart tab: the price widget fills the page; the list picks the symbol. */
+  body.chart-view .stats, body.chart-view footer { display:none; }
+  body.chart-view main { padding:0; overflow:hidden; display:flex; flex-direction:column; }
+  .chart-wrap { display:flex; flex:1; min-height:0; }
+  .chart-list { width:260px; flex:0 0 260px; display:flex; flex-direction:column;
+    border-right:1px solid var(--line); background:var(--panel); min-height:0; }
+  .chart-list input[type=search] { flex:0 0 auto; width:auto; min-width:0; margin:8px; }
+  .chart-rows { overflow:auto; flex:1; }
+  .chart-empty { color:var(--muted); font-size:12px; padding:8px 10px; margin:0; }
+  .chart-group { color:var(--muted); font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; padding:8px 10px 4px; }
+  .chart-row { display:flex; flex-direction:column; align-items:flex-start; width:100%;
+    text-align:left; background:transparent; color:var(--text); border:0;
+    border-bottom:1px solid var(--line); padding:7px 10px; cursor:pointer; font:inherit; }
+  .chart-row:hover { background:var(--panel2); }
+  .chart-row.active { background:var(--accent-dim); }
+  .chart-name { font-size:13px; font-weight:600; }
+  .chart-sym { font-size:11px; color:var(--muted); }
+  .chart-pane { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .chart-pane iframe { flex:1; border:0; width:100%; background:var(--bg); }
+  .chart-credit { flex:0 0 auto; font-size:11px; color:var(--muted);
+    padding:4px 10px; text-decoration:none; }
+  .chart-credit:hover { color:var(--accent); }
+  @media (max-width:720px) {
+    .chart-wrap { flex-direction:column; }
+    .chart-list { width:auto; flex:0 0 38%; border-right:0;
+      border-bottom:1px solid var(--line); }
+  }
 
   /* cross-links between the Companies and Insiders tabs */
   .xnav { background:none; border:0; padding:0; font:inherit; color:inherit;
@@ -520,6 +548,7 @@
     <button data-view="insiders">Insiders</button>
     <button data-view="interviews">Interviews</button>
     <button data-view="alarms">Alarms</button>
+    <button data-view="chart">Chart</button>
     <button id="back" class="back-btn" disabled
       title="Go back to where you were (Alt+←)">← Back</button>
   </div>
@@ -633,6 +662,7 @@ let STATE = { view:"companies", data:null, insiders:null, q:"", qnorm:"", filter
               // the last step (so typing bursts collapse) and any pending jump
               nav:[], navKind:null, jump:null,
               theme:document.documentElement.getAttribute("data-theme") || "dark",
+              chartSymbol:"", chartQ:"", chartSymbols:[],
               // mirrors settings.json; `theme` is the manual pick, auto_* are
               // the per-mode picks used when following the system
               themeCfg:{theme:"dark", auto:false, auto_dark:"dark", auto_light:"light"},
@@ -911,6 +941,8 @@ function renderCompany(c){
       <span class="sub">${nIns} · ${c.txn_count} txns${c.latest_date? " · latest "+c.latest_date : ""}</span>
       ${warn}
       ${sediBtn}
+      <button type="button" class="sedi-link chart-btn" title="Open the price chart for this company"
+        data-exch="${esc(c.exchange)}" data-ticker="${esc(c.ticker)}">Chart</button>
       ${noteBtn(c)}
       ${bellBtn("company", {exch:c.exchange, ticker:c.ticker, label:c.issuer_name})}
       <button class="del-co" title="Remove from watchlist"
@@ -940,7 +972,162 @@ function render(){
   if (STATE.view === "interviews") return renderInterviews();
   if (STATE.view === "alarms") return renderAlarms();
   if (STATE.view === "insiders") return renderInsiders();
+  if (STATE.view === "chart") return renderChart();
   return renderCompanies();
+}
+
+/* ---- Chart tab -----------------------------------------------------------
+   TradingView's free chart widget, framed in the page. The watchlist is the
+   side list; gold, silver, platinum and oil sit above it. The widget itself
+   still lets you type any other symbol. Their credit line stays visible. */
+const CHART_MARKETS = [
+  {symbol:"TVC:GOLD", label:"Gold"},
+  {symbol:"TVC:SILVER", label:"Silver"},
+  {symbol:"TVC:PLATINUM", label:"Platinum"},
+  {symbol:"TVC:USOIL", label:"Oil"},
+];
+// Our watchlist uses MarketBeat's codes. The chart wants TradingView's.
+const TV_EXCHANGE = { TSE:"TSX", TSX:"TSX", NYSEAMERICAN:"AMEX", AMEX:"AMEX" };
+
+function tvExchange(exch){
+  const e = String(exch || "").toUpperCase();
+  return TV_EXCHANGE[e] || e;
+}
+
+function tvSymbol(exch, ticker){
+  const t = String(ticker || "").trim().toUpperCase();
+  const x = tvExchange(exch);
+  if (!x || !t) return "";
+  return x + ":" + t;
+}
+
+function chartEntries(companies){
+  const rows = [];
+  const seen = new Set();
+  for (const m of CHART_MARKETS){
+    seen.add(m.symbol);
+    rows.push({symbol:m.symbol, label:m.label, ticker:"", group:"market"});
+  }
+  const cos = (companies || []).slice().sort((a, b) =>
+    String(a.issuer_name || a.name || "").localeCompare(String(b.issuer_name || b.name || "")));
+  for (const c of cos){
+    const symbol = tvSymbol(c.exchange, c.ticker);
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    rows.push({
+      symbol,
+      label: c.issuer_name || c.name || symbol,
+      ticker: String(c.ticker || "").toUpperCase(),
+      group: "company",
+    });
+  }
+  return rows;
+}
+
+function chartWidgetUrl(symbol, mode, symbols){
+  const sym = symbol || "TVC:GOLD";
+  const list = (symbols && symbols.length ? symbols : [sym]).join("\u001f");
+  const theme = mode === "light" ? "light" : "dark";
+  const pairs = [
+    ["frameElementId", "insightchart"],
+    ["symbol", sym],
+    ["interval", "D"],
+    ["hidesidetoolbar", "0"],
+    ["symboledit", "1"],
+    ["saveimage", "1"],
+    ["withdateranges", "1"],
+    ["hideideas", "1"],
+    ["details", "1"],
+    ["style", "1"],
+    ["theme", theme],
+    ["timezone", "America/Toronto"],
+    ["locale", "en"],
+    ["watchlist", list],
+  ];
+  return "https://s.tradingview.com/widgetembed/?" +
+    pairs.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+}
+
+function chartRowsHtml(entries, active, q){
+  const want = (q || "").trim().toLowerCase();
+  const shown = entries.filter(e => !want ||
+    (e.label + " " + e.symbol + " " + (e.ticker || "")).toLowerCase().includes(want));
+  if (!shown.length) return `<p class="chart-empty">Nothing matches.</p>`;
+  let html = "", group = "";
+  for (const e of shown){
+    if (e.group !== group){
+      group = e.group;
+      html += `<div class="chart-group">${group === "market" ? "Markets" : "Watchlist"}</div>`;
+    }
+    html += `<button type="button" class="chart-row${e.symbol === active ? " active" : ""}"
+      data-symbol="${esc(e.symbol)}">
+      <span class="chart-name">${esc(e.label)}</span>
+      <span class="chart-sym">${esc(e.symbol)}</span>
+    </button>`;
+  }
+  return html;
+}
+
+function paintChartRows(){
+  const host = document.querySelector(".chart-rows");
+  if (!host) return;
+  host.innerHTML = chartRowsHtml(STATE.chartEntries || [], STATE.chartSymbol, STATE.chartQ);
+}
+
+function syncChartFrame(){
+  const frame = document.getElementById("chart-frame");
+  if (!frame) return;
+  frame.src = chartWidgetUrl(
+    STATE.chartSymbol || "TVC:GOLD", themeMode(STATE.theme), STATE.chartSymbols || []);
+}
+
+function selectChartSymbol(symbol){
+  if (!symbol || symbol === STATE.chartSymbol) return;
+  STATE.chartSymbol = symbol;
+  syncChartFrame();
+  document.querySelectorAll(".chart-row").forEach(b =>
+    b.classList.toggle("active", b.dataset.symbol === symbol));
+}
+
+function renderChart(){
+  const companies = (STATE.data && STATE.data.companies) || [];
+  const entries = chartEntries(companies);
+  STATE.chartEntries = entries;
+  STATE.chartSymbols = entries.map(e => e.symbol);
+  if (!STATE.chartSymbol) STATE.chartSymbol = "TVC:GOLD";
+  setStats("", "", "", "", "", "");
+  document.getElementById("datameta").textContent = "prices from TradingView";
+  document.getElementById("foot").textContent =
+    "Chart by TradingView. Prices are theirs, not part of the insider record.";
+  document.getElementById("feed").innerHTML = `
+    <div class="chart-wrap">
+      <aside class="chart-list">
+        <input type="search" id="chart-q" placeholder="Find a name or ticker…"
+          value="${esc(STATE.chartQ || "")}" aria-label="Filter the chart list" />
+        <div class="chart-rows">${chartRowsHtml(entries, STATE.chartSymbol, STATE.chartQ)}</div>
+      </aside>
+      <div class="chart-pane">
+        <iframe id="chart-frame" title="Price chart"
+          src="${esc(chartWidgetUrl(STATE.chartSymbol, themeMode(STATE.theme), STATE.chartSymbols))}"></iframe>
+        <a class="chart-credit" href="https://www.tradingview.com/" target="_blank" rel="noopener">Chart by TradingView</a>
+      </div>
+    </div>`;
+  const box = document.getElementById("chart-q");
+  if (box) box.addEventListener("input", () => {
+    STATE.chartQ = box.value;
+    paintChartRows();
+  });
+}
+
+function goToChart(exch, ticker){
+  pushNav("jump");
+  STATE.view = "chart";
+  // A leftover filter would hide the company you just asked to see.
+  STATE.chartQ = "";
+  const symbol = tvSymbol(exch, ticker);
+  if (symbol) STATE.chartSymbol = symbol;
+  syncControls();
+  load();
 }
 
 // Names with no alarm. The buyer/seller filter hides cards, which would hide
@@ -1536,6 +1723,7 @@ function applyThemeCfg(patch, {persist = true} = {}){
       body: JSON.stringify(STATE.themeCfg)
     }).catch(() => toast("Theme applied, but could not be saved."));
   }
+  if (STATE.view === "chart") syncChartFrame();
   if (settingsOpen() && STATE.settingsPage === "theme") renderSettings();
 }
 
@@ -1942,6 +2130,23 @@ async function addFoundCompany(btn){
 async function load(){
   if (STATE.view === "interviews"){ await loadInterviews(); render(); return; }
   if (STATE.view === "alarms"){ await loadAlarms(); render(); return; }
+  if (STATE.view === "chart"){
+    // The company list is the whole watchlist at any range, so a chart open
+    // reuses whatever the Companies tab already loaded.
+    if (!STATE.data){
+      try {
+        const r = await fetch("/api/data?days=14");
+        const d = await r.json();
+        indexCompanies(d); STATE.data = d;
+      } catch(e){
+        document.getElementById("feed").innerHTML =
+          `<div class="nodata">Failed to load the watchlist: ${esc(e.message)}</div>`;
+        return;
+      }
+    }
+    render();
+    return;
+  }
   try {
     const url = STATE.view === "insiders" ? "/api/insiders" : "/api/data";
     // Range token is "dN" for a week/day window, else a plain month count.
@@ -2153,6 +2358,10 @@ async function removeCompany(exchange, ticker, name){
 const feed = document.getElementById("feed");
 
 feed.addEventListener("click", e => {
+  const chartRow = e.target.closest(".chart-row");
+  if (chartRow){ selectChartSymbol(chartRow.dataset.symbol); return; }
+  const chartBtn = e.target.closest(".chart-btn");
+  if (chartBtn){ goToChart(chartBtn.dataset.exch, chartBtn.dataset.ticker); return; }
   const bell = e.target.closest(".bell");
   if (bell){ toggleAlarm(bell.dataset); return; }
   const find = e.target.closest("[data-find-insider]");
@@ -2519,7 +2728,9 @@ document.addEventListener("keydown", e => {
 function applyViewChrome(){
   // Both of these tabs have their own controls; the shared filter row means
   // nothing on either.
-  const ownControls = STATE.view === "alarms" || STATE.view === "interviews";
+  const ownControls = STATE.view === "alarms" || STATE.view === "interviews"
+    || STATE.view === "chart";
+  document.body.classList.toggle("chart-view", STATE.view === "chart");
   hideAdder();
   document.querySelectorAll("header .controls").forEach(el => { el.style.display = ownControls ? "none" : ""; });
   document.getElementById("q").placeholder = STATE.view === "insiders"

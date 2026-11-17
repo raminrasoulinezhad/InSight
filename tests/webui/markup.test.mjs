@@ -48,7 +48,7 @@ test("every range option maps to a query the loader understands", () => {
   }
 });
 
-test("the tabs read Companies / Insiders / Interviews / Alarms", () => {
+test("the tabs read Companies / Insiders / Interviews / Alarms / Chart", () => {
   const tabs = [...html.matchAll(/<button data-view="(\w+)"[^>]*>([^<]+)<\/button>/g)].map((m) => [
     m[1],
     m[2],
@@ -58,6 +58,7 @@ test("the tabs read Companies / Insiders / Interviews / Alarms", () => {
     ["insiders", "Insiders"],
     ["interviews", "Interviews"],
     ["alarms", "Alarms"],
+    ["chart", "Chart"],
   ]);
 });
 
